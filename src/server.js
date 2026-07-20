@@ -294,7 +294,8 @@ async function main() {
     const url = new URL(request.url, 'http://127.0.0.1')
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
-    if (request.method !== 'GET' && !isAudioDownload && !isMessageSend) return json(response, 405, { error: 'method_not_allowed' })
+    const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
+    if (request.method !== 'GET' && !isAudioDownload && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (isMessageSend) {
@@ -304,6 +305,22 @@ async function main() {
         const result = await socket.sendMessage(jid, { text: text.trim() })
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
+      return
+    }
+    if (isDocumentSend) {
+      requestBody(request).then(async ({ jid, filePath, caption }) => {
+        if (!jid || typeof filePath !== 'string' || !filePath) return json(response, 400, { error: 'invalid_document' })
+        if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
+        if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const document = await fs.readFile(filePath)
+        const result = await socket.sendMessage(jid, {
+          document,
+          fileName: path.basename(filePath),
+          mimetype: 'application/pdf',
+          caption: caption?.trim() || undefined,
+        })
+        json(response, 200, { sent: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
       return
     }
     if (isAudioDownload) {

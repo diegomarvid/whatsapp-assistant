@@ -41,6 +41,7 @@ npm link
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa transcribe contacto latest` | Descarga y transcribe el audio más reciente del chat |
 | `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
+| `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un PDF con un mensaje al contacto resuelto |
 
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
 incluye ninguna capacidad de envío.

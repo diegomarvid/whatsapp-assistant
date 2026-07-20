@@ -23,7 +23,8 @@ function usage() {
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
   wa transcribe <alias or phone> latest
-  wa send <alias or phone> <message>`)
+  wa send <alias or phone> <message>
+  wa send-file <alias or phone> <file> [caption]`)
 }
 
 async function loadAliases() {
@@ -81,6 +82,17 @@ async function sendMessage(jid, text) {
     body: JSON.stringify({ jid, text }),
   })
   if (!response.ok) throw new Error(`Could not send message: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function sendFile(jid, filePath, caption) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/documents/send`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ jid, filePath, caption }),
+  })
+  if (!response.ok) throw new Error(`Could not send document: ${(await response.json()).message || response.status}`)
   return response.json()
 }
 
@@ -153,6 +165,18 @@ async function main() {
     if (!target || !text) return usage()
     const contact = await resolve(target)
     const result = await sendMessage(contact.jid, text)
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
+  }
+  if (command === 'send-file') {
+    const target = args.shift()
+    const filePath = args.shift()
+    const caption = args.join(' ').trim()
+    if (!target || !filePath) return usage()
+    const file = path.resolve(filePath)
+    const stat = await fs.stat(file)
+    if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
+    const contact = await resolve(target)
+    const result = await sendFile(contact.jid, file, caption)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
   if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe') {
