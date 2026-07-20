@@ -6,8 +6,8 @@ to scan a QR code.
 
 ## Normal operating mode
 
-- Baileys runs as the macOS LaunchAgent
-  `com.diegomarvid.whatsapp-bridge`.
+- Baileys can run as a local macOS LaunchAgent (for example,
+  `com.example.whatsapp-assistant`).
 - It listens only on `127.0.0.1:3847`; it does not expose an internet-facing
   API and it has no send-message endpoint.
 - The linked-device session lives in `auth/`. As long as that directory stays
@@ -36,7 +36,7 @@ local user, and is excluded from Git.
 
    ```bash
    launchctl bootstrap gui/$(id -u) \
-     "$HOME/Library/LaunchAgents/com.diegomarvid.whatsapp-bridge.plist"
+     "$HOME/Library/LaunchAgents/com.example.whatsapp-assistant.plist"
    ```
 
 3. Scan the QR shown at `data/link-qr.png` only if `auth/` has not been
@@ -77,13 +77,13 @@ name/number mapping, save it with `wa alias add` so later requests like
 
    ```bash
    wa status
-   launchctl print gui/$(id -u)/com.diegomarvid.whatsapp-bridge
+   launchctl print gui/$(id -u)/com.example.whatsapp-assistant
    ```
 
 2. If it is not `open`, restart the existing service only:
 
    ```bash
-   launchctl kickstart -k gui/$(id -u)/com.diegomarvid.whatsapp-bridge
+   launchctl kickstart -k gui/$(id -u)/com.example.whatsapp-assistant
    ```
 
    Wait a few seconds and run `wa status` again. This preserves the linked
