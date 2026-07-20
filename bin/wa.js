@@ -55,6 +55,10 @@ function phoneFromJid(jid) {
   return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
 }
 
+function isDirectChat(jid) {
+  return Boolean(jid) && !jid.endsWith('@g.us') && !jid.endsWith('@broadcast')
+}
+
 function normalizeText(value) {
   return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
@@ -152,16 +156,50 @@ function printMessages(messages) {
 async function cacheMatches(query) {
   const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
   const normalized = normalizeText(query)
-  return Object.values(cache.chats)
-    .map((chat) => ({ ...chat, name: cache.contacts[chat.jid]?.name || chat.name || null }))
-    .filter((chat) => normalizeText(`${chat.name || ''} ${chat.jid}`).includes(normalized))
-    .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
+  const signals = new Map()
+  for (const chat of Object.values(cache.chats)) {
+    if (!isDirectChat(chat.jid)) continue
+    signals.set(chat.jid, {
+      jid: chat.jid,
+      names: new Set([chat.name, cache.contacts[chat.jid]?.name].filter(Boolean)),
+      messageCount: 0,
+      lastTimestamp: chat.lastTimestamp || 0,
+      matchingText: null,
+    })
+  }
+  for (const message of cache.messages) {
+    if (!isDirectChat(message.jid)) continue
+    const signal = signals.get(message.jid) || {
+      jid: message.jid,
+      names: new Set(),
+      messageCount: 0,
+      lastTimestamp: 0,
+      matchingText: null,
+    }
+    if (message.pushName) signal.names.add(message.pushName)
+    signal.messageCount += 1
+    signal.lastTimestamp = Math.max(signal.lastTimestamp, message.timestamp || 0)
+    if (!signal.matchingText && normalized && normalizeText(message.text || '').includes(normalized)) signal.matchingText = message.text
+    signals.set(message.jid, signal)
+  }
+  return [...signals.values()]
+    .map((signal) => {
+      const names = [...signal.names]
+      const name = names[0] || null
+      const matchingName = names.find((candidate) => normalizeText(candidate).includes(normalized))
+      const score = matchingName
+        ? (normalizeText(matchingName) === normalized ? 900 : 700)
+        : signal.matchingText ? 200 : 0
+      return { ...signal, name, matchingName, score }
+    })
+    .filter((signal) => signal.score > 0)
+    .sort((left, right) => right.score - left.score || right.lastTimestamp - left.lastTimestamp)
 }
 
 async function recentChats(limit) {
   const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
   const chats = Object.values(cache.chats)
-    .filter((chat) => chat.jid?.endsWith('@s.whatsapp.net'))
+    .filter((chat) => isDirectChat(chat.jid))
     .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
     .slice(0, limit)
   const contacts = macContactsForPhones(chats.map((chat) => phoneFromJid(chat.jid)))
@@ -197,7 +235,13 @@ async function main() {
     const chatHits = await cacheMatches(query)
     const contactHits = macContactsForQuery(query)
     for (const [alias, item] of aliasHits) console.log(`alias: ${alias} → ${item.name || item.phone} (${item.phone})`)
-    for (const chat of chatHits) console.log(`chat: ${chat.name || 'sin nombre'} (${chat.jid})`)
+    for (const chat of chatHits) {
+      const identity = chat.matchingName || chat.name || 'sin nombre'
+      const evidence = chat.matchingName
+        ? `coincide con nombre de WhatsApp; ${chat.messageCount} mensajes recientes`
+        : `menciona “${chat.matchingText.slice(0, 90)}”; ${chat.messageCount} mensajes recientes`
+      console.log(`WhatsApp: ${identity} (${chat.jid}) — ${evidence}`)
+    }
     for (const contact of contactHits) console.log(`contacto: ${contact.name} (${contact.phones.join(', ')})`)
     if (!aliasHits.length && !chatHits.length && !contactHits.length) console.log('Sin coincidencias.')
     return
@@ -209,7 +253,7 @@ async function main() {
     const aliasByPhone = new Map(Object.values(aliases).map((item) => [item.phone, item.name || item.phone]))
     for (const chat of chats) {
       const phone = phoneFromJid(chat.jid)
-      const name = cache.contacts[chat.jid]?.name || chat.name || aliasByPhone.get(phone) || contactByPhone.get(phone) || 'sin nombre'
+      const name = aliasByPhone.get(phone) || cache.contacts[chat.jid]?.name || chat.name || contactByPhone.get(phone) || 'sin nombre'
       console.log(`${formatTime(chat.lastTimestamp)} — ${name} (${phone || chat.jid})`)
     }
     return

@@ -121,6 +121,7 @@ function safeMessage(message) {
     timestamp: Number(message.messageTimestamp || Math.floor(Date.now() / 1000)),
     text,
     type: Object.keys(message.message || {})[0] || 'unknown',
+    pushName: message.pushName || null,
     audioRef: null,
   }
 }
@@ -146,6 +147,12 @@ async function ingestMessages(messages) {
     if (!message) continue
     const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
     if (existing) {
+      if (message.pushName && !existing.pushName) {
+        existing.pushName = message.pushName
+        const previousChat = cache.chats[message.jid] || { jid: message.jid }
+        if (!previousChat.name) cache.chats[message.jid] = { ...previousChat, name: message.pushName }
+        changed = true
+      }
       if (message.type === 'audioMessage' && !existing.audioRef) {
         try {
           await cacheAudioEnvelope(raw, existing)
@@ -162,8 +169,11 @@ async function ingestMessages(messages) {
       logger.warn({ err: error, messageId: message.id }, 'Could not retain audio envelope')
     }
     cache.messages.push(message)
+    const previousChat = cache.chats[message.jid] || {}
     cache.chats[message.jid] = {
+      ...previousChat,
       jid: message.jid,
+      name: message.pushName || cache.contacts[message.jid]?.name || previousChat.name || null,
       lastTimestamp: message.timestamp,
       lastMessage: message.text.slice(0, 240),
     }
@@ -250,7 +260,10 @@ async function connect() {
       if (chat.id) cache.chats[chat.id] = { ...cache.chats[chat.id], jid: chat.id, name: chat.name || null, lastTimestamp: Number(chat.conversationTimestamp || 0) }
     }
     for (const contact of contacts || []) {
-      if (contact.id) cache.contacts[contact.id] = { id: contact.id, name: contact.name || contact.notify || null }
+      if (contact.id) cache.contacts[contact.id] = {
+        id: contact.id,
+        name: contact.name || contact.notify || contact.verifiedName || null,
+      }
     }
     if (await ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
   })
