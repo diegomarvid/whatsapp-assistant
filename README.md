@@ -38,6 +38,7 @@ npm link
 | `wa find "Nombre del contacto"` | Busca aliases, identidad de WhatsApp, mensajes recientes y, opcionalmente, Contactos de macOS |
 | `wa recent 20` | Lista chats individuales recientes con identidad de WhatsApp; usa Contactos de macOS sólo como complemento |
 | `wa groups find maspeak` | Muestra grupos conocidos de Maspeak y descubre candidatos nuevos desde metadata y mensajes |
+| `wa groups inspect <jid>` | Lee título, descripción y mensajes recientes antes de clasificar un candidato |
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada de Maspeak |
 | `wa latest contacto` | Último mensaje de ese chat |
 | `wa history contacto 20` | Últimos 20 mensajes del chat |
@@ -61,6 +62,9 @@ Las listas de grupos viven en `data/group-lists.json`, nunca en Git. Una lista
 guarda los grupos confirmados, pero `wa groups find <lista>` siempre vuelve a
 consultar los grupos actuales de WhatsApp y los mensajes recientes para detectar
 candidatos nuevos; no es una lista rígida hardcodeada.
+Antes de agregar un candidato cuya pertenencia no sea evidente por el título,
+usar `wa groups inspect <jid>` y clasificarlo por su contenido real, no sólo por
+una palabra compartida en el nombre.
 
 La separación exacta entre el código público y el estado privado está en
 [`docs/private-state.md`](docs/private-state.md).

@@ -24,6 +24,7 @@ function usage() {
   wa recent [limit]
   wa groups list <list>
   wa groups find <list> [term...]
+  wa groups inspect <group-jid> [limit]
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
@@ -327,8 +328,25 @@ async function main() {
   }
   if (command === 'groups') {
     const action = args.shift()
+    if (!action || !['list', 'find', 'inspect', 'add'].includes(action)) return usage()
+    if (action === 'inspect') {
+      const jid = args.shift()
+      const limit = Math.min(Math.max(Number.parseInt(args[0] || '12', 10) || 12, 1), 50)
+      if (!jid) return usage()
+      const [groups, cache] = await Promise.all([whatsappGroups(), fs.readFile(cachePath, 'utf8').then(JSON.parse)])
+      const group = groups.find((item) => item.jid === jid)
+      if (!group) throw new Error(`Unknown WhatsApp group: ${jid}`)
+      console.log(`Grupo: ${group.subject || 'sin título'} (${group.jid})`)
+      if (group.desc) console.log(`Descripción: ${group.desc}`)
+      const messages = cache.messages
+        .filter((message) => message.jid === jid && message.text?.trim())
+        .sort((left, right) => right.timestamp - left.timestamp)
+        .slice(0, limit)
+      for (const message of messages) console.log(`${formatTime(message.timestamp)} — ${message.fromMe ? 'Vos' : message.pushName || 'Contacto'}: ${message.text.slice(0, 500)}`)
+      return
+    }
     const listName = args.shift()?.toLocaleLowerCase()
-    if (!action || !listName || !['list', 'find', 'add'].includes(action)) return usage()
+    if (!listName) return usage()
     const groupLists = await loadGroupLists()
     const list = groupLists.lists[listName] || { terms: [listName], groups: [] }
     if (action === 'list') {
@@ -364,7 +382,7 @@ async function main() {
         const evidence = group.metadataMatches.length
           ? `coincide en título/descripción: ${group.metadataMatches.join(', ')}`
           : `${group.evidence.length} mensajes con ${group.evidence[0].matchingTerm}`
-        console.log(`candidato: ${group.subject || 'sin título'} (${group.jid}) — ${evidence}`)
+        console.log(`candidato: ${group.subject || 'sin título'} (${group.jid}) — ${evidence}; revisar: wa groups inspect ${group.jid}`)
       }
     }
     if (!list.groups.length && !newCandidates.length) console.log(`No encontré grupos candidatos para ${listName}.`)
