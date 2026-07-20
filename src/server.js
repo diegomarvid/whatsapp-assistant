@@ -143,7 +143,19 @@ async function ingestMessages(messages) {
   let changed = false
   for (const raw of messages) {
     const message = safeMessage(raw)
-    if (!message || cache.messages.some((item) => item.id === message.id && item.jid === message.jid)) continue
+    if (!message) continue
+    const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
+    if (existing) {
+      if (message.type === 'audioMessage' && !existing.audioRef) {
+        try {
+          await cacheAudioEnvelope(raw, existing)
+          changed = true
+        } catch (error) {
+          logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed audio envelope')
+        }
+      }
+      continue
+    }
     try {
       await cacheAudioEnvelope(raw, message)
     } catch (error) {
