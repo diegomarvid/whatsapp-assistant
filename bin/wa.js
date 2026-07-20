@@ -3,6 +3,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -20,7 +21,8 @@ function usage() {
   wa find <name or alias>
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
-  wa search <alias or phone> <text>`)
+  wa search <alias or phone> <text>
+  wa transcribe <alias or phone> latest`)
 }
 
 async function loadAliases() {
@@ -58,6 +60,26 @@ async function request(endpoint) {
   const response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` } })
   if (!response.ok) throw new Error(`Bridge request failed (${response.status}): ${await response.text()}`)
   return response.json()
+}
+
+async function downloadAudio(jid, messageId) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/audio/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Could not download audio: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function transcribe(audioPath) {
+  const result = spawnSync('ct', ['transcribe', audioPath, 'es'], { encoding: 'utf8', timeout: 120000 })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'ct transcribe failed')
+  const output = `${result.stdout}\n${result.stderr}`.trim()
+  const transcriptPath = output.match(/(\/[^\n]+\.txt)\s*$/)?.[1]
+  if (!transcriptPath) return output
+  return fs.readFile(transcriptPath, 'utf8')
 }
 
 function formatTime(timestamp) {
@@ -113,13 +135,21 @@ async function main() {
     if (!aliasHits.length && !chatHits.length) console.log('Sin coincidencias.')
     return
   }
-  if (command === 'latest' || command === 'history' || command === 'search') {
+  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
     if (command === 'latest') return printMessages(messages.slice(0, 1))
     if (command === 'history') return printMessages(messages.slice(0, Number.parseInt(args[0] || '20', 10)))
+    if (command === 'transcribe') {
+      if (args[0] !== 'latest') return usage()
+      const audio = messages.find((message) => message.type === 'audioMessage')
+      if (!audio) return console.log('No hay un audio cacheado para este chat.')
+      const { audio: downloaded } = await downloadAudio(contact.jid, audio.id)
+      console.log(await transcribe(downloaded.path))
+      return
+    }
     const query = args.join(' ').trim().toLocaleLowerCase()
     if (!query) return usage()
     return printMessages(messages.filter((message) => message.text.toLocaleLowerCase().includes(query)))

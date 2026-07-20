@@ -3,8 +3,10 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
@@ -20,6 +22,8 @@ const dataDir = path.join(root, 'data')
 const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const qrPath = path.join(dataDir, 'link-qr.png')
+const audioEnvelopeDir = path.join(dataDir, 'audio-envelopes')
+const downloadedAudioDir = path.join(dataDir, 'audio')
 // Keep the assistant useful for current conversations without retaining a full
 // archive of the account. WhatsApp decides the exact recent-sync window.
 const MAX_MESSAGES = 10000
@@ -117,14 +121,34 @@ function safeMessage(message) {
     timestamp: Number(message.messageTimestamp || Math.floor(Date.now() / 1000)),
     text,
     type: Object.keys(message.message || {})[0] || 'unknown',
+    audioRef: null,
   }
 }
 
-function ingestMessages(messages) {
+async function cacheAudioEnvelope(rawMessage, message) {
+  if (message.type !== 'audioMessage') return
+  const filename = `${message.id}.bin`
+  const target = path.join(audioEnvelopeDir, filename)
+  try {
+    await fs.access(target)
+  } catch {
+    const temp = `${target}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temp, serialize(rawMessage), { mode: 0o600 })
+    await fs.rename(temp, target)
+  }
+  message.audioRef = filename
+}
+
+async function ingestMessages(messages) {
   let changed = false
   for (const raw of messages) {
     const message = safeMessage(raw)
     if (!message || cache.messages.some((item) => item.id === message.id && item.jid === message.jid)) continue
+    try {
+      await cacheAudioEnvelope(raw, message)
+    } catch (error) {
+      logger.warn({ err: error, messageId: message.id }, 'Could not retain audio envelope')
+    }
     cache.messages.push(message)
     cache.chats[message.jid] = {
       jid: message.jid,
@@ -136,6 +160,28 @@ function ingestMessages(messages) {
   pruneMessages()
   if (cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
   return changed
+}
+
+async function prunePrivateMedia() {
+  const cutoff = Date.now() - (RETENTION_DAYS * 24 * 60 * 60 * 1000)
+  for (const directory of [audioEnvelopeDir, downloadedAudioDir]) {
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue
+      const file = path.join(directory, entry.name)
+      if ((await fs.stat(file)).mtimeMs < cutoff) await fs.rm(file, { force: true })
+    }
+  }
+}
+
+async function downloadAudio(message) {
+  if (!socket?.updateMediaMessage) throw new Error('WhatsApp is not connected.')
+  if (!message.audioRef) throw new Error('This audio was received before media capture was enabled.')
+  const raw = deserialize(await fs.readFile(path.join(audioEnvelopeDir, message.audioRef)))
+  const bytes = await downloadMediaMessage(raw, 'buffer', {}, { logger, reuploadRequest: socket.updateMediaMessage })
+  const filename = `${message.id}.ogg`
+  const target = path.join(downloadedAudioDir, filename)
+  await fs.writeFile(target, bytes, { mode: 0o600 })
+  return { filename, path: target }
 }
 
 function pruneMessages() {
@@ -174,7 +220,7 @@ async function connect() {
 
   socket.ev.on('creds.update', saveCreds)
   socket.ev.on('messages.upsert', async ({ messages }) => {
-    if (ingestMessages(messages)) await saveCache()
+    if (await ingestMessages(messages)) await saveCache()
   })
   socket.ev.on('messaging-history.set', async ({ messages, chats, contacts }) => {
     for (const chat of chats || []) {
@@ -183,7 +229,7 @@ async function connect() {
     for (const contact of contacts || []) {
       if (contact.id) cache.contacts[contact.id] = { id: contact.id, name: contact.name || contact.notify || null }
     }
-    if (ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
+    if (await ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
   })
   socket.ev.on('connection.update', ({ connection: next, lastDisconnect, qr }) => {
     if (qr) {
@@ -213,16 +259,30 @@ async function connect() {
 async function main() {
   await ensurePrivateDir(authDir)
   await ensurePrivateDir(dataDir)
+  await ensurePrivateDir(audioEnvelopeDir)
+  await ensurePrivateDir(downloadedAudioDir)
   cache = await readJson(cachePath, cache)
   pruneMessages()
   await saveCache()
+  await prunePrivateMedia()
   const token = await loadToken()
 
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1')
-    if (request.method !== 'GET') return json(response, 405, { error: 'read_only', message: 'Only GET is supported.' })
+    const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
+    if (request.method !== 'GET' && !isAudioDownload) return json(response, 405, { error: 'read_only', message: 'Only GET and local audio download are supported.' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, readOnly: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
+    if (isAudioDownload) {
+      const jid = url.searchParams.get('jid')
+      const messageId = url.searchParams.get('messageId')
+      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'audioMessage')
+      if (!message) return json(response, 404, { error: 'audio_not_found' })
+      downloadAudio(message)
+        .then((audio) => json(response, 200, { audio }))
+        .catch((error) => json(response, 422, { error: 'audio_download_failed', message: error.message }))
+      return
+    }
     const limit = normalizeLimit(url.searchParams.get('limit'))
     if (url.pathname === '/chats') {
       const chats = Object.values(cache.chats)

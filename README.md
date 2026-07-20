@@ -35,9 +35,14 @@ npm link
 | `wa latest tommy` | Último mensaje de ese chat |
 | `wa history tommy 20` | Últimos 20 mensajes del chat |
 | `wa search tommy "presupuesto"` | Busca texto dentro del chat |
+| `wa transcribe tommy latest` | Descarga y transcribe el audio más reciente del chat |
 
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
 incluye ninguna capacidad de envío.
+
+Los audios recientes se conservan como envelopes privados durante la misma
+ventana de 30 días. El archivo de audio se descarga y transcribe únicamente al
+pedirlo con el comando anterior.
 
 ## API local
 
