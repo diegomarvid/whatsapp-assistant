@@ -38,7 +38,37 @@ async function ensurePrivateDir(directory) {
 
 async function readJson(file, fallback) {
   try {
-    return JSON.parse(await fs.readFile(file, 'utf8'))
+    const contents = await fs.readFile(file, 'utf8')
+    try {
+      return JSON.parse(contents)
+    } catch (error) {
+      // A prior process could have been interrupted while replacing the cache.
+      // Recover the first complete JSON value rather than discarding chat history.
+      let depth = 0
+      let quoted = false
+      let escaped = false
+      let end = -1
+      for (let index = 0; index < contents.length; index += 1) {
+        const character = contents[index]
+        if (quoted) {
+          if (escaped) escaped = false
+          else if (character === '\\') escaped = true
+          else if (character === '"') quoted = false
+          continue
+        }
+        if (character === '"') quoted = true
+        else if (character === '{' || character === '[') depth += 1
+        else if ((character === '}' || character === ']') && --depth === 0) {
+          end = index + 1
+          break
+        }
+      }
+      if (end <= 0) throw error
+      const recovered = JSON.parse(contents.slice(0, end))
+      await fs.writeFile(file, JSON.stringify(recovered), { mode: 0o600 })
+      console.warn(`Recovered a truncated local cache at ${file}`)
+      return recovered
+    }
   } catch (error) {
     if (error.code === 'ENOENT') return fallback
     throw error
