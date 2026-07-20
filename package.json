@@ -1,0 +1,24 @@
+{
+  "name": "whatsapp-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local, read-only WhatsApp Web bridge powered by Baileys",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "bin": {
+    "wa": "./bin/wa.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc13",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
