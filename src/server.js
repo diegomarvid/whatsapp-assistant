@@ -308,9 +308,24 @@ async function main() {
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
+    const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     if (request.method !== 'GET' && !isAudioDownload && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
+    if (isGroupsList) {
+      if (!socket?.groupFetchAllParticipating) return json(response, 503, { error: 'whatsapp_not_connected' })
+      socket.groupFetchAllParticipating()
+        .then((groups) => json(response, 200, {
+          groups: Object.values(groups).map((group) => ({
+            jid: group.id,
+            subject: group.subject || null,
+            desc: group.desc || null,
+            participantCount: group.participants?.length || 0,
+          })),
+        }))
+        .catch((error) => json(response, 422, { error: 'groups_fetch_failed', message: error.message }))
+      return
+    }
     if (isMessageSend) {
       requestBody(request).then(async ({ jid, text }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })

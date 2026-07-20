@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDir = path.join(root, 'data')
 const aliasesPath = path.join(dataDir, 'aliases.json')
+const groupListsPath = path.join(dataDir, 'group-lists.json')
 const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
@@ -21,6 +22,9 @@ function usage() {
   wa alias add <alias> <phone> [display name]
   wa find <name or alias>
   wa recent [limit]
+  wa groups list <list>
+  wa groups find <list> [term...]
+  wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
@@ -43,6 +47,22 @@ async function saveAliases(aliases) {
   const temp = `${aliasesPath}.${crypto.randomUUID()}.tmp`
   await fs.writeFile(temp, `${JSON.stringify(aliases, null, 2)}\n`, { mode: 0o600 })
   await fs.rename(temp, aliasesPath)
+}
+
+async function loadGroupLists() {
+  try {
+    return JSON.parse(await fs.readFile(groupListsPath, 'utf8'))
+  } catch (error) {
+    if (error.code === 'ENOENT') return { lists: {} }
+    throw error
+  }
+}
+
+async function saveGroupLists(groupLists) {
+  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
+  const temp = `${groupListsPath}.${crypto.randomUUID()}.tmp`
+  await fs.writeFile(temp, `${JSON.stringify(groupLists, null, 2)}\n`, { mode: 0o600 })
+  await fs.rename(temp, groupListsPath)
 }
 
 function phoneToJid(value) {
@@ -96,6 +116,11 @@ async function request(endpoint) {
   const response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` } })
   if (!response.ok) throw new Error(`Bridge request failed (${response.status}): ${await response.text()}`)
   return response.json()
+}
+
+async function whatsappGroups() {
+  const { groups } = await request('/groups')
+  return groups || []
 }
 
 async function downloadAudio(jid, messageId) {
@@ -207,6 +232,48 @@ async function recentChats(limit) {
   return { cache, chats, contactByPhone }
 }
 
+async function groupCandidates(terms) {
+  const normalizedTerms = terms.map(normalizeText).filter(Boolean)
+  const [groups, cache] = await Promise.all([
+    whatsappGroups(),
+    fs.readFile(cachePath, 'utf8').then(JSON.parse),
+  ])
+  const messagesByGroup = new Map()
+  for (const message of cache.messages) {
+    if (!message.jid?.endsWith('@g.us')) continue
+    const text = message.text || ''
+    const matchingTerm = normalizedTerms.find((term) => normalizeText(text).includes(term))
+    if (!matchingTerm) continue
+    const evidence = messagesByGroup.get(message.jid) || []
+    evidence.push({ text, timestamp: message.timestamp, matchingTerm })
+    messagesByGroup.set(message.jid, evidence)
+  }
+  return groups.map((group) => {
+    const metadata = `${group.subject || ''} ${group.desc || ''}`
+    const metadataMatches = normalizedTerms.filter((term) => normalizeText(metadata).includes(term))
+    const evidence = messagesByGroup.get(group.jid) || []
+    return {
+      ...group,
+      score: (metadataMatches.length * 100) + Math.min(evidence.length, 5) * 20,
+      metadataMatches,
+      evidence,
+    }
+  }).filter((group) => group.score > 0).sort((left, right) => right.score - left.score)
+}
+
+function printKnownGroup(group) {
+  console.log(`conocido: ${group.subject || 'sin título'} (${group.jid})${group.reason ? ` — ${group.reason}` : ''}`)
+}
+
+function discoveryTerms(list, listName, extras = []) {
+  const stopWords = new Set(['maspeak', 'con', 'para', 'las', 'los', 'del', 'una', 'uno', 'ops'])
+  const inferred = (list.groups || []).flatMap((group) => (group.subject || '')
+    .split(/[^\p{L}\p{N}]+/u)
+    .map(normalizeText)
+    .filter((term) => term.length >= 4 && !stopWords.has(term)))
+  return [...new Set([...(list.terms || []), listName, ...extras, ...inferred])]
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
@@ -256,6 +323,51 @@ async function main() {
       const name = aliasByPhone.get(phone) || cache.contacts[chat.jid]?.name || chat.name || contactByPhone.get(phone) || 'sin nombre'
       console.log(`${formatTime(chat.lastTimestamp)} — ${name} (${phone || chat.jid})`)
     }
+    return
+  }
+  if (command === 'groups') {
+    const action = args.shift()
+    const listName = args.shift()?.toLocaleLowerCase()
+    if (!action || !listName || !['list', 'find', 'add'].includes(action)) return usage()
+    const groupLists = await loadGroupLists()
+    const list = groupLists.lists[listName] || { terms: [listName], groups: [] }
+    if (action === 'list') {
+      if (!list.groups.length) return console.log(`No hay grupos guardados para ${listName}.`)
+      list.groups.forEach(printKnownGroup)
+      return
+    }
+    const groups = await whatsappGroups()
+    if (action === 'add') {
+      const jid = args.shift()
+      const reason = args.join(' ').trim() || 'confirmado manualmente'
+      const group = groups.find((item) => item.jid === jid)
+      if (!group) throw new Error(`Unknown WhatsApp group: ${jid}`)
+      const existing = list.groups.find((item) => item.jid === jid)
+      if (existing) Object.assign(existing, { subject: group.subject, reason, lastSeenAt: new Date().toISOString() })
+      else list.groups.push({ jid, subject: group.subject, reason, addedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString() })
+      list.terms = discoveryTerms(list, listName)
+      groupLists.lists[listName] = list
+      await saveGroupLists(groupLists)
+      return printKnownGroup(list.groups.find((item) => item.jid === jid))
+    }
+    const terms = discoveryTerms(list, listName, args)
+    const candidates = await groupCandidates(terms)
+    const knownIds = new Set(list.groups.map((group) => group.jid))
+    if (list.groups.length) {
+      console.log(`Grupos conocidos de ${listName}:`)
+      list.groups.forEach(printKnownGroup)
+    }
+    const newCandidates = candidates.filter((group) => !knownIds.has(group.jid))
+    if (newCandidates.length) {
+      console.log(`Candidatos nuevos de ${listName}:`)
+      for (const group of newCandidates) {
+        const evidence = group.metadataMatches.length
+          ? `coincide en título/descripción: ${group.metadataMatches.join(', ')}`
+          : `${group.evidence.length} mensajes con ${group.evidence[0].matchingTerm}`
+        console.log(`candidato: ${group.subject || 'sin título'} (${group.jid}) — ${evidence}`)
+      }
+    }
+    if (!list.groups.length && !newCandidates.length) console.log(`No encontré grupos candidatos para ${listName}.`)
     return
   }
   if (command === 'send') {
