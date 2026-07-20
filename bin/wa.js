@@ -77,7 +77,7 @@ async function transcribe(audioPath) {
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'ct transcribe failed')
   const output = `${result.stdout}\n${result.stderr}`.trim()
-  const transcriptPath = output.match(/(\/[^\n]+\.txt)\s*$/)?.[1]
+  const transcriptPath = output.match(/(\/[^\n]+\.txt)/)?.[1]
   if (!transcriptPath) return output
   return fs.readFile(transcriptPath, 'utf8')
 }
