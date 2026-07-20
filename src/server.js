@@ -27,6 +27,7 @@ let lastError = null
 let socket = null
 let reconnectTimer = null
 let cache = { messages: [], chats: {}, contacts: {} }
+let cacheSaveQueue = Promise.resolve()
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -44,10 +45,14 @@ async function readJson(file, fallback) {
   }
 }
 
-async function saveCache() {
-  const temp = `${cachePath}.tmp`
-  await fs.writeFile(temp, JSON.stringify(cache), { mode: 0o600 })
-  await fs.rename(temp, cachePath)
+function saveCache() {
+  const snapshot = JSON.stringify(cache)
+  cacheSaveQueue = cacheSaveQueue.catch(() => {}).then(async () => {
+    const temp = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temp, snapshot, { mode: 0o600 })
+    await fs.rename(temp, cachePath)
+  })
+  return cacheSaveQueue
 }
 
 async function loadToken() {
