@@ -1,13 +1,13 @@
-# WhatsApp Bridge
+# WhatsApp Assistant
 
-Puente local de solo lectura entre WhatsApp Web y una API HTTP que escucha
-**únicamente** en `127.0.0.1`. Usa Baileys; no es una integración oficial de
-WhatsApp.
+Asistente local de WhatsApp: un bridge de solo lectura basado en Baileys y un
+CLI para consultar chats por alias. La API escucha **únicamente** en
+`127.0.0.1`; no es una integración oficial de WhatsApp.
 
 ## Arranque
 
 ```bash
-cd /Users/diegomarvid/Documents/whatsapp-bridge
+cd /Users/diegomarvid/Documents/whatsapp-assistant
 npm install
 npm start
 ```
@@ -17,6 +17,27 @@ En el primer arranque aparece un QR en esta terminal. En WhatsApp móvil:
 
 La primera vez también se crea un token local en `data/bridge-token`. Tanto
 ese token como las credenciales de WhatsApp están excluidos de Git.
+
+## CLI
+
+Instalación local del comando:
+
+```bash
+npm link
+```
+
+| Comando | Uso |
+| --- | --- |
+| `wa status` | Estado del bridge y cantidad de mensajes cacheados |
+| `wa alias add tommy +59892869665 "Tomi Wajner"` | Guarda un alias privado |
+| `wa aliases` | Lista aliases conocidos |
+| `wa find "Tomi Wajner"` | Busca un alias, contacto o chat cacheado |
+| `wa latest tommy` | Último mensaje de ese chat |
+| `wa history tommy 20` | Últimos 20 mensajes del chat |
+| `wa search tommy "presupuesto"` | Busca texto dentro del chat |
+
+Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
+incluye ninguna capacidad de envío.
 
 ## API local
 

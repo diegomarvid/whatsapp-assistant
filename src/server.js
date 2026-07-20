@@ -130,6 +130,7 @@ function ingestMessages(messages) {
     }
     changed = true
   }
+  cache.messages.sort((a, b) => a.timestamp - b.timestamp)
   if (cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
   return changed
 }
@@ -222,13 +223,19 @@ async function main() {
     if (url.pathname === '/messages') {
       const jid = url.searchParams.get('jid')
       if (!jid) return json(response, 400, { error: 'missing_jid' })
-      const messages = cache.messages.filter((message) => message.jid === jid).slice(-limit).reverse()
+      const messages = cache.messages
+        .filter((message) => message.jid === jid)
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, limit)
       return json(response, 200, { jid, messages })
     }
     if (url.pathname === '/search') {
       const query = url.searchParams.get('q')?.trim().toLocaleLowerCase()
       if (!query) return json(response, 400, { error: 'missing_query' })
-      const messages = cache.messages.filter((message) => message.text.toLocaleLowerCase().includes(query)).slice(-limit).reverse()
+      const messages = cache.messages
+        .filter((message) => message.text.toLocaleLowerCase().includes(query))
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, limit)
       return json(response, 200, { query, messages })
     }
     return json(response, 404, { error: 'not_found' })
