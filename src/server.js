@@ -20,9 +20,10 @@ const dataDir = path.join(root, 'data')
 const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const qrPath = path.join(dataDir, 'link-qr.png')
-// Full-history sync is deliberately retained locally so aliases and searches
-// can answer from past conversations, not just the initial recent batch.
-const MAX_MESSAGES = 50000
+// Keep the assistant useful for current conversations without retaining a full
+// archive of the account. WhatsApp decides the exact recent-sync window.
+const MAX_MESSAGES = 10000
+const RETENTION_DAYS = 30
 
 let connection = 'starting'
 let lastError = null
@@ -132,9 +133,15 @@ function ingestMessages(messages) {
     }
     changed = true
   }
-  cache.messages.sort((a, b) => a.timestamp - b.timestamp)
+  pruneMessages()
   if (cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
   return changed
+}
+
+function pruneMessages() {
+  const cutoff = Math.floor(Date.now() / 1000) - (RETENTION_DAYS * 24 * 60 * 60)
+  cache.messages = cache.messages.filter((message) => message.timestamp >= cutoff)
+  cache.messages.sort((a, b) => a.timestamp - b.timestamp)
 }
 
 function normalizeLimit(value, fallback = 50, ceiling = 200) {
@@ -161,9 +168,8 @@ async function connect() {
     version,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger,
-    syncFullHistory: true,
+    syncFullHistory: false,
     markOnlineOnConnect: false,
-    shouldSyncHistoryMessage: () => true,
   })
 
   socket.ev.on('creds.update', saveCreds)
@@ -208,6 +214,8 @@ async function main() {
   await ensurePrivateDir(authDir)
   await ensurePrivateDir(dataDir)
   cache = await readJson(cachePath, cache)
+  pruneMessages()
+  await saveCache()
   const token = await loadToken()
 
   const server = http.createServer((request, response) => {

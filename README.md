@@ -62,6 +62,8 @@ solamente hasta que se decida, explícitamente, agregar un flujo de aprobación.
 - Dejá este proceso corriendo para recibir mensajes nuevos.
 - Para desvincularlo: WhatsApp → Dispositivos vinculados → cerrar sesión del
   dispositivo. Luego se puede borrar `auth/` localmente.
-- `data/messages.json` guarda una caché local de hasta 50.000 mensajes para
-  búsquedas; contiene texto de chats, por lo que el directorio tiene permisos
-  privados.
+- `data/messages.json` guarda mensajes recientes de hasta 30 días, con un tope
+  de 10.000, para búsquedas. Contiene texto de chats, por lo que el directorio
+  tiene permisos privados. WhatsApp define el detalle exacto de la
+  sincronización reciente; el asistente no solicita una copia del historial
+  completo.
