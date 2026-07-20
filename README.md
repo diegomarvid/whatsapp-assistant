@@ -4,6 +4,10 @@ Asistente local de WhatsApp: un bridge de solo lectura basado en Baileys y un
 CLI para consultar chats por alias. La API escucha **únicamente** en
 `127.0.0.1`; no es una integración oficial de WhatsApp.
 
+Antes de tocar una sesión, un QR o la sincronización, leer la guía operativa:
+[`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md). Define
+el modo reciente de 30 días y evita pedir QRs innecesarios.
+
 ## Arranque
 
 ```bash
