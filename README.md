@@ -40,6 +40,7 @@ npm link
 | `wa history contacto 20` | Últimos 20 mensajes del chat |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa transcribe contacto latest` | Descarga y transcribe el audio más reciente del chat |
+| `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
 
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
 incluye ninguna capacidad de envío.
@@ -66,8 +67,9 @@ Authorization: Bearer <contenido de data/bridge-token>
 | `GET /messages?jid=<jid>&limit=50` | Mensajes sincronizados de un chat |
 | `GET /search?q=<texto>&limit=30` | Búsqueda local en mensajes recibidos/sincronizados |
 
-No existe endpoint de envío. La API queda cerrada a loopback y es de lectura
-solamente hasta que se decida, explícitamente, agregar un flujo de aprobación.
+La API queda cerrada a loopback. El envío solo está expuesto mediante el CLI
+local (`wa send`) y debe usarse únicamente ante una instrucción explícita del
+usuario.
 
 ## Notas operativas
 

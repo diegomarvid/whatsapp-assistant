@@ -22,7 +22,8 @@ function usage() {
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
-  wa transcribe <alias or phone> latest`)
+  wa transcribe <alias or phone> latest
+  wa send <alias or phone> <message>`)
 }
 
 async function loadAliases() {
@@ -69,6 +70,17 @@ async function downloadAudio(jid, messageId) {
     headers: { authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Could not download audio: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function sendMessage(jid, text) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/messages/send`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ jid, text }),
+  })
+  if (!response.ok) throw new Error(`Could not send message: ${(await response.json()).message || response.status}`)
   return response.json()
 }
 
@@ -134,6 +146,14 @@ async function main() {
     for (const chat of chatHits) console.log(`chat: ${chat.name || 'sin nombre'} (${chat.jid})`)
     if (!aliasHits.length && !chatHits.length) console.log('Sin coincidencias.')
     return
+  }
+  if (command === 'send') {
+    const target = args.shift()
+    const text = args.join(' ').trim()
+    if (!target || !text) return usage()
+    const contact = await resolve(target)
+    const result = await sendMessage(contact.jid, text)
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
   if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe') {
     const target = args.shift()

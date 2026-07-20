@@ -212,6 +212,17 @@ function json(response, status, body) {
   response.end(JSON.stringify(body, null, 2))
 }
 
+function requestBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = ''
+    request.on('data', (chunk) => { body += chunk })
+    request.on('end', () => {
+      try { resolve(JSON.parse(body || '{}')) } catch (error) { reject(error) }
+    })
+    request.on('error', reject)
+  })
+}
+
 function isAuthorized(request, token) {
   const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
   return supplied.length === token.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
@@ -282,9 +293,19 @@ async function main() {
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1')
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
-    if (request.method !== 'GET' && !isAudioDownload) return json(response, 405, { error: 'read_only', message: 'Only GET and local audio download are supported.' })
+    const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
+    if (request.method !== 'GET' && !isAudioDownload && !isMessageSend) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, readOnly: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
+    if (isMessageSend) {
+      requestBody(request).then(async ({ jid, text }) => {
+        if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
+        if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const result = await socket.sendMessage(jid, { text: text.trim() })
+        json(response, 200, { sent: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
+      return
+    }
     if (isAudioDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')

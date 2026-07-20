@@ -9,7 +9,8 @@ to scan a QR code.
 - Baileys can run as a local macOS LaunchAgent (for example,
   `com.example.whatsapp-assistant`).
 - It listens only on `127.0.0.1:3847`; it does not expose an internet-facing
-  API and it has no send-message endpoint.
+  API. Sending is available only through the local CLI after an explicit user
+  instruction.
 - The linked-device session lives in `auth/`. As long as that directory stays
   intact, a restart or Mac reboot reconnects automatically and **does not need
   another QR**.
@@ -58,6 +59,7 @@ wa latest contacto
 wa history contacto 20
 wa search contacto "presupuesto"
 wa transcribe contacto latest
+wa send contacto "Mensaje explícitamente pedido por el usuario"
 ```
 
 Aliases live in `data/aliases.json`, not in Git. When the user supplies a stable
@@ -70,6 +72,10 @@ name/number mapping, save it with `wa alias add` so later requests like
 2. Uses Baileys to download only that selected audio.
 3. Runs `ct transcribe <audio> es`.
 4. Prints the transcript. It does not send anything to the contact.
+
+`wa send <alias> "texto"` sends a text message. Use it only when the user has
+directly asked to send that exact message; never infer a send from a search,
+summary or drafted reply.
 
 ## Recovery checklist — before ever asking for a QR
 
