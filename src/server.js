@@ -20,7 +20,9 @@ const dataDir = path.join(root, 'data')
 const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const qrPath = path.join(dataDir, 'link-qr.png')
-const MAX_MESSAGES = 3000
+// Full-history sync is deliberately retained locally so aliases and searches
+// can answer from past conversations, not just the initial recent batch.
+const MAX_MESSAGES = 50000
 
 let connection = 'starting'
 let lastError = null
@@ -159,8 +161,9 @@ async function connect() {
     version,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger,
-    syncFullHistory: false,
+    syncFullHistory: true,
     markOnlineOnConnect: false,
+    shouldSyncHistoryMessage: () => true,
   })
 
   socket.ev.on('creds.update', saveCreds)
