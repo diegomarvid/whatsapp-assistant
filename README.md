@@ -11,7 +11,7 @@ el modo reciente de 30 días y evita pedir QRs innecesarios.
 ## Arranque
 
 ```bash
-cd /Users/diegomarvid/Documents/whatsapp-assistant
+cd whatsapp-assistant
 npm install
 npm start
 ```
@@ -33,16 +33,19 @@ npm link
 | Comando | Uso |
 | --- | --- |
 | `wa status` | Estado del bridge y cantidad de mensajes cacheados |
-| `wa alias add tommy +59892869665 "Tomi Wajner"` | Guarda un alias privado |
+| `wa alias add contacto +598XXXXXXXX "Nombre del contacto"` | Guarda un alias privado |
 | `wa aliases` | Lista aliases conocidos |
-| `wa find "Tomi Wajner"` | Busca un alias, contacto o chat cacheado |
-| `wa latest tommy` | Último mensaje de ese chat |
-| `wa history tommy 20` | Últimos 20 mensajes del chat |
-| `wa search tommy "presupuesto"` | Busca texto dentro del chat |
-| `wa transcribe tommy latest` | Descarga y transcribe el audio más reciente del chat |
+| `wa find "Nombre del contacto"` | Busca un alias, contacto o chat cacheado |
+| `wa latest contacto` | Último mensaje de ese chat |
+| `wa history contacto 20` | Últimos 20 mensajes del chat |
+| `wa search contacto "presupuesto"` | Busca texto dentro del chat |
+| `wa transcribe contacto latest` | Descarga y transcribe el audio más reciente del chat |
 
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
 incluye ninguna capacidad de envío.
+
+La separación exacta entre el código público y el estado privado está en
+[`docs/private-state.md`](docs/private-state.md).
 
 Los audios recientes se conservan como envelopes privados durante la misma
 ventana de 30 días. El archivo de audio se descarga y transcribe únicamente al

@@ -1,7 +1,7 @@
 # Onboarding, cache and recovery
 
 This is the operational source of truth for the local WhatsApp assistant.
-Its goal is to make the normal path reliable without repeatedly asking Diego
+Its goal is to make the normal path reliable without repeatedly asking the user
 to scan a QR code.
 
 ## Normal operating mode
@@ -36,7 +36,7 @@ local user, and is excluded from Git.
 
    ```bash
    launchctl bootstrap gui/$(id -u) \
-     /Users/diegomarvid/Library/LaunchAgents/com.diegomarvid.whatsapp-bridge.plist
+     "$HOME/Library/LaunchAgents/com.diegomarvid.whatsapp-bridge.plist"
    ```
 
 3. Scan the QR shown at `data/link-qr.png` only if `auth/` has not been
@@ -52,17 +52,17 @@ check the cache window and service health below.
 ```bash
 wa status
 wa aliases
-wa alias add tommy +59892869665 "Tomi Wajner"
-wa find "Tomi Wajner"
-wa latest tommy
-wa history tommy 20
-wa search tommy "Ambintour"
-wa transcribe tommy latest
+wa alias add contacto +598XXXXXXXX "Nombre del contacto"
+wa find "Nombre del contacto"
+wa latest contacto
+wa history contacto 20
+wa search contacto "presupuesto"
+wa transcribe contacto latest
 ```
 
-Aliases live in `data/aliases.json`, not in Git. When Diego supplies a stable
+Aliases live in `data/aliases.json`, not in Git. When the user supplies a stable
 name/number mapping, save it with `wa alias add` so later requests like
-“buscá el último mensaje de Tommy” stay one command.
+“buscá el último mensaje de un contacto” stay one command.
 
 `wa transcribe <alias> latest` does this locally:
 
@@ -122,4 +122,4 @@ Never do these as a reaction to an ordinary missing-message report:
 - Re-link the device just to obtain a message older than the 30-day policy.
 
 Those actions either widen the privacy scope or force an unnecessary QR. State
-the trade-off and get Diego's explicit agreement first.
+the trade-off and get the user's explicit agreement first.
