@@ -36,6 +36,7 @@ npm link
 | `wa alias add contacto +598XXXXXXXX "Nombre del contacto"` | Guarda un alias privado |
 | `wa aliases` | Lista aliases conocidos |
 | `wa find "Nombre del contacto"` | Busca un alias, contacto o chat cacheado |
+| `wa recent 20` | Lista chats individuales recientes, enriquecidos con Contactos de macOS cuando coincide el teléfono |
 | `wa latest contacto` | Último mensaje de ese chat |
 | `wa history contacto 20` | Últimos 20 mensajes del chat |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
@@ -45,6 +46,12 @@ npm link
 
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
 incluye ninguna capacidad de envío.
+
+`wa find` consulta Contactos de macOS bajo demanda; normaliza acentos y
+coincidencias de prefijo, por ejemplo `Flor` encuentra `Florencia`. La agenda
+no se copia al cache local. Los nombres ambiguos se muestran como candidatos;
+para enviar sin alias, usar el nombre completo que coincida exactamente o el
+número de teléfono.
 
 La separación exacta entre el código público y el estado privado está en
 [`docs/private-state.md`](docs/private-state.md).

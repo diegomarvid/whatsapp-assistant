@@ -11,6 +11,7 @@ const dataDir = path.join(root, 'data')
 const aliasesPath = path.join(dataDir, 'aliases.json')
 const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
+const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
 const baseUrl = 'http://127.0.0.1:3847'
 
 function usage() {
@@ -19,6 +20,7 @@ function usage() {
   wa aliases
   wa alias add <alias> <phone> [display name]
   wa find <name or alias>
+  wa recent [limit]
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
@@ -49,11 +51,39 @@ function phoneToJid(value) {
   return `${digits}@s.whatsapp.net`
 }
 
+function phoneFromJid(jid) {
+  return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
+}
+
+function normalizeText(value) {
+  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+}
+
+function macContacts(args) {
+  const result = spawnSync('swift', [contactsSearchScript, ...args], { encoding: 'utf8', timeout: 30000 })
+  if (result.error || result.status !== 0) return []
+  try { return JSON.parse(result.stdout) } catch { return [] }
+}
+
+function macContactsForQuery(query) {
+  return macContacts([query])
+}
+
+function macContactsForPhones(phones) {
+  const uniquePhones = [...new Set(phones.filter(Boolean))]
+  return uniquePhones.length ? macContacts(['--phones', ...uniquePhones]) : []
+}
+
 async function resolve(target) {
   const aliases = await loadAliases()
   const key = target.toLocaleLowerCase()
   if (aliases[key]) return { ...aliases[key], alias: key }
   if (/^[+\d][\d\s()-]*$/.test(target)) return { phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null }
+  const exactMatches = macContactsForQuery(target)
+    .filter((match) => normalizeText(match.name) === normalizeText(target))
+  const phones = [...new Set(exactMatches.flatMap((match) => match.phones.map((phone) => phone.replace(/\D/g, '')).filter(Boolean)))]
+  if (phones.length === 1) return { phone: phones[0], jid: phoneToJid(phones[0]), alias: null, name: exactMatches[0].name }
+  if (phones.length > 1) throw new Error(`More than one contact matches “${target}”. Use a phone number or save an alias.`)
   throw new Error(`Unknown alias “${target}”. Run: wa alias add ${target} <phone> "Name"`)
 }
 
@@ -121,11 +151,22 @@ function printMessages(messages) {
 
 async function cacheMatches(query) {
   const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
-  const normalized = query.toLocaleLowerCase()
+  const normalized = normalizeText(query)
   return Object.values(cache.chats)
     .map((chat) => ({ ...chat, name: cache.contacts[chat.jid]?.name || chat.name || null }))
-    .filter((chat) => `${chat.name || ''} ${chat.jid}`.toLocaleLowerCase().includes(normalized))
+    .filter((chat) => normalizeText(`${chat.name || ''} ${chat.jid}`).includes(normalized))
     .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
+}
+
+async function recentChats(limit) {
+  const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  const chats = Object.values(cache.chats)
+    .filter((chat) => chat.jid?.endsWith('@s.whatsapp.net'))
+    .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
+    .slice(0, limit)
+  const contacts = macContactsForPhones(chats.map((chat) => phoneFromJid(chat.jid)))
+  const contactByPhone = new Map(contacts.flatMap((contact) => contact.phones.map((phone) => [phone.replace(/\D/g, ''), contact.name])))
+  return { cache, chats, contactByPhone }
 }
 
 async function main() {
@@ -154,9 +195,23 @@ async function main() {
     const aliases = await loadAliases()
     const aliasHits = Object.entries(aliases).filter(([alias, item]) => `${alias} ${item.name || ''} ${item.phone}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
     const chatHits = await cacheMatches(query)
+    const contactHits = macContactsForQuery(query)
     for (const [alias, item] of aliasHits) console.log(`alias: ${alias} → ${item.name || item.phone} (${item.phone})`)
     for (const chat of chatHits) console.log(`chat: ${chat.name || 'sin nombre'} (${chat.jid})`)
-    if (!aliasHits.length && !chatHits.length) console.log('Sin coincidencias.')
+    for (const contact of contactHits) console.log(`contacto: ${contact.name} (${contact.phones.join(', ')})`)
+    if (!aliasHits.length && !chatHits.length && !contactHits.length) console.log('Sin coincidencias.')
+    return
+  }
+  if (command === 'recent') {
+    const limit = Math.min(Math.max(Number.parseInt(args[0] || '20', 10) || 20, 1), 50)
+    const { cache, chats, contactByPhone } = await recentChats(limit)
+    const aliases = await loadAliases()
+    const aliasByPhone = new Map(Object.values(aliases).map((item) => [item.phone, item.name || item.phone]))
+    for (const chat of chats) {
+      const phone = phoneFromJid(chat.jid)
+      const name = cache.contacts[chat.jid]?.name || chat.name || aliasByPhone.get(phone) || contactByPhone.get(phone) || 'sin nombre'
+      console.log(`${formatTime(chat.lastTimestamp)} — ${name} (${phone || chat.jid})`)
+    }
     return
   }
   if (command === 'send') {
