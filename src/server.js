@@ -295,7 +295,7 @@ async function main() {
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
     if (request.method !== 'GET' && !isAudioDownload && !isMessageSend) return json(response, 405, { error: 'method_not_allowed' })
-    if (url.pathname === '/health') return json(response, 200, { connection, lastError, readOnly: true, cachedMessages: cache.messages.length })
+    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (isMessageSend) {
       requestBody(request).then(async ({ jid, text }) => {
