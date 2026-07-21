@@ -369,6 +369,21 @@ function applyIncomingPollVote(raw) {
   }
 }
 
+function applyDecodedPollUpdates(message, updates) {
+  if (!message?.poll || !socket?.user?.id) return false
+  let changed = false
+  for (const update of updates || []) {
+    const key = update.pollUpdateMessageKey
+    if (!key) continue
+    changed = applyPollVote(message, {
+      participant: getKeyAuthor(key, socket.user.id),
+      options: namesForPollVote(message.poll, update.vote?.selectedOptions),
+      senderTimestampMs: update.senderTimestampMs,
+    }) || changed
+  }
+  return changed
+}
+
 async function ingestMessages(messages, source = 'history') {
   let changed = false
   for (const raw of messages) {
@@ -652,6 +667,7 @@ async function applyMessageUpdates(updates) {
         // direct chats. Fall back only for updates that genuinely omit it.
         changed = applyDirectStatus(existing, update.status, update.messageTimestamp, nowSeconds()) || changed
       }
+      if (existing && update?.pollUpdates) changed = applyDecodedPollUpdates(existing, update.pollUpdates) || changed
       if (!update?.message || Object.keys(update.message).length === 0) continue
       const raw = {
         key,
