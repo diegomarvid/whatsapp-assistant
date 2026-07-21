@@ -17,11 +17,14 @@ import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
+import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
+import { MirrorStore } from './mirror-store.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const authDir = path.join(root, 'auth')
 const dataDir = path.join(root, 'data')
 const cachePath = path.join(dataDir, 'messages.json')
+const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const qrPath = path.join(dataDir, 'link-qr.png')
 const audioEnvelopeDir = path.join(dataDir, 'audio-envelopes')
@@ -30,21 +33,33 @@ const imageEnvelopeDir = path.join(dataDir, 'image-envelopes')
 const downloadedImageDir = path.join(dataDir, 'images')
 const documentEnvelopeDir = path.join(dataDir, 'document-envelopes')
 const downloadedDocumentDir = path.join(dataDir, 'documents')
-// Keep the assistant useful for current conversations without retaining a full
-// archive of the account. WhatsApp decides the exact recent-sync window.
+// Keep only recent operational context. The bridge must never become a private
+// archive of the whole account.
 const MAX_MESSAGES = 10000
-const RETENTION_DAYS = 30
+const RETENTION_DAYS = RECENT_RETENTION_DAYS
 
 let connection = 'starting'
 let lastError = null
 let socket = null
 let reconnectTimer = null
-let cache = { messages: [], chats: {}, contacts: {} }
+let cache = { messages: [], chats: {}, contacts: {}, sync: {} }
 let cacheSaveQueue = Promise.resolve()
-let connectedAt = null
 let lastLiveMessageAt = null
+let mirrorStore = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
+
+// libsignal currently logs full session objects through console.info when it
+// rotates a ratchet. Those objects include key material, so never let them
+// reach the LaunchAgent logs.
+const consoleInfo = console.info.bind(console)
+console.info = (...args) => {
+  if (args[0] === 'Closing session:') {
+    logger.debug('Suppressed sensitive libsignal session rotation log')
+    return
+  }
+  consoleInfo(...args)
+}
 
 async function ensurePrivateDir(directory) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 })
@@ -91,13 +106,41 @@ async function readJson(file, fallback) {
 }
 
 function saveCache() {
-  const snapshot = JSON.stringify(cache)
   cacheSaveQueue = cacheSaveQueue.catch(() => {}).then(async () => {
-    const temp = `${cachePath}.${process.pid}.${crypto.randomUUID()}.tmp`
-    await fs.writeFile(temp, snapshot, { mode: 0o600 })
-    await fs.rename(temp, cachePath)
+    mirrorStore.persist(cache)
   })
   return cacheSaveQueue
+}
+
+function ensureCacheShape() {
+  cache.messages = Array.isArray(cache.messages) ? cache.messages : []
+  cache.chats = cache.chats && typeof cache.chats === 'object' ? cache.chats : {}
+  cache.contacts = cache.contacts && typeof cache.contacts === 'object' ? cache.contacts : {}
+  cache.sync = cache.sync && typeof cache.sync === 'object' ? cache.sync : {}
+}
+
+function nowSeconds() {
+  return Math.floor(Date.now() / 1000)
+}
+
+function markBridgeProcessStarted() {
+  // The durable mirror survives restarts. Connection health is observable but
+  // never requires the user to link the companion again.
+  cache.sync = {
+    ...cache.sync,
+    observerStartedAt: nowSeconds(),
+    ingestionHealthy: true,
+    lastIngestError: null,
+  }
+}
+
+function chatCoverage(jid) {
+  return coverageForChat({
+    chat: cache.chats[jid],
+    messages: cache.messages.filter((message) => message.jid === jid),
+    connection,
+    sync: cache.sync,
+  })
 }
 
 async function loadToken() {
@@ -155,10 +198,11 @@ async function cacheDocumentEnvelope(rawMessage, message) {
 async function ingestMessages(messages, source = 'history') {
   let changed = false
   for (const raw of messages) {
-    const message = safeMessage(raw, { source })
-    if (!message) continue
-    const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
-    if (existing) {
+    try {
+      const message = safeMessage(raw, { source })
+      if (!message) continue
+      const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
+      if (existing) {
       if (message.pushName && !existing.pushName) {
         existing.pushName = message.pushName
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
@@ -168,6 +212,11 @@ async function ingestMessages(messages, source = 'history') {
       if (source === 'live' && existing.source !== 'live') {
         existing.source = 'live'
         existing.capturedAt = message.capturedAt
+        changed = true
+      }
+      if (source === 'live') {
+        const previousChat = cache.chats[message.jid] || { jid: message.jid }
+        cache.chats[message.jid] = { ...previousChat, lastObservedLiveAt: nowSeconds(), lastObservedLiveMessageId: message.id }
         changed = true
       }
       if (message.type === 'audioMessage' && !existing.audioRef) {
@@ -189,29 +238,35 @@ async function ingestMessages(messages, source = 'history') {
       if (message.type === 'documentMessage' && !existing.documentRef) {
         try { await cacheDocumentEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed document envelope') }
       }
-      continue
-    }
-    try {
-      await cacheAudioEnvelope(raw, message)
+        continue
+      }
+      try {
+        await cacheAudioEnvelope(raw, message)
+      } catch (error) {
+        logger.warn({ err: error, messageId: message.id }, 'Could not retain audio envelope')
+      }
+      try {
+        await cacheImageEnvelope(raw, message)
+      } catch (error) {
+        logger.warn({ err: error, messageId: message.id }, 'Could not retain image envelope')
+      }
+      try { await cacheDocumentEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain document envelope') }
+      cache.messages.push(message)
+      const previousChat = cache.chats[message.jid] || {}
+      cache.chats[message.jid] = {
+        ...previousChat,
+        jid: message.jid,
+        name: message.pushName || cache.contacts[message.jid]?.name || previousChat.name || null,
+        lastTimestamp: message.timestamp,
+        lastMessage: message.text.slice(0, 240),
+        remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), message.timestamp),
+        lastObservedLiveAt: source === 'live' ? nowSeconds() : previousChat.lastObservedLiveAt || null,
+        lastObservedLiveMessageId: source === 'live' ? message.id : previousChat.lastObservedLiveMessageId || null,
+      }
+      changed = true
     } catch (error) {
-      logger.warn({ err: error, messageId: message.id }, 'Could not retain audio envelope')
+      logger.error({ err: error, messageId: raw?.key?.id, jid: raw?.key?.remoteJid }, 'Skipped malformed WhatsApp payload; bridge remains connected')
     }
-    try {
-      await cacheImageEnvelope(raw, message)
-    } catch (error) {
-      logger.warn({ err: error, messageId: message.id }, 'Could not retain image envelope')
-    }
-    try { await cacheDocumentEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain document envelope') }
-    cache.messages.push(message)
-    const previousChat = cache.chats[message.jid] || {}
-    cache.chats[message.jid] = {
-      ...previousChat,
-      jid: message.jid,
-      name: message.pushName || cache.contacts[message.jid]?.name || previousChat.name || null,
-      lastTimestamp: message.timestamp,
-      lastMessage: message.text.slice(0, 240),
-    }
-    changed = true
   }
   pruneMessages()
   if (cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
@@ -284,6 +339,48 @@ function json(response, status, body) {
   response.end(JSON.stringify(body, null, 2))
 }
 
+function listenLocal(server) {
+  return new Promise((resolve, reject) => {
+    const onStartupError = (error) => {
+      server.off('error', onStartupError)
+      reject(error)
+    }
+    server.once('error', onStartupError)
+    server.listen(3847, '127.0.0.1', () => {
+      server.off('error', onStartupError)
+      server.on('error', (error) => {
+        lastError = `Local API error: ${error.message}`
+        logger.error({ err: error }, 'Local WhatsApp API error; observer remains alive')
+      })
+      console.log('Local WhatsApp API listening on http://127.0.0.1:3847')
+      resolve()
+    })
+  })
+}
+
+function installGracefulShutdown(server) {
+  let stopping = false
+  const shutdown = (signal) => {
+    if (stopping) return
+    stopping = true
+    connection = 'stopping'
+    clearTimeout(reconnectTimer)
+    Promise.resolve()
+      .then(() => saveCache())
+      .catch((error) => logger.error({ err: error }, 'Could not persist mirror during shutdown'))
+      .finally(() => {
+        server.close(() => {
+          mirrorStore?.close()
+          process.exit(0)
+        })
+        setTimeout(() => process.exit(0), 5000).unref()
+      })
+    logger.info({ signal }, 'Stopping WhatsApp observer cleanly')
+  }
+  process.once('SIGTERM', () => shutdown('SIGTERM'))
+  process.once('SIGINT', () => shutdown('SIGINT'))
+}
+
 function requestBody(request) {
   return new Promise((resolve, reject) => {
     let body = ''
@@ -315,15 +412,35 @@ async function connect() {
 
   socket.ev.on('creds.update', saveCreds)
   socket.ev.on('messages.upsert', ({ messages }) => {
-    lastLiveMessageAt = Math.floor(Date.now() / 1000)
+    lastLiveMessageAt = nowSeconds()
     ingestMessages(messages, 'live')
-      .then((changed) => changed && saveCache())
-      .catch((error) => logger.error({ err: error }, 'Could not ingest incoming WhatsApp messages; bridge remains connected'))
+      .then(async (changed) => {
+        cache.sync.ingestionHealthy = true
+        cache.sync.lastIngestError = null
+        cache.sync.lastPersistedAt = nowSeconds()
+        if (changed) await saveCache()
+      })
+      .catch((error) => {
+        cache.sync.ingestionHealthy = false
+        cache.sync.lastIngestError = error.message
+        saveCache().catch(() => {})
+        logger.error({ err: error }, 'Could not ingest incoming WhatsApp messages; bridge remains connected')
+      })
   })
   socket.ev.on('messaging-history.set', ({ messages, chats, contacts }) => {
     ;(async () => {
       for (const chat of chats || []) {
-        if (chat.id) cache.chats[chat.id] = { ...cache.chats[chat.id], jid: chat.id, name: chat.name || null, lastTimestamp: Number(chat.conversationTimestamp || 0) }
+        if (chat.id) {
+          const previousChat = cache.chats[chat.id] || {}
+          const remoteLastTimestamp = Number(chat.conversationTimestamp || 0)
+          cache.chats[chat.id] = {
+            ...previousChat,
+            jid: chat.id,
+            name: chat.name || previousChat.name || null,
+            lastTimestamp: Math.max(Number(previousChat.lastTimestamp || 0), remoteLastTimestamp),
+            remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), remoteLastTimestamp),
+          }
+        }
       }
       for (const contact of contacts || []) {
         if (contact.id) cache.contacts[contact.id] = {
@@ -331,7 +448,10 @@ async function connect() {
           name: contact.name || contact.notify || contact.verifiedName || null,
         }
       }
-      if (await ingestMessages(messages || [], 'history') || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
+      cache.sync.lastHistorySyncAt = nowSeconds()
+      await ingestMessages(messages || [], 'history')
+      cache.sync.lastPersistedAt = nowSeconds()
+      await saveCache()
     })().catch((error) => logger.error({ err: error }, 'Could not ingest WhatsApp history; bridge remains connected'))
   })
   socket.ev.on('connection.update', ({ connection: next, lastDisconnect, qr }) => {
@@ -346,7 +466,10 @@ async function connect() {
     if (next === 'open') {
       connection = 'open'
       lastError = null
-      connectedAt = Math.floor(Date.now() / 1000)
+      cache.sync.connectedAt = nowSeconds()
+      cache.sync.lastConnectedAt = cache.sync.connectedAt
+      cache.sync.ingestionHealthy = true
+      saveCache().catch((error) => logger.warn({ err: error }, 'Could not persist bridge connection state'))
       fs.rm(qrPath, { force: true }).catch(() => {})
       console.log('WhatsApp bridge connected (read-only).')
     }
@@ -354,6 +477,9 @@ async function connect() {
       const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
       connection = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
       lastError = statusCode ? `WhatsApp disconnect (${statusCode})` : 'WhatsApp disconnected'
+      cache.sync.lastDisconnectedAt = nowSeconds()
+      cache.sync.ingestionHealthy = false
+      saveCache().catch((error) => logger.warn({ err: error }, 'Could not persist bridge disconnect state'))
       if (statusCode !== DisconnectReason.loggedOut) reconnectTimer = setTimeout(() => connect().catch(console.error), 3000)
       else console.error('WhatsApp logged this bridge out. Delete auth/ and restart to link it again.')
     }
@@ -369,7 +495,11 @@ async function main() {
   await ensurePrivateDir(downloadedImageDir)
   await ensurePrivateDir(documentEnvelopeDir)
   await ensurePrivateDir(downloadedDocumentDir)
-  cache = await readJson(cachePath, cache)
+  mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
+  cache = mirrorStore.load()
+  if (mirrorStore.isEmpty()) cache = await readJson(cachePath, cache)
+  ensureCacheShape()
+  markBridgeProcessStarted()
   pruneMessages()
   await saveCache()
   await prunePrivateMedia()
@@ -385,8 +515,9 @@ async function main() {
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isMessageReaction && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
-    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, connectedAt, lastLiveMessageAt })
+    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
+    if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (isGroupsList) {
       if (!socket?.groupFetchAllParticipating) return json(response, 503, { error: 'whatsapp_not_connected' })
       socket.groupFetchAllParticipating()
@@ -400,6 +531,11 @@ async function main() {
         }))
         .catch((error) => json(response, 422, { error: 'groups_fetch_failed', message: error.message }))
       return
+    }
+    if (request.method === 'GET' && url.pathname === '/coverage') {
+      const jid = url.searchParams.get('jid')
+      if (!jid) return json(response, 400, { error: 'jid_required' })
+      return json(response, 200, chatCoverage(jid))
     }
     if (isMessageSend) {
       requestBody(request).then(async ({ jid, text, replyToMessageId }) => {
@@ -503,7 +639,8 @@ async function main() {
     }
     return json(response, 404, { error: 'not_found' })
   })
-  server.listen(3847, '127.0.0.1', () => console.log('Local read-only API listening on http://127.0.0.1:3847'))
+  await listenLocal(server)
+  installGracefulShutdown(server)
   await connect()
 }
 

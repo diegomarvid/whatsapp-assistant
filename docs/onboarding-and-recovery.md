@@ -16,9 +16,10 @@ to scan a QR code.
   another QR**.
 - WhatsApp is requested in **recent sync** mode (`syncFullHistory: false`).
   The provider chooses the precise size of that initial recent window.
-- The local cache keeps only the newest 30 days, capped at 10,000 messages.
-  Older data is deliberately pruned. This is not a complete WhatsApp archive.
-- Audio and image envelopes for messages within that same window are stored
+- The durable local SQLite mirror keeps only the newest seven days, capped at
+  10,000 messages. Older data is deliberately pruned. This is not a complete
+  WhatsApp archive.
+- Audio and image envelopes for messages within that same seven-day window are stored
   privately so selected media can be downloaded later on demand. Images are
   retained only locally for the same 30-day window; they are never uploaded.
 
@@ -104,9 +105,10 @@ summary or drafted reply.
    Wait a few seconds and run `wa status` again. This preserves the linked
    session and normally reconnects without interaction.
 
-3. If a conversation seems to be missing, inspect the cache's oldest/newest
-   timestamp first. Messages older than about 30 days are intentionally absent.
-   The assistant is for recent operational context, not an archive.
+3. If a conversation seems to be missing, inspect `wa status` and `wa coverage
+   contacto`. The observer automatically reconnects with the existing linked
+   session; messages older than seven days are intentionally absent. The
+   assistant is for recent operational context, not an archive.
 
 4. If `wa transcribe` says an old audio is unavailable, it may predate the
    current recent-sync window or the audio-envelope capture. Do **not** reset
@@ -133,8 +135,8 @@ Never do these as a reaction to an ordinary missing-message report:
 
 - Set `syncFullHistory: true` or force full history processing.
 - Clear/move `auth/`.
-- Delete `data/messages.json` or `data/aliases.json`.
-- Re-link the device just to obtain a message older than the 30-day policy.
+- Delete `data/mirror.sqlite`, `data/messages.json` or `data/aliases.json`.
+- Re-link the device just to obtain a message older than the seven-day policy.
 
 Those actions either widen the privacy scope or force an unnecessary QR. State
 the trade-off and get the user's explicit agreement first.

@@ -6,7 +6,7 @@ CLI para consultar chats por alias. La API escucha **únicamente** en
 
 Antes de tocar una sesión, un QR o la sincronización, leer la guía operativa:
 [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md). Define
-el modo reciente de 30 días y evita pedir QRs innecesarios.
+el modo reciente de siete días y evita pedir QRs innecesarios.
 
 ## Arranque
 
@@ -42,7 +42,7 @@ npm link
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada de Maspeak |
 | `wa latest contacto` | Último mensaje de ese chat |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para operar sobre ellos |
-| `wa freshness contacto` | Muestra si el último mensaje llegó en vivo o sólo desde cache histórico |
+| `wa coverage contacto` | Indica si el chat reciente está sincronizado o si hay un hueco verificable |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
 | `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
@@ -70,11 +70,15 @@ sólo presenta hechos estructurales (autor, fecha, tipo, orden y si hubo una
 respuesta posterior). La interpretación semántica corresponde a la IA que use
 estos datos, para conservar compatibilidad entre idiomas y contextos.
 
-Después de una reconexión, el cache histórico puede no incluir mensajes que
-llegaron mientras el bridge estuvo desconectado. Por seguridad, `wa react` y
-`wa reply` rechazan `latest` y `latest-incoming` si ese mensaje no llegó en
-vivo al bridge. Usá `wa freshness contacto` antes de actuar; un ID explícito
-queda disponible sólo tras una verificación humana deliberada.
+El bridge es un observer persistente: recibe cada evento de WhatsApp mientras
+la sesión está conectada y lo confirma en un mirror SQLite antes de que el CLI
+lo consulte. Conserva como máximo los últimos 7 días; no mantiene un archivo
+histórico de la cuenta. El CLI nunca lee un JSON de cache directamente:
+consulta al observer local. `wa coverage contacto` verifica que el observer
+esté conectado, sano y que el cursor remoto no esté por delante del mirror;
+`wa react` y `wa reply` con `latest` sólo operan sobre el último evento
+confirmado.
+
 
 `wa find` funciona sin agenda local: prioriza aliases privados, nombres que
 WhatsApp sincroniza (`pushName` / contactos / chats) y coincidencias en
@@ -96,7 +100,7 @@ La separación exacta entre el código público y el estado privado está en
 [`docs/private-state.md`](docs/private-state.md).
 
 Los audios, imágenes y documentos recientes se conservan como envelopes privados
-durante la misma ventana de 30 días. Cada archivo se descarga únicamente al
+durante la misma ventana de siete días. Cada archivo se descarga únicamente al
 pedirlo con un comando explícito. El OCR de imágenes usa Vision local de macOS.
 
 ## API local
@@ -110,6 +114,7 @@ Authorization: Bearer <contenido de data/bridge-token>
 | Ruta | Uso |
 | --- | --- |
 | `GET /health` | Estado de conexión, sin token |
+| `GET /snapshot` | Vista reciente consistente del mirror SQLite |
 | `GET /chats?limit=50` | Chats conocidos, más recientes primero |
 | `GET /messages?jid=<jid>&limit=50` | Mensajes sincronizados de un chat |
 | `GET /search?q=<texto>&limit=30` | Búsqueda local en mensajes recibidos/sincronizados |
@@ -123,7 +128,7 @@ usuario.
 - Dejá este proceso corriendo para recibir mensajes nuevos.
 - Para desvincularlo: WhatsApp → Dispositivos vinculados → cerrar sesión del
   dispositivo. Luego se puede borrar `auth/` localmente.
-- `data/messages.json` guarda mensajes recientes de hasta 30 días, con un tope
+- `data/mirror.sqlite` guarda mensajes recientes de hasta siete días, con un tope
   de 10.000, para búsquedas. Contiene texto de chats, por lo que el directorio
   tiene permisos privados. WhatsApp define el detalle exacto de la
   sincronización reciente; el asistente no solicita una copia del historial

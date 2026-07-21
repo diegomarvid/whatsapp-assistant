@@ -10,7 +10,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dataDir = path.join(root, 'data')
 const aliasesPath = path.join(dataDir, 'aliases.json')
 const groupListsPath = path.join(dataDir, 'group-lists.json')
-const cachePath = path.join(dataDir, 'messages.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
 const baseUrl = 'http://127.0.0.1:3847'
@@ -27,7 +26,7 @@ function usage() {
   wa groups inspect <group-jid> [limit]
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
-  wa freshness <alias or phone>
+  wa coverage <alias or phone>
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>]
@@ -115,7 +114,7 @@ function macContactsForPhones(phones) {
 async function resolve(target) {
   const aliases = await loadAliases()
   const key = target.toLocaleLowerCase()
-  const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  const cache = await readSnapshot()
   if (aliases[key]) {
     const alias = aliases[key]
     const aliasMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizeText(alias.name || ''))
@@ -137,9 +136,26 @@ async function resolve(target) {
 
 async function request(endpoint) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` } })
+  let response
+  try {
+    response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+  } catch (error) {
+    throw new Error(`WhatsApp observer unavailable: ${error.name === 'TimeoutError' ? 'request timed out' : error.message}`)
+  }
   if (!response.ok) throw new Error(`Bridge request failed (${response.status}): ${await response.text()}`)
   return response.json()
+}
+
+async function readSnapshot() {
+  return request('/snapshot')
+}
+
+async function requireFreshCoverage(contact) {
+  const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
+  if (!coverage.fresh) {
+    throw new Error(`Latest selector is unavailable because this chat is not freshly synchronized (${coverage.reasons.join(', ')}). Run: wa coverage ${contact.alias || contact.name || contact.phone || contact.jid}`)
+  }
+  return coverage
 }
 
 async function whatsappGroups() {
@@ -229,7 +245,7 @@ function printMessages(messages, { ids = false } = {}) {
 }
 
 async function cacheMatches(query) {
-  const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  const cache = await readSnapshot()
   const normalized = normalizeText(query)
   const signals = new Map()
   for (const chat of Object.values(cache.chats)) {
@@ -272,7 +288,7 @@ async function cacheMatches(query) {
 }
 
 async function recentChats(limit) {
-  const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  const cache = await readSnapshot()
   const chats = Object.values(cache.chats)
     .filter((chat) => isDirectChat(chat.jid))
     .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
@@ -286,7 +302,7 @@ async function groupCandidates(terms) {
   const normalizedTerms = terms.map(normalizeText).filter(Boolean)
   const [groups, cache] = await Promise.all([
     whatsappGroups(),
-    fs.readFile(cachePath, 'utf8').then(JSON.parse),
+    readSnapshot(),
   ])
   const messagesByGroup = new Map()
   for (const message of cache.messages) {
@@ -382,7 +398,7 @@ async function main() {
       const jid = args.shift()
       const limit = Math.min(Math.max(Number.parseInt(args[0] || '12', 10) || 12, 1), 50)
       if (!jid) return usage()
-      const [groups, cache] = await Promise.all([whatsappGroups(), fs.readFile(cachePath, 'utf8').then(JSON.parse)])
+      const [groups, cache] = await Promise.all([whatsappGroups(), readSnapshot()])
       const group = groups.find((item) => item.jid === jid)
       if (!group) throw new Error(`Unknown WhatsApp group: ${jid}`)
       console.log(`Grupo: ${group.subject || 'sin título'} (${group.jid})`)
@@ -454,7 +470,7 @@ async function main() {
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
     const quoted = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages.find((message) => message.id === selector)
     if (!quoted) throw new Error(`No matching message found for reply selector: ${selector}`)
-    if ((selector === 'latest' || selector === 'latest-incoming') && quoted.source !== 'live') throw new Error('Latest selector is cache-only and may be stale. Wait for a live bridge update or use an explicit message ID after verifying it.')
+    if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
     const result = await sendMessage(contact.jid, text, quoted.id)
     return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}.`)
   }
@@ -487,7 +503,7 @@ async function main() {
       else if (option === '--groups') { scope = 'groups'; groupList = args.shift() || null }
       else throw new Error(`Unknown option: ${option}`)
     }
-    const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+    const cache = await readSnapshot()
     const allowedGroups = groupList ? new Set((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
     const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
     const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
@@ -507,7 +523,7 @@ async function main() {
         if (!groupList) throw new Error('Use --groups <list>')
       } else throw new Error(`Unknown option: ${option}`)
     }
-    const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+    const cache = await readSnapshot()
     const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
     if (groupList) {
       const list = (await loadGroupLists()).lists[groupList]
@@ -527,20 +543,22 @@ async function main() {
     for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
     return
   }
-  if (command === 'latest' || command === 'freshness' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
+  if (command === 'latest' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    if (command === 'freshness') {
-      const health = await request('/health')
-      const latest = messages[0]
-      if (!latest) return console.log('No hay mensajes cacheados para este chat.')
-      console.log(JSON.stringify({ chat: contact.name || target, latestMessageAt: latest.timestamp, latestSource: latest.source || 'history', bridgeConnectedAt: health.connectedAt, lastLiveMessageAt: health.lastLiveMessageAt, safeForLatestAction: latest.source === 'live' }, null, 2))
+    if (command === 'coverage') {
+      const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
+      console.log(JSON.stringify({ chat: contact.name || target, ...coverage }, null, 2))
       return
     }
-    if (command === 'latest') return printMessages(messages.slice(0, 1), { ids: args.includes('--ids') })
+    if (command === 'latest') {
+      await requireFreshCoverage(contact)
+      return printMessages(messages.slice(0, 1), { ids: args.includes('--ids') })
+    }
     if (command === 'history') {
+      await requireFreshCoverage(contact)
       const limit = Number.parseInt(args.find((argument) => argument !== '--ids') || '20', 10)
       return printMessages(messages.slice(0, limit), { ids: args.includes('--ids') })
     }
@@ -602,7 +620,7 @@ async function main() {
       if (!selector || !emoji) return usage()
       const message = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((item) => !item.fromMe) : messages.find((item) => item.id === selector)
       if (!message) throw new Error(`No matching message found for reaction selector: ${selector}`)
-      if ((selector === 'latest' || selector === 'latest-incoming') && message.source !== 'live') throw new Error('Latest selector is cache-only and may be stale. Wait for a live bridge update or use an explicit message ID after verifying it.')
+      if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
       await reactToMessage(contact.jid, message.id, emoji)
       return console.log('Reaction sent.')
     }

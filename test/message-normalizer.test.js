@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mimeTypeForFile } from '../src/file-mime.js'
 import { safeMessage } from '../src/message-normalizer.js'
+import { coverageForChat } from '../src/chat-coverage.js'
 
 test('normalizes document metadata and reply context without crashing', () => {
   const message = safeMessage({
@@ -32,6 +33,65 @@ test('marks whether a message arrived live or through history', () => {
   const message = safeMessage({ key: { id: 'live-1', remoteJid: 'chat@lid' }, message: { conversation: 'hola' } }, { source: 'live', capturedAt: 123 })
   assert.equal(message.source, 'live')
   assert.equal(message.capturedAt, 123)
+})
+
+test('marks a chat stale when WhatsApp reports a newer chat cursor than the local cache', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 100, lastHistorySyncAt: 101, lastGapEndedAt: 100 },
+    chat: { remoteLastTimestamp: 120, lastObservedLiveAt: 102 },
+    messages: [{ timestamp: 110 }],
+  })
+  assert.equal(coverage.status, 'stale')
+  assert.equal(coverage.fresh, false)
+  assert.deepEqual(coverage.reasons, ['remote_chat_ahead_of_cache'])
+})
+
+test('marks the cache unavailable while the bridge is disconnected', () => {
+  const coverage = coverageForChat({
+    connection: 'disconnected',
+    sync: { connectedAt: 200, ingestionHealthy: false },
+    chat: { remoteLastTimestamp: 100, lastObservedLiveAt: 202 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.status, 'unknown')
+  assert.equal(coverage.fresh, false)
+  assert.deepEqual(coverage.reasons, ['bridge_not_connected', 'ingestion_unhealthy'])
+})
+
+test('accepts a current seven-day chat snapshot when its cursor matches the cache', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 200, ingestionHealthy: true, lastPersistedAt: 201 },
+    chat: { remoteLastTimestamp: 100, lastObservedLiveAt: 202 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.status, 'fresh')
+  assert.equal(coverage.fresh, true)
+  assert.equal(coverage.retentionDays, 7)
+})
+
+test('marks a bridge with a failed ingestion handler unavailable even when it is connected', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 200, ingestionHealthy: false },
+    chat: { remoteLastTimestamp: 100, lastObservedLiveAt: 202 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.status, 'unknown')
+  assert.equal(coverage.fresh, false)
+  assert.deepEqual(coverage.reasons, ['ingestion_unhealthy'])
+})
+
+test('does not call an inherited cache fresh until this connection observed the chat live', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 200, ingestionHealthy: true },
+    chat: { remoteLastTimestamp: 100 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.fresh, false)
+  assert.deepEqual(coverage.reasons, ['chat_not_observed_after_connection'])
 })
 
 test('detects common outgoing document MIME types', () => {

@@ -21,7 +21,8 @@ pull requests.
 | `auth/` | Linked-device credentials produced by the QR flow. |
 | `data/bridge-token` | Loopback API bearer token. |
 | `data/aliases.json` | Personal aliases, names and phone-number mappings. |
-| `data/messages.json` | Recent message cache. |
+| `data/mirror.sqlite` (and WAL files) | Durable recent-message mirror; retains at most seven days. |
+| `data/messages.json` | Legacy cache used only for one-time migration into the SQLite mirror. |
 | `data/audio-envelopes/` | Private metadata needed to download selected recent audios. |
 | `data/audio/` | Audio files downloaded only for requested transcriptions. |
 | `data/image-envelopes/`, `data/images/` | Private image metadata and selected downloaded images. |
