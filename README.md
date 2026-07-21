@@ -51,6 +51,7 @@ Si una persona o un agente necesita orientación dentro del propio CLI:
 ```bash
 wa --help
 wa help setup
+wa help data
 wa doctor
 ```
 
@@ -82,7 +83,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.1.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz
 wa setup
 ```
 
@@ -142,6 +143,26 @@ excluidos de Git.
 > Antes de tocar una sesión, pedir un QR o modificar sincronización, leer
 > [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md). El modo
 > normal es **sync reciente**, no un archivo histórico completo.
+
+### 🕰️ Qué se puede saber y desde cuándo
+
+El CLI lo explica también con `wa help data`, pensado para que una persona o una
+IA conozca el límite antes de interpretar una salida.
+
+| Dato | De antes de instalar | Desde que el bridge está activo |
+| --- | --- | --- |
+| Texto, hora, remitente, citas y adjuntos | Sí, sólo si WhatsApp lo incluyó en su sync reciente y sigue dentro de los 7 días. | Sí, mientras WhatsApp lo entregue. |
+| Edición y contenido efímero | Puede verse el estado actual que llegó en el sync; no la versión original ni la secuencia anterior. | Se registran los cambios recibidos. |
+| Reacciones, entregas y vistos | Sólo si ese dato vino incluido en el mensaje sincronizado; no se promete para mensajes pasados. | Se registran las actualizaciones que WhatsApp reporte. |
+| Votos de encuestas | No se pueden reconstruir si no se observó la clave local y el voto. | Sí, cuando se observan creación y actualización. |
+| Llamadas perdidas y eventos de grupo | No se reconstruyen retroactivamente. | Sí, cuando WhatsApp los entrega al observer. |
+
+Nunca se obtiene un historial completo ni se interpreta la falta de un *read
+receipt* como “no lo vio” o “me está ignorando”. Los receipts individuales de
+un grupo sólo aplican a mensajes propios. Los mensajes *view once* no se
+exponen ni descargan. Antes de responder sobre “el último” mensaje, la IA debe
+consultar `wa coverage contacto`; `fresh` confirma cobertura reciente, no una
+prueba de que WhatsApp haya emitido cada señal de interacción posible.
 
 ### 🎧 Transcripción local (opcional)
 
@@ -216,6 +237,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa latest-incoming contacto` | Último mensaje **recibido** de ese contacto. |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para descargar, responder o reaccionar. |
 | `wa coverage contacto` | Indica si el chat está sincronizado (`fresh`) o si hay un hueco verificable. |
+| `wa help data` | Explica qué hechos recientes pueden venir del sync y qué eventos sólo se conocen desde que el bridge los observó. |
 | `wa message contacto <message-id>` | Hechos completos del evento: hora, autor, adjuntos, estado, reactions y receipts que el mirror haya recibido. |
 | `wa delivery contacto <message-id>` | Estado agregado de un mensaje propio en un chat directo (`enviado`, `entregado`, `leído` o `reproducido`) y su timestamp reportado por WhatsApp. |
 | `wa receipts grupo <message-id>` | Receipts individuales reportados por WhatsApp para **un mensaje propio** de grupo: entregado, leído o reproducido por participante. |

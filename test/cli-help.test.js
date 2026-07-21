@@ -31,6 +31,16 @@ test('setup help explains the QR flow without needing a running bridge', () => {
   assert.match(result.stdout, /No ejecutar wa con sudo/)
 })
 
+test('data help distinguishes recent synced facts from live observed events', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'data'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /antes de instalar/)
+  assert.match(result.stdout, /No se puede reconstruir retroactivamente/)
+  assert.match(result.stdout, /Desde que el bridge está conectado y sano/)
+  assert.match(result.stdout, /sin read receipt no significa/)
+  assert.match(result.stdout, /view-once no se exponen/)
+})
+
 test('transcription doctor identifies an incomplete private runtime instead of calling it ready', () => {
   const result = spawnSync(process.execPath, [cli, 'transcribe', 'doctor'], {
     encoding: 'utf8',

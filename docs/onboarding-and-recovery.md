@@ -67,7 +67,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.1.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -101,6 +101,39 @@ local user, and is excluded from Git.
 
 After this first link, do not scan again just because a query looks old. First
 check the cache window and service health below.
+
+## What the mirror can know
+
+This same guide is available to an agent at runtime with `wa help data`. It is
+an availability boundary, not an interpretation rule.
+
+### Facts that can come from before installation
+
+Only when WhatsApp includes them in its recent sync and they remain inside the
+seven-day local window, the mirror can show the message text, timestamp,
+sender, quote, type and available attachment. It may show the current edited or
+ephemeral representation delivered in that sync. A reaction or receipt from a
+past message is usable only if WhatsApp included that factual field in the
+synced message; it is never guaranteed merely because the message itself is
+present.
+
+### Facts that cannot be reconstructed retroactively
+
+The mirror cannot fill in older history, a message's pre-edit text, prior
+reaction/receipt timelines, poll votes whose creation key and encrypted update
+were not observed, or past group changes, call events and deletion sequences.
+It intentionally does not turn on full-history sync to attempt this.
+
+### Facts observed while the bridge is active
+
+While the linked bridge is connected and healthy, it records incoming messages
+and the WhatsApp updates it receives for edits, deletions, delivery/read/played
+receipts, reactions, eligible poll votes, missed-call message events and group
+metadata or membership changes. Those are factual WhatsApp reports, not proof
+of a person's intent or attention. In particular, a missing read receipt means
+only that no read receipt was reported; it does not mean the person did not
+read the message. Individual group receipts are available only for messages
+sent by this account. View-once content is never exposed or downloaded.
 
 ## Everyday CLI
 
