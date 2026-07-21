@@ -25,6 +25,9 @@ The whole surface the bridge touches is pinned in
    touchpoint that moved; fix only that adapter code and its regression tests.
 4. Restart the daemon (`wa daemon restart`) and confirm `wa status` reaches
    `open` **without a new QR**, then `wa coverage` on a known chat.
+   Also confirm `passiveModeAssertedAt` is set: Baileys internally switches
+   the connection to “active” after login and the bridge must win that race,
+   or the user's phone silently stops receiving WhatsApp notifications.
 5. `wa doctor` reports the installed Baileys version for later diagnosis.
 
 When adding a new Baileys capability to the bridge, extend the contract test

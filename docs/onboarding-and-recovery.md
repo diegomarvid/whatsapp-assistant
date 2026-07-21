@@ -247,6 +247,22 @@ unobserved). A remote cursor ahead of the local cache still marks the chat
 appear briefly until that offline queue is drained; wait a few seconds and
 re-run `wa coverage` instead of resetting anything.
 
+## Phone notifications stopped arriving
+
+WhatsApp only pushes notifications to the phone while no companion claims the
+“active client” slot. Baileys switches its connection to active right after
+login, so any always-on daemon silently suppresses phone notifications — the
+user only sees new messages by opening WhatsApp. Since v0.9.4 the bridge
+reasserts **passive companion mode** on every successful connect; passive
+connections still receive every event and can send explicit messages.
+
+Diagnosis: `wa status` must show `passiveModeAssertedAt` newer than
+`lastConnectedAt`. If it is missing or null, restart the daemon and check the
+bridge log for “Reasserted passive companion mode”. If it is present and the
+problem persists, look for another linked device (an old bot, Evolution, a
+stale bridge) holding active mode, and remove it from Linked Devices on the
+phone.
+
 ## Recovery checklist — before ever asking for a QR
 
 1. Check the daemon and cache:

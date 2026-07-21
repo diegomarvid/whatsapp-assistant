@@ -564,6 +564,17 @@ Los grupos mantienen su JID `…@g.us` y no se remapean como contactos.
 Para el detalle de qué estado es privado y queda excluido de Git, ver
 [`docs/private-state.md`](docs/private-state.md).
 
+### 🔔 Las notificaciones del teléfono siguen llegando
+
+Un daemon conectado 24/7 puede robarle las notificaciones push a tu teléfono:
+Baileys marca la conexión como cliente “activo” tras el login, y WhatsApp
+trata al cliente activo como el que muestra las notificaciones. El bridge
+**reafirma modo companion pasivo en cada conexión** (desde v0.9.4), así que tu
+celular sigue sonando normalmente. Verificable: `wa status` debe mostrar
+`passiveModeAssertedAt` con un timestamp posterior a `lastConnectedAt`. Si
+dejás de recibir notificaciones en el teléfono, revisá primero eso y que no
+haya otro cliente/bot vinculado a tu cuenta en modo activo.
+
 ## 🩺 Operación y recuperación
 
 - `wa daemon status` muestra el servicio; `wa daemon restart` lo reinicia sin
