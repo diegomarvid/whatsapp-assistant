@@ -26,6 +26,7 @@ function usage() {
   wa groups inspect <group-jid> [limit]
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
+  wa latest-incoming <alias or phone>
   wa coverage <alias or phone>
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
@@ -549,7 +550,7 @@ async function main() {
     for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
     return
   }
-  if (command === 'latest' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -559,9 +560,11 @@ async function main() {
       console.log(JSON.stringify({ chat: contact.name || target, ...coverage }, null, 2))
       return
     }
-    if (command === 'latest') {
+    if (command === 'latest' || command === 'latest-incoming') {
       await requireFreshCoverage(contact)
-      return printMessages(messages.slice(0, 1), { ids: args.includes('--ids') })
+      const latest = command === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages[0]
+      if (!latest) return console.log('No hay mensajes entrantes cacheados para este chat.')
+      return printMessages([latest], { ids: args.includes('--ids') })
     }
     if (command === 'history') {
       await requireFreshCoverage(contact)
