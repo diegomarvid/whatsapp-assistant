@@ -22,6 +22,30 @@ integración oficial de WhatsApp y nunca abre una API a Internet.
 
 ## 🚀 Instalación rápida
 
+### 🍺 macOS con Homebrew (recomendada)
+
+```bash
+brew tap diegomarvid/tap
+brew install whatsapp-assistant
+wa setup
+```
+
+`wa setup` instala y arranca un LaunchAgent local, y abre la imagen QR sólo si
+la cuenta todavía no está vinculada. Después del vínculo inicial, el servicio
+se reconecta automáticamente al iniciar sesión en macOS.
+
+Si ya usabas el checkout de este repositorio, migrá primero el estado privado
+para conservar la sesión y el mirror sin escanear otro QR:
+
+```bash
+wa migrate-state ~/Documents/whatsapp-assistant
+wa setup
+```
+
+El estado instalado queda en `~/Library/Application Support/WhatsApp Assistant/`:
+ahí viven `auth/`, SQLite, aliases, token y logs. Homebrew puede actualizar o
+desinstalar el código sin borrar conversaciones recientes ni credenciales.
+
 ### Requisitos base
 
 - Node.js **22 o superior**.
@@ -41,8 +65,10 @@ Dispositivos vinculados → Vincular un dispositivo**. Escanealo una sola vez.
 Después, conservar `auth/` permite reconectar tras reiniciar la Mac sin volver a
 escanear.
 
-La primera vez también se crea `data/bridge-token`. Ese token, las credenciales
-y todo el mirror privado están excluidos de Git.
+En un checkout de desarrollo, el estado se conserva en `auth/` y `data/` del
+proyecto para compatibilidad. En la instalación Homebrew queda fuera del
+paquete. En ambos casos, el token, las credenciales y el mirror privado están
+excluidos de Git.
 
 > [!IMPORTANT]
 > Antes de tocar una sesión, pedir un QR o modificar sincronización, leer
@@ -198,6 +224,11 @@ Para el detalle de qué estado es privado y queda excluido de Git, ver
 
 ## 🩺 Operación y recuperación
 
+- `wa daemon status` muestra el servicio; `wa daemon restart` lo reinicia sin
+  desvincular WhatsApp. `wa daemon uninstall` elimina sólo el servicio y deja
+  intacto el estado privado.
+- `wa setup` instala el LaunchAgent en macOS y abre el QR como imagen, no como
+  una pestaña de navegador.
 - Dejá el proceso/LaunchAgent corriendo para recibir los eventos nuevos.
 - Si algo parece viejo, usar primero `wa status`, `wa coverage contacto` y
   `wa latest-incoming contacto`.

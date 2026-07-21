@@ -2,7 +2,6 @@ import crypto from 'node:crypto'
 import http from 'node:http'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
   DisconnectReason,
@@ -19,10 +18,9 @@ import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
 import { MirrorStore } from './mirror-store.js'
+import { paths } from './runtime-paths.js'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const authDir = path.join(root, 'auth')
-const dataDir = path.join(root, 'data')
+const { authDir, dataDir } = paths
 const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')

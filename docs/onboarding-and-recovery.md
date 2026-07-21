@@ -37,23 +37,43 @@ local user, and is excluded from Git.
 
 ## One-time onboarding
 
-1. Install dependencies and the local CLI:
+1. On macOS, install and start through Homebrew:
+
+   ```bash
+   brew tap diegomarvid/tap
+   brew install whatsapp-assistant
+   wa setup
+   ```
+
+   `wa setup` creates a user LaunchAgent and opens `link-qr.png` only when a
+   new link is required. The packaged installation keeps all private state at
+   `~/Library/Application Support/WhatsApp Assistant/`, outside Homebrew.
+
+   If migrating from a prior checkout, run this before setup to preserve the
+   existing linked-device session:
+
+   ```bash
+   wa migrate-state ~/Documents/whatsapp-assistant
+   wa setup
+   ```
+
+2. For development from a checkout, install dependencies and the local CLI:
 
    ```bash
    npm install
    npm link
    ```
 
-2. Load or start the LaunchAgent:
+3. The development checkout can load or start a LaunchAgent manually:
 
    ```bash
    launchctl bootstrap gui/$(id -u) \
      "$HOME/Library/LaunchAgents/com.example.whatsapp-assistant.plist"
    ```
 
-3. Scan the QR shown at `data/link-qr.png` only if `auth/` has not been
+4. Scan the QR shown at `data/link-qr.png` only if `auth/` has not been
    created yet, or WhatsApp explicitly logged the device out.
-4. Wait for `wa status` to report `"connection": "open"`. The cache count can
+5. Wait for `wa status` to report `"connection": "open"`. The cache count can
    rise for a little while after that as the recent sync arrives.
 
 After this first link, do not scan again just because a query looks old. First

@@ -4,7 +4,7 @@ Read [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md)
 before changing the bridge, its session, or its cache.
 
 The normal operating mode is deliberately narrow: recent sync only, seven-day
-local retention in the durable SQLite mirror, no autonomous sending, and audio transcription only on demand.
+local retention in the durable SQLite mirror, no autonomous sending, and audio transcription only on demand. A packaged installation keeps its private state outside the code package (`~/Library/Application Support/WhatsApp Assistant` on macOS); never make a formula, update, or uninstall write over that state.
 Do not reset `auth/`, change history-sync settings, or ask for another QR
 without first following the recovery checks in that document.
 

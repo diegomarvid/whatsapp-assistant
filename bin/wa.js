@@ -5,18 +5,25 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import os from 'node:os'
+import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
+import { paths } from '../src/runtime-paths.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const dataDir = path.join(root, 'data')
+const { dataDir, stateRoot, logsDir } = paths
 const aliasesPath = path.join(dataDir, 'aliases.json')
 const groupListsPath = path.join(dataDir, 'group-lists.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
 const baseUrl = 'http://127.0.0.1:3847'
+const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
 
 function usage() {
   console.log(`Usage:
   wa status
+  wa setup
+  wa daemon install|status|restart|uninstall
+  wa migrate-state <old-project-directory>
   wa aliases
   wa alias add <alias> <phone> [display name]
   wa find <name or alias>
@@ -45,6 +52,104 @@ function usage() {
   wa send <alias or phone> <message>
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
   wa send-file <alias or phone> <file> [caption]`)
+}
+
+function run(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: 'utf8', ...options })
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(result.stderr?.trim() || result.stdout?.trim() || `${command} failed`)
+  return result.stdout?.trim() || ''
+}
+
+function tryRun(command, args, options = {}) {
+  return spawnSync(command, args, { encoding: 'utf8', ...options })
+}
+
+async function ensureRuntimeDirectories() {
+  await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 })
+  await fs.chmod(stateRoot, 0o700)
+  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
+  await fs.chmod(dataDir, 0o700)
+  await fs.mkdir(logsDir, { recursive: true, mode: 0o700 })
+  await fs.chmod(logsDir, 0o700)
+}
+
+function launchctlDomain() {
+  return `gui/${process.getuid()}`
+}
+
+async function installDaemon() {
+  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS. Run the bridge with `npm start` on other platforms.')
+  await ensureRuntimeDirectories()
+  await fs.mkdir(path.dirname(launchAgentPath), { recursive: true })
+  const plist = launchAgentPlist({ nodePath: process.execPath, serverPath: path.join(root, 'src', 'server.js'), stateRoot, logsDir })
+  await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
+  tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
+  run('launchctl', ['bootstrap', launchctlDomain(), launchAgentPath])
+}
+
+async function daemonStatus() {
+  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  const result = tryRun('launchctl', ['print', `${launchctlDomain()}/${launchAgentLabel}`])
+  if (result.status !== 0) {
+    console.log(`Daemon not installed or not running. Run: wa daemon install`)
+    return
+  }
+  console.log(result.stdout.trim())
+}
+
+async function restartDaemon() {
+  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  if (!await fileExists(launchAgentPath)) return installDaemon()
+  run('launchctl', ['kickstart', '-k', `${launchctlDomain()}/${launchAgentLabel}`])
+}
+
+async function uninstallDaemon() {
+  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
+  await fs.rm(launchAgentPath, { force: true })
+}
+
+async function fileExists(filename) {
+  try { await fs.access(filename); return true } catch { return false }
+}
+
+async function waitForBridge(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try { return await request('/health') } catch { await new Promise((resolve) => setTimeout(resolve, 500)) }
+  }
+  return null
+}
+
+async function setup() {
+  await installDaemon()
+  const health = await waitForBridge()
+  const qrPath = path.join(dataDir, 'link-qr.png')
+  if (await fileExists(qrPath)) {
+    console.log(`Scan the QR image at: ${qrPath}`)
+    if (process.platform === 'darwin') tryRun('open', [qrPath])
+  } else if (health?.connection === 'open') {
+    console.log('WhatsApp Assistant is already linked and running.')
+  } else {
+    console.log(`Bridge started. Check ${path.join(logsDir, 'bridge.log')} for the pairing QR.`)
+  }
+}
+
+async function migrateState(sourceRoot) {
+  if (!sourceRoot) return usage()
+  const source = path.resolve(sourceRoot)
+  if (source === stateRoot) throw new Error('The source is already the active WhatsApp Assistant state directory.')
+  const sourceAuth = path.join(source, 'auth')
+  const sourceData = path.join(source, 'data')
+  if (!await fileExists(sourceAuth) || !await fileExists(sourceData)) throw new Error(`No auth/ and data/ directories found in ${source}`)
+  if (await fileExists(paths.authDir) || await fileExists(path.join(dataDir, 'mirror.sqlite'))) throw new Error(`The target state already exists at ${stateRoot}. Refusing to overwrite it.`)
+  await ensureRuntimeDirectories()
+  await fs.cp(sourceAuth, paths.authDir, { recursive: true, errorOnExist: true })
+  for (const entry of await fs.readdir(sourceData)) {
+    await fs.cp(path.join(sourceData, entry), path.join(dataDir, entry), { recursive: true, force: false, errorOnExist: true })
+  }
+  console.log(`Migrated private state to ${stateRoot}. Run: wa setup`)
 }
 
 async function loadAliases() {
@@ -351,6 +456,16 @@ function discoveryTerms(list, listName, extras = []) {
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
+  if (command === 'setup') return setup()
+  if (command === 'migrate-state') return migrateState(args[0])
+  if (command === 'daemon') {
+    const action = args[0]
+    if (action === 'install') { await installDaemon(); return console.log(`Daemon installed: ${launchAgentLabel}`) }
+    if (action === 'status') return daemonStatus()
+    if (action === 'restart') { await restartDaemon(); return console.log('Daemon restarted.') }
+    if (action === 'uninstall') { await uninstallDaemon(); return console.log('Daemon removed. Private state was preserved.') }
+    return usage()
+  }
   if (command === 'status') return console.log(JSON.stringify(await request('/health'), null, 2))
   if (command === 'aliases') {
     const aliases = await loadAliases()
