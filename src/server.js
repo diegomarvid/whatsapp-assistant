@@ -20,9 +20,12 @@ import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
+import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
+import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
+import { quotedReplyEnvelope } from './quoted-reply.js'
 import { coverageForChat } from './chat-coverage.js'
 import { loadHistoryPolicy } from './history-policy.js'
-import { MirrorStore } from './mirror-store.js'
+import { MirrorStore, messageKey } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
 
 const { authDir, dataDir } = paths
@@ -53,6 +56,12 @@ let socket = null
 let reconnectTimer = null
 let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], callEvents: [], sync: {} }
 let cacheSaveQueue = Promise.resolve()
+// O(1) message lookups and a bounded persist write set. Every code path that
+// mutates a cached message must call touchMessage so the mirror stays exact;
+// the periodic sweep and shutdown do a full persist as a safety net.
+let messageIndex = new Map()
+let dirtyMessageKeys = new Set()
+let fullPersistPending = true
 let lastLiveMessageAt = null
 let mirrorStore = null
 let msgRetryCounterCache = null
@@ -115,9 +124,31 @@ async function readJson(file, fallback) {
   }
 }
 
-function saveCache() {
+function indexMessages() {
+  messageIndex = new Map(cache.messages.map((message) => [messageKey(message.jid, message.id), message]))
+}
+
+function findMessage(jid, id) {
+  return messageIndex.get(messageKey(jid, id))
+}
+
+function touchMessage(message) {
+  if (message?.jid && message?.id) dirtyMessageKeys.add(messageKey(message.jid, message.id))
+}
+
+function saveCache({ full = false } = {}) {
+  if (full) fullPersistPending = true
   cacheSaveQueue = cacheSaveQueue.catch(() => {}).then(async () => {
-    mirrorStore.persist(cache)
+    const dirty = fullPersistPending ? null : dirtyMessageKeys
+    fullPersistPending = false
+    dirtyMessageKeys = new Set()
+    try {
+      mirrorStore.persist(cache, undefined, { dirtyMessageKeys: dirty })
+    } catch (error) {
+      // Never lose a pending write: retry the whole window on the next persist.
+      fullPersistPending = true
+      throw error
+    }
   })
   return cacheSaveQueue
 }
@@ -352,7 +383,7 @@ function applyIncomingPollVote(raw) {
   const targetKey = update?.pollCreationMessageKey
   const targetJid = targetKey?.remoteJid || raw?.key?.remoteJid
   if (!update?.vote || !targetKey?.id || !targetJid) return false
-  const message = cache.messages.find((item) => item.jid === targetJid && item.id === targetKey.id)
+  const message = findMessage(targetJid, targetKey.id)
   const secret = mirrorStore?.loadPollSecret({ jid: targetJid, id: targetKey.id })
   if (!message?.poll || !secret || !socket?.user?.id) return false
   try {
@@ -362,11 +393,13 @@ function applyIncomingPollVote(raw) {
       pollEncKey: secret,
       voterJid: getKeyAuthor(raw.key, socket.user.id),
     })
-    return applyPollVote(message, {
+    const changed = applyPollVote(message, {
       participant: getKeyAuthor(raw.key, socket.user.id),
       options: namesForPollVote(message.poll, vote.selectedOptions),
       senderTimestampMs: update.senderTimestampMs,
     })
+    if (changed) touchMessage(message)
+    return changed
   } catch (error) {
     mirrorStore?.recordEvent({ event: 'poll_vote_decrypt_failed', jid: targetJid, messageId: targetKey.id, detail: { error: error.message } })
     logger.warn({ err: error, messageId: targetKey.id }, 'Could not decrypt WhatsApp poll vote')
@@ -404,13 +437,15 @@ async function ingestMessages(messages, source = 'history') {
       if (!message) continue
       retainPollSecret(raw, message)
       rememberIdentity(message.participant || (!message.fromMe ? message.jid : null), message.pushName)
-      const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
+      const existing = findMessage(message.jid, message.id)
       if (existing) {
       mergeIncomingMessage(existing, message)
+      touchMessage(existing)
       if (message.pushName && !existing.pushName) {
         existing.pushName = message.pushName
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
-        if (!previousChat.name) cache.chats[message.jid] = { ...previousChat, name: message.pushName }
+        const chatName = chatNameFromMessage(message)
+        if (!previousChat.name && chatName) cache.chats[message.jid] = { ...previousChat, name: chatName }
         changed = true
       }
       if (source === 'live' && existing.source !== 'live') {
@@ -469,11 +504,13 @@ async function ingestMessages(messages, source = 'history') {
       try { await cacheVideoEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain video envelope') }
       try { await cacheStickerEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain sticker envelope') }
       cache.messages.push(message)
+      messageIndex.set(messageKey(message.jid, message.id), message)
+      touchMessage(message)
       const previousChat = cache.chats[message.jid] || {}
       cache.chats[message.jid] = {
         ...previousChat,
         jid: message.jid,
-        name: message.pushName || cache.contacts[message.jid]?.name || previousChat.name || null,
+        name: chatNameFromMessage(message) || cache.contacts[message.jid]?.name || previousChat.name || null,
         lastTimestamp: message.timestamp,
         lastMessage: message.text.slice(0, 240),
         remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), message.timestamp),
@@ -489,7 +526,6 @@ async function ingestMessages(messages, source = 'history') {
     }
   }
   pruneMessages()
-  if (MAX_MESSAGES && cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
   return changed
 }
 
@@ -575,8 +611,11 @@ async function downloadSticker(message) {
 
 function pruneMessages() {
   const cutoff = Math.floor(Date.now() / 1000) - (RETENTION_DAYS * 24 * 60 * 60)
+  const before = cache.messages.length
   cache.messages = cache.messages.filter((message) => message.timestamp >= cutoff)
   cache.messages.sort((a, b) => a.timestamp - b.timestamp)
+  if (MAX_MESSAGES && cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
+  if (cache.messages.length !== before) indexMessages()
 }
 
 function normalizeLimit(value, fallback = 50, ceiling = 200) {
@@ -596,13 +635,13 @@ function listenLocal(server) {
       reject(error)
     }
     server.once('error', onStartupError)
-    server.listen(3847, '127.0.0.1', () => {
+    server.listen(bridgePort(), '127.0.0.1', () => {
       server.off('error', onStartupError)
       server.on('error', (error) => {
         lastError = `Local API error: ${error.message}`
         logger.error({ err: error }, 'Local WhatsApp API error; observer remains alive')
       })
-      console.log('Local WhatsApp API listening on http://127.0.0.1:3847')
+      console.log(`Local WhatsApp API listening on ${bridgeBaseUrl()}`)
       resolve()
     })
   })
@@ -616,7 +655,7 @@ function installGracefulShutdown(server) {
     connection = 'stopping'
     clearTimeout(reconnectTimer)
     Promise.resolve()
-      .then(() => saveCache())
+      .then(() => saveCache({ full: true }))
       .catch((error) => logger.error({ err: error }, 'Could not persist mirror during shutdown'))
       .finally(() => {
         server.close(() => {
@@ -666,13 +705,19 @@ async function applyMessageUpdates(updates) {
           status: update?.status ?? null,
         },
       })
-      const existing = cache.messages.find((message) => message.jid === jid && message.id === id)
+      const existing = findMessage(jid, id)
       if (existing && update?.status !== undefined) {
         // Baileys forwards WhatsApp's receipt timestamp in messageTimestamp for
         // direct chats. Fall back only for updates that genuinely omit it.
-        changed = applyDirectStatus(existing, update.status, update.messageTimestamp, nowSeconds()) || changed
+        const applied = applyDirectStatus(existing, update.status, update.messageTimestamp, nowSeconds())
+        if (applied) touchMessage(existing)
+        changed = applied || changed
       }
-      if (existing && update?.pollUpdates) changed = applyDecodedPollUpdates(existing, update.pollUpdates) || changed
+      if (existing && update?.pollUpdates) {
+        const applied = applyDecodedPollUpdates(existing, update.pollUpdates)
+        if (applied) touchMessage(existing)
+        changed = applied || changed
+      }
       if (!update?.message || Object.keys(update.message).length === 0) continue
       const raw = {
         key,
@@ -698,8 +743,10 @@ async function applyReceiptUpdates(updates) {
     if (!jid || !id) continue
     try {
       mirrorStore?.recordEvent({ event: 'message-receipt.update', jid, messageId: id, detail: { participant: receipt?.userJid || null, receiptTimestamp: Number(receipt?.receiptTimestamp || 0) || null, readTimestamp: Number(receipt?.readTimestamp || 0) || null, playedTimestamp: Number(receipt?.playedTimestamp || 0) || null } })
-      const message = cache.messages.find((item) => item.jid === jid && item.id === id)
-      changed = applyReceipt(message, receipt) || changed
+      const message = findMessage(jid, id)
+      const applied = applyReceipt(message, receipt)
+      if (applied) touchMessage(message)
+      changed = applied || changed
     } catch (error) {
       mirrorStore?.recordEvent({ event: 'message-receipt.update_failed', jid, messageId: id, detail: { error: error.message } })
       logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp receipt update; bridge remains connected')
@@ -716,8 +763,10 @@ async function applyReactionUpdates(updates) {
     if (!jid || !id) continue
     try {
       mirrorStore?.recordEvent({ event: 'messages.reaction', jid, messageId: id, detail: { emoji: reaction?.text || null, participant: reaction?.key?.participant || (reaction?.key?.fromMe ? 'self' : reaction?.key?.remoteJid || null) } })
-      const message = cache.messages.find((item) => item.jid === jid && item.id === id)
-      changed = applyReaction(message, reaction) || changed
+      const message = findMessage(jid, id)
+      const applied = applyReaction(message, reaction)
+      if (applied) touchMessage(message)
+      changed = applied || changed
     } catch (error) {
       mirrorStore?.recordEvent({ event: 'messages.reaction_failed', jid, messageId: id, detail: { error: error.message } })
       logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp reaction update; bridge remains connected')
@@ -752,6 +801,7 @@ async function applyMessageDeletes(deletion) {
     message.documentRef = null
     message.videoRef = null
     message.stickerRef = null
+    touchMessage(message)
     changed = true
   }
   if (deletion?.all && deletion?.jid) {
@@ -760,7 +810,7 @@ async function applyMessageDeletes(deletion) {
     return changed
   }
   for (const key of deletion?.keys || []) {
-    const message = cache.messages.find((item) => item.jid === key.remoteJid && item.id === key.id)
+    const message = findMessage(key.remoteJid, key.id)
     await markDeleted(message)
     mirrorStore?.recordEvent({ event: 'messages.delete', jid: key.remoteJid || null, messageId: key.id || null })
   }
@@ -859,7 +909,13 @@ async function handleHistorySet({ messages, chats, contacts }) {
   await saveCache()
 }
 
-async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) {
+async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, receivedPendingNotifications }) {
+  if (receivedPendingNotifications) {
+    // WhatsApp finished replaying this connection's offline queue: from here a
+    // chat without new events is current, not unobserved.
+    cache.sync.pendingNotificationsFlushedAt = nowSeconds()
+    await saveCache()
+  }
   if (qr) {
     console.log('\nScan this QR in WhatsApp: Settings → Linked devices → Link a device\n')
     qrcodeTerminal.generate(qr, { small: true })
@@ -871,6 +927,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) 
   if (next === 'open') {
     connection = 'open'
     lastError = null
+    reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
     cache.sync.connectedAt = nowSeconds()
     cache.sync.lastConnectedAt = cache.sync.connectedAt
     cache.sync.ingestionHealthy = true
@@ -885,15 +942,51 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) 
     cache.sync.lastDisconnectedAt = nowSeconds()
     cache.sync.ingestionHealthy = false
     await saveCache()
-    if (statusCode !== DisconnectReason.loggedOut) reconnectTimer = setTimeout(() => connect().catch(console.error), 3000)
+    if (statusCode !== DisconnectReason.loggedOut) scheduleReconnect()
     else console.error('WhatsApp logged this bridge out. Delete auth/ and restart to link it again.')
   }
 }
+
+const INITIAL_RECONNECT_DELAY_MS = 3000
+const MAX_RECONNECT_DELAY_MS = 5 * 60 * 1000
+let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
+
+// A thrown connect() (transient DNS, filesystem or Baileys failure) must never
+// leave the bridge silently dead until a manual daemon restart: keep retrying
+// with a capped backoff.
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer)
+  const delayMs = reconnectDelayMs
+  reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS)
+  reconnectTimer = setTimeout(async () => {
+    try {
+      await connect()
+    } catch (error) {
+      lastError = `Reconnect failed: ${error.message}`
+      logger.error({ err: error }, 'Could not reconnect to WhatsApp; retrying with backoff')
+      scheduleReconnect()
+    }
+  }, delayMs)
+}
+
+let chatNamesRepaired = false
 
 async function connect() {
   clearTimeout(reconnectTimer)
   connection = 'connecting'
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
+  if (!chatNamesRepaired) {
+    chatNamesRepaired = true
+    const repairs = repairedChatNames({ chats: cache.chats, messages: cache.messages, contacts: cache.contacts, ownName: state.creds.me?.name || null })
+    for (const repair of repairs) {
+      cache.chats[repair.jid] = { ...cache.chats[repair.jid], name: repair.name }
+      mirrorStore?.recordEvent({ event: 'chat.name_repaired', jid: repair.jid })
+    }
+    if (repairs.length) {
+      console.log(`Repaired ${repairs.length} chat name(s) that carried the account owner's own display name.`)
+      await saveCache()
+    }
+  }
   const { version } = await fetchLatestBaileysVersion()
   socket = makeWASocket({
     version,
@@ -1004,10 +1097,20 @@ async function main() {
   cache = mirrorStore.load()
   if (mirrorStore.isEmpty()) cache = await readJson(cachePath, cache)
   ensureCacheShape()
+  indexMessages()
   markBridgeProcessStarted()
   pruneMessages()
   await saveCache()
   await prunePrivateMedia()
+  // The retention window must also hold on a long-running daemon, not only
+  // across restarts: sweep cached media and mirror cutoffs periodically.
+  setInterval(() => {
+    pruneMessages()
+    Promise.resolve()
+      .then(() => prunePrivateMedia())
+      .then(() => saveCache({ full: true }))
+      .catch((error) => logger.warn({ err: error }, 'Periodic retention sweep failed'))
+  }, 6 * 60 * 60 * 1000).unref()
   const token = await loadToken()
 
   const server = http.createServer((request, response) => {
@@ -1071,15 +1174,24 @@ async function main() {
         if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
-        const quoted = replyToMessageId ? cache.messages.find((message) => message.jid === jid && message.id === replyToMessageId) : null
+        const quoted = replyToMessageId ? findMessage(jid, replyToMessageId) : null
         if (replyToMessageId && !quoted) return json(response, 404, { error: 'reply_target_not_found' })
-        const contextInfo = quoted ? {
-          stanzaId: quoted.id,
-          participant: quoted.participant || undefined,
-          remoteJid: jid,
-          quotedMessage: quoted.text ? { conversation: quoted.text } : undefined,
-        } : undefined
-        const result = await socket.sendMessage(jid, { text: text.trim(), contextInfo, mentions: mentions?.length ? mentions : undefined })
+        const options = quoted ? {
+          quoted: quotedReplyEnvelope({
+            jid,
+            quoted,
+            loadRawMessage: () => {
+              try {
+                const payload = mirrorStore?.loadMessageContent({ jid, id: quoted.id })
+                return payload ? deserialize(payload) : null
+              } catch (error) {
+                logger.warn({ err: error, messageId: quoted.id }, 'Could not load raw quoted content; falling back to cached text')
+                return null
+              }
+            },
+          }),
+        } : {}
+        const result = await socket.sendMessage(jid, { text: text.trim(), mentions: mentions?.length ? mentions : undefined }, options)
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return
@@ -1123,7 +1235,7 @@ async function main() {
     if (isMessageReaction) {
       requestBody(request).then(async ({ jid, messageId, emoji }) => {
         if (!jid || !messageId || typeof emoji !== 'string' || !emoji.trim() || emoji.length > 16) return json(response, 400, { error: 'invalid_reaction' })
-        const message = cache.messages.find((item) => item.jid === jid && item.id === messageId)
+        const message = findMessage(jid, messageId)
         if (!message) return json(response, 404, { error: 'message_not_found' })
         const key = { remoteJid: jid, id: message.id, fromMe: message.fromMe }
         if (message.participant) key.participant = message.participant
@@ -1135,7 +1247,8 @@ async function main() {
     if (isAudioDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
-      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'audioMessage')
+      const found = findMessage(jid, messageId)
+      const message = found?.type === 'audioMessage' ? found : null
       if (!message) return json(response, 404, { error: 'audio_not_found' })
       downloadAudio(message)
         .then((audio) => json(response, 200, { audio }))
@@ -1145,7 +1258,8 @@ async function main() {
     if (isImageDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
-      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'imageMessage')
+      const found = findMessage(jid, messageId)
+      const message = found?.type === 'imageMessage' ? found : null
       if (!message) return json(response, 404, { error: 'image_not_found' })
       downloadImage(message)
         .then((image) => json(response, 200, { image }))
@@ -1155,7 +1269,8 @@ async function main() {
     if (isDocumentDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
-      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'documentMessage')
+      const found = findMessage(jid, messageId)
+      const message = found?.type === 'documentMessage' ? found : null
       if (!message) return json(response, 404, { error: 'document_not_found' })
       downloadDocument(message).then((document) => json(response, 200, { document })).catch((error) => json(response, 422, { error: 'document_download_failed', message: error.message }))
       return
@@ -1163,7 +1278,8 @@ async function main() {
     if (isVideoDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
-      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'videoMessage')
+      const found = findMessage(jid, messageId)
+      const message = found?.type === 'videoMessage' ? found : null
       if (!message) return json(response, 404, { error: 'video_not_found' })
       downloadVideo(message).then((video) => json(response, 200, { video })).catch((error) => json(response, 422, { error: 'video_download_failed', message: error.message }))
       return
@@ -1171,7 +1287,8 @@ async function main() {
     if (isStickerDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
-      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'stickerMessage')
+      const found = findMessage(jid, messageId)
+      const message = found?.type === 'stickerMessage' ? found : null
       if (!message) return json(response, 404, { error: 'sticker_not_found' })
       downloadSticker(message).then((sticker) => json(response, 200, { sticker })).catch((error) => json(response, 422, { error: 'sticker_download_failed', message: error.message }))
       return
@@ -1206,7 +1323,14 @@ async function main() {
   })
   await listenLocal(server)
   installGracefulShutdown(server)
-  await connect()
+  try {
+    await connect()
+  } catch (error) {
+    connection = 'disconnected'
+    lastError = `Initial connect failed: ${error.message}`
+    logger.error({ err: error }, 'Could not start the WhatsApp connection; retrying with backoff')
+    scheduleReconnect()
+  }
 }
 
 main().catch((error) => {

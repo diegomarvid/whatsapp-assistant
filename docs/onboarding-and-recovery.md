@@ -225,6 +225,14 @@ messages. Both commands resolve the current LID first and then require fresh
 coverage. Group JIDs (`…@g.us`) can be passed directly to `coverage` and other
 read commands; only direct contacts use LID resolution.
 
+A chat is `fresh` when the bridge is connected and healthy and either the chat
+was observed on this connection or WhatsApp confirmed it finished replaying the
+connection's offline queue (so a quiet chat is genuinely unchanged, not merely
+unobserved). A remote cursor ahead of the local cache still marks the chat
+`stale`. Right after a reconnect, `chat_not_observed_after_connection` can
+appear briefly until that offline queue is drained; wait a few seconds and
+re-run `wa coverage` instead of resetting anything.
+
 ## Recovery checklist — before ever asking for a QR
 
 1. Check the daemon and cache:

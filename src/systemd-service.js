@@ -27,10 +27,11 @@ export function systemdUserUnitPath({ home, env = process.env }) {
   return path.join(configHome, 'systemd', 'user', systemdServiceName)
 }
 
-export function systemdUserUnit({ nodePath, entryPath, entryArguments = [], stateRoot, logsDir, workingDirectory = path.dirname(entryPath) }) {
+export function systemdUserUnit({ nodePath, entryPath, entryArguments = [], stateRoot, logsDir, workingDirectory = path.dirname(entryPath), bridgePort = null }) {
   const stdoutPath = path.join(logsDir, 'bridge.log')
   const stderrPath = path.join(logsDir, 'bridge-error.log')
   const execStart = [nodePath, entryPath, ...entryArguments].map(quoted).join(' ')
+  const bridgePortLine = bridgePort ? `Environment="WA_BRIDGE_PORT=${escapeSystemdValue(bridgePort)}"\n` : ''
   return `[Unit]
 Description=WhatsApp Assistant local bridge
 After=network-online.target
@@ -40,7 +41,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${directivePath(workingDirectory)}
 Environment="WA_STATE_DIR=${escapeSystemdValue(stateRoot)}"
-Environment="PATH=${escapeSystemdValue(`${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`)}"
+${bridgePortLine}Environment="PATH=${escapeSystemdValue(`${path.dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`)}"
 ExecStart=${execStart}
 Restart=always
 RestartSec=10

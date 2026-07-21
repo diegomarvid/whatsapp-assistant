@@ -314,6 +314,7 @@ usuario si prefiere descargarlo o indicar una carpeta local existente:
 wa transcribe config model-path /ruta/al/modelo
 wa transcribe config model mlx-community/whisper-large-v3-turbo
 wa transcribe pull mlx-community/whisper-large-v3-turbo
+wa transcribe config language en   # default: es; "auto" delega la detección a Whisper
 ```
 
 En macOS, `mlx-whisper` necesita `ffmpeg` disponible; instalalo con `brew
@@ -366,7 +367,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa links contacto` | URLs HTTP(S) literales del chat, con ID, autor, hora y cobertura del mirror; no abre ni resume destinos. |
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
-| `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |
+| `wa search-all "Oracle" [--since 7d] [--ids]` | Busca texto en todos los chats de la ventana retenida (toda la ventana si no se acota) e indica de qué chat es cada resultado. |
 
 > `latest` incluye tus propios mensajes; para “¿qué me mandó X?”, usar siempre
 > `latest-incoming`. Ambos exigen cobertura reciente antes de responder.
@@ -458,8 +459,11 @@ mensajes nuevos pueden llegar bajo el LID aunque un alias viejo señale al PN.
    SQLite antes de que el CLI lo consulte.
 2. Cuando se consulta un contacto directo, el CLI pide `/resolve`: el bridge
    traduce PN → LID actual usando el mapping de Baileys.
-3. `coverage` comprueba conexión, salud del observer y cursor. Si no está
-   `fresh`, el CLI no inventa un “último mensaje” ni actúa sobre uno viejo.
+3. `coverage` comprueba conexión, salud del observer y cursor. Un chat sin
+   eventos nuevos cuenta como `fresh` recién cuando WhatsApp confirmó que
+   drenó la cola offline de la conexión actual; hasta entonces —o si el cursor
+   remoto está adelante del mirror— el CLI no inventa un “último mensaje” ni
+   actúa sobre uno viejo.
 4. Una acción usa el JID y el message ID que salieron de esa misma lectura
    confirmada.
 
@@ -517,14 +521,25 @@ Todas las rutas, salvo `GET /health`, requieren:
 Authorization: Bearer <contenido de data/bridge-token>
 ```
 
+El endpoint default es `127.0.0.1:3847`; se puede cambiar con la variable
+`WA_BRIDGE_PORT` (si está definida al correr `wa setup`, queda fijada en el
+servicio). El CLI y el bridge la leen del mismo lugar, y la API nunca deja de
+ser loopback-only.
+
 | Ruta | Uso |
 | --- | --- |
 | `GET /health` | Estado de conexión, sin token. |
 | `GET /snapshot` | Vista reciente consistente del mirror. |
 | `GET /resolve?jid=<jid>` | Resuelve un PN al LID vivo conocido por Baileys. |
+| `GET /coverage?jid=<jid>` | Frescura verificable de un chat (`fresh`, razones y timestamps). |
 | `GET /chats?limit=50` | Chats conocidos, más recientes primero. |
 | `GET /messages?jid=<jid>&limit=50` | Mensajes sincronizados de un chat. |
 | `GET /search?q=<texto>&limit=30` | Búsqueda local en mensajes recientes. |
+| `GET /groups` / `GET /groups?jid=<jid>` | Grupos participados o detalle con participantes. |
+| `POST /messages/send` | Envía texto, opcionalmente citando un mensaje (usa el envelope raw local para que la cita de media renderice) y con menciones. |
+| `POST /messages/react` | Reacciona a un mensaje concreto. |
+| `POST /documents/send` / `POST /media/send` | Envía documento, imagen, video o audio desde un path local. |
+| `POST /audio\|images\|videos\|stickers\|documents/download` | Descarga selectiva del adjunto de un mensaje. |
 
 ---
 

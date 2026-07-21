@@ -19,11 +19,17 @@ export function coverageForChat({ chat, messages, connection, sync, retentionDay
   // below still rejects it when the returned messages do not reach that cursor.
   const observedAfterConnection = [lastObservedLiveAt, lastObservedHistoryAt]
     .some((observedAt) => observedAt && (!connectedAt || observedAt >= connectedAt))
+  // WhatsApp confirms when the offline notification queue of this connection
+  // has been fully delivered. After that point, a chat with no new events is
+  // genuinely unchanged, not merely unobserved; requiring per-chat activity
+  // would wrongly mark every quiet chat stale after each reconnect.
+  const offlineQueueFlushedAt = numberOrNull(sync?.pendingNotificationsFlushedAt)
+  const offlineQueueDrained = Boolean(offlineQueueFlushedAt && connectedAt && offlineQueueFlushedAt >= connectedAt)
   const reasons = []
 
   if (connection !== 'open') reasons.push('bridge_not_connected')
   if (sync?.ingestionHealthy === false) reasons.push('ingestion_unhealthy')
-  if (!observedAfterConnection) reasons.push('chat_not_observed_after_connection')
+  if (!observedAfterConnection && !offlineQueueDrained) reasons.push('chat_not_observed_after_connection')
   if (remoteLatestAt && (!latestMessageAt || remoteLatestAt > latestMessageAt)) reasons.push('remote_chat_ahead_of_cache')
 
   return {
@@ -36,6 +42,7 @@ export function coverageForChat({ chat, messages, connection, sync, retentionDay
     lastPersistedAt,
     lastObservedLiveAt,
     lastObservedHistoryAt,
+    offlineQueueFlushedAt,
     observerStartedAt: numberOrNull(sync?.observerStartedAt),
     lastDisconnectedAt: numberOrNull(sync?.lastDisconnectedAt),
     retentionDays,

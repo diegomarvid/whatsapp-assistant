@@ -2,6 +2,8 @@
 import sys
 
 backend, model_path, language, audio_path = sys.argv[1:]
+# "auto" delegates language detection to Whisper itself.
+language = None if language == "auto" else language
 
 if backend == "mlx":
     import mlx_whisper

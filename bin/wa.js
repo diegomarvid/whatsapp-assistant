@@ -13,15 +13,19 @@ import { paths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
 import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
 import { linksInText } from '../src/message-normalizer.js'
+import { isDirectChat, parseSince, searchAllMatches } from '../src/search-scope.js'
+import { bridgeBaseUrl } from '../src/bridge-endpoint.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const packageInfo = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
+const npmInstallCommand = `npm install -g ${packageInfo.name}`
 const { dataDir, stateRoot, logsDir } = paths
 const aliasesPath = path.join(dataDir, 'aliases.json')
 const groupListsPath = path.join(dataDir, 'group-lists.json')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
-const baseUrl = 'http://127.0.0.1:3847'
+const baseUrl = bridgeBaseUrl()
 const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
 const systemdUnitPath = systemdUserUnitPath({ home: os.homedir() })
 const transcriptionConfigPath = path.join(dataDir, 'transcription.json')
@@ -42,7 +46,7 @@ Linux / VPS (Node 22+ y systemd):
   # Si falta Node 22+, instalarlo como usuario normal:
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
   . "$HOME/.nvm/nvm.sh" && nvm install 22
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz
+  ${npmInstallCommand}
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -79,12 +83,12 @@ Comandos:
   wa help data                       # qué datos recientes son históricos y cuáles requieren observación activa
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
-  wa search-all <text> [--since 7d] [--direct|--groups <list>]
+  wa search-all <text> [--since 7d] [--direct|--groups <list>] [--ids]
   wa transcribe <alias or phone> latest
   wa transcribe setup                # instala sólo el runtime Python privado
   wa transcribe doctor               # runtime y modelos locales, sin descargar
   wa transcribe pull [modelo]        # descarga un modelo explícitamente
-  wa transcribe config show|model <id>|model-path <dir>
+  wa transcribe config show|model <id>|model-path <dir>|language <code|auto>
   wa audios <alias or phone> [limit]
   wa audio <alias or phone> <message-id>
   wa images <alias or phone> [limit]
@@ -110,7 +114,7 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
@@ -226,9 +230,10 @@ async function installDaemon() {
   const entryArguments = process.env.WA_DAEMON_ENTRY ? ['__daemon'] : []
   const nodePath = process.env.WA_DAEMON_NODE || process.execPath
   const workingDirectory = process.env.WA_DAEMON_CWD || path.dirname(serverPath)
+  const bridgePort = process.env.WA_BRIDGE_PORT || null
   if (process.platform === 'linux') {
     await fs.mkdir(path.dirname(systemdUnitPath), { recursive: true, mode: 0o700 })
-    const unit = systemdUserUnit({ nodePath, entryPath, entryArguments, stateRoot, logsDir, workingDirectory })
+    const unit = systemdUserUnit({ nodePath, entryPath, entryArguments, stateRoot, logsDir, workingDirectory, bridgePort })
     await fs.writeFile(systemdUnitPath, unit, { mode: 0o600 })
     run('systemctl', ['--user', 'daemon-reload'])
     run('systemctl', ['--user', 'enable', '--now', systemdServiceName])
@@ -244,6 +249,7 @@ async function installDaemon() {
     entryPath,
     entryArguments,
     workingDirectory,
+    bridgePort,
   })
   await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
   tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
@@ -328,6 +334,15 @@ async function showQr() {
   }
 }
 
+async function installedBaileysVersion() {
+  try {
+    const { createRequire } = await import('node:module')
+    return createRequire(path.join(root, 'package.json'))('baileys/package.json').version
+  } catch {
+    return null
+  }
+}
+
 async function doctor() {
   let health = null
   try { health = await request('/health') } catch {}
@@ -343,6 +358,8 @@ async function doctor() {
         : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.'
   console.log(JSON.stringify({
     stateRoot,
+    version: packageInfo.version,
+    baileysVersion: await installedBaileysVersion(),
     daemon,
     authExists: await fileExists(paths.authDir),
     sqliteExists: await fileExists(path.join(dataDir, 'mirror.sqlite')),
@@ -430,10 +447,6 @@ function phoneFromJid(jid) {
   return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
 }
 
-function isDirectChat(jid) {
-  return Boolean(jid) && !jid.endsWith('@g.us') && !jid.endsWith('@broadcast')
-}
-
 function normalizeText(value) {
   return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
@@ -483,11 +496,11 @@ async function resolve(target) {
   throw new Error(`Unknown alias “${target}”. Run: wa alias add ${target} <phone> "Name"`)
 }
 
-async function request(endpoint) {
+async function request(endpoint, { timeoutMs = 5000 } = {}) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   let response
   try {
-    response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) })
+    response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) })
   } catch (error) {
     throw new Error(`WhatsApp observer unavailable: ${error.name === 'TimeoutError' ? 'request timed out' : error.message}`)
   }
@@ -496,7 +509,9 @@ async function request(endpoint) {
 }
 
 async function readSnapshot() {
-  return request('/snapshot')
+  // The snapshot grows with extended retention; give it more room than the
+  // point queries before declaring the observer unavailable.
+  return request('/snapshot', { timeoutMs: 20000 })
 }
 
 async function requireFreshCoverage(contact) {
@@ -666,6 +681,7 @@ async function transcriptionDoctor() {
   console.log(JSON.stringify({
     ...runtime,
     configuredModel: config.model || null,
+    language: config.language || 'es',
     runtimePath: transcriptionPythonPath,
     ffmpegAvailable,
     cachedCompatibleModels: cachedCompatibleModels(runtime.backend, { home: os.homedir() }),
@@ -715,16 +731,23 @@ async function configureTranscription(args) {
   const action = args.shift()
   if (action === 'show') return transcriptionDoctor()
   const value = args.join(' ').trim()
-  if (!value || !['model', 'model-path'].includes(action)) throw new Error('Use: wa transcribe config show|model <huggingface-id>|model-path <directory>')
+  if (!value || !['model', 'model-path', 'language'].includes(action)) throw new Error('Use: wa transcribe config show|model <huggingface-id>|model-path <directory>|language <code|auto>')
+  const config = await loadTranscriptionConfig()
+  if (action === 'language') {
+    const language = value.toLocaleLowerCase()
+    if (language !== 'auto' && !/^[a-z]{2,3}$/.test(language)) throw new Error('Use an ISO language code such as es or en, or auto for Whisper detection.')
+    await saveTranscriptionConfig({ ...config, language })
+    return console.log(`Configured transcription language: ${language}`)
+  }
   if (action === 'model-path') {
     const absolutePath = path.resolve(value)
     const stat = await fs.stat(absolutePath).catch(() => null)
     if (!stat?.isDirectory()) throw new Error(`Model directory not found: ${absolutePath}`)
-    await saveTranscriptionConfig({ model: absolutePath })
+    await saveTranscriptionConfig({ ...config, model: absolutePath })
     return console.log(`Configured local Whisper model: ${absolutePath}`)
   }
   if (!/^[^\s/]+\/[^\s/]+$/.test(value)) throw new Error('Use a Hugging Face model ID such as mlx-community/whisper-large-v3-turbo.')
-  await saveTranscriptionConfig({ model: value })
+  await saveTranscriptionConfig({ ...config, model: value })
   console.log(`Configured Whisper model: ${value}. It will not download until you run wa transcribe pull.`)
 }
 
@@ -738,7 +761,8 @@ async function transcribe(audioPath) {
   }
   if (!runtime.runtimeInstalled) throw new Error(`Could not initialize the private ${runtime.backend} transcription runtime. Run \`wa transcribe setup\` for the detailed installer output.`)
   if (!runtime.selected) throw new Error(`No compatible Whisper model is installed locally. Ask the user before downloading ${runtime.defaultModel}; then run: wa transcribe pull ${runtime.defaultModel}`)
-  const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, 'es', audioPath], { timeout: 10 * 60 * 1000 })
+  const language = config.language || 'es'
+  const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, language, audioPath], { timeout: 10 * 60 * 1000 })
   return result.trim()
 }
 
@@ -784,10 +808,15 @@ function linksForMessage(message) {
   return Array.isArray(message.links) && message.links.length ? message.links : linksInText(message.text)
 }
 
-function printMessages(messages, { ids = false } = {}) {
-  if (!messages.length) return console.log('No hay mensajes cacheados para este chat.')
+function chatLabel(jid, cache) {
+  const name = cache?.contacts?.[jid]?.name || cache?.chats?.[jid]?.name || null
+  return name ? `${name} (${jid})` : jid
+}
+
+function printMessages(messages, { ids = false, cache = null, empty = 'No hay mensajes cacheados para este chat.' } = {}) {
+  if (!messages.length) return console.log(empty)
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
-    const author = message.fromMe ? 'Vos' : 'Contacto'
+    const author = message.fromMe ? 'Vos' : message.pushName || 'Contacto'
     const text = message.deleted ? '[mensaje eliminado]' : message.text || `[${message.type}]`
     const structured = message.location ? `ubicación: ${message.location.latitude ?? '?'} , ${message.location.longitude ?? '?'}`
       : message.contacts?.length ? `${message.contacts.length} contacto(s)`
@@ -799,7 +828,8 @@ function printMessages(messages, { ids = false } = {}) {
     const status = message.fromMe && message.status !== null && message.status !== undefined ? `estado ${['error', 'pendiente', 'enviado', 'entregado', 'leído', 'reproducido'][message.status] || message.status}` : null
     const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null, message.edited ? 'editado' : null, message.ephemeral ? 'efímero' : null, message.viewOnce ? 'view-once no expuesto' : null, structured, status].filter(Boolean).join(' · ')
     const source = message.source === 'live' ? '' : ' [cache histórico]'
-    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
+    const chat = cache ? `[${chatLabel(message.jid, cache)}] ` : ''
+    console.log(`${chat}${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
   }
 }
 
@@ -826,7 +856,7 @@ async function cacheMatches(query) {
       lastTimestamp: 0,
       matchingText: null,
     }
-    if (message.pushName) signal.names.add(message.pushName)
+    if (message.pushName && !message.fromMe) signal.names.add(message.pushName)
     signal.messageCount += 1
     signal.lastTimestamp = Math.max(signal.lastTimestamp, message.timestamp || 0)
     if (!signal.matchingText && normalized && normalizeText(message.text || '').includes(normalized)) signal.matchingText = message.text
@@ -902,6 +932,7 @@ function discoveryTerms(list, listName, extras = []) {
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
+  if (command === '--version' || command === '-v' || command === 'version') return console.log(packageInfo.version)
   if (command === 'help') return help(args[0])
   if (command === '__daemon') return import('../src/server.js')
   if (command === 'doctor') return doctor()
@@ -1095,25 +1126,30 @@ async function main() {
   if (command === 'search-all') {
     const query = args.shift()?.trim()
     if (!query) return usage()
-    let sinceSeconds = 0
+    let sinceSeconds = null
     let scope = 'all'
     let groupList = null
+    let ids = false
     while (args.length) {
       const option = args.shift()
-      if (option === '--since') {
-        const value = args.shift() || ''
-        const match = value.match(/^(\d+)(h|d)$/)
-        if (!match) throw new Error('Use --since <n>h or <n>d')
-        sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
-      } else if (option === '--direct') scope = 'direct'
+      if (option === '--since') sinceSeconds = parseSince(args.shift())
+      else if (option === '--direct') scope = 'direct'
       else if (option === '--groups') { scope = 'groups'; groupList = args.shift() || null }
+      else if (option === '--ids') ids = true
       else throw new Error(`Unknown option: ${option}`)
     }
     const cache = await readSnapshot()
     const allowedGroups = groupList ? new Set((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
-    const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
-    const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
-    return printMessages(matches)
+    const matches = searchAllMatches({
+      messages: cache.messages,
+      query,
+      nowSeconds: Math.floor(Date.now() / 1000),
+      sinceSeconds,
+      scope,
+      allowedGroups,
+      limit: 100,
+    })
+    return printMessages(matches, { ids, cache, empty: 'Sin coincidencias en la ventana local retenida.' })
   }
   if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'links' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
     const target = args.shift()
@@ -1129,7 +1165,7 @@ async function main() {
     if (command === 'latest' || command === 'latest-incoming') {
       await requireFreshCoverage(contact)
       const latest = command === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages[0]
-      if (!latest) return console.log('No hay mensajes entrantes cacheados para este chat.')
+      if (!latest) return console.log(command === 'latest-incoming' ? 'No hay mensajes entrantes cacheados para este chat.' : 'No hay mensajes cacheados para este chat.')
       return printMessages([latest], { ids: args.includes('--ids') })
     }
     if (command === 'history') {

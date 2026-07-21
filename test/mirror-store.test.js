@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { MirrorStore } from '../src/mirror-store.js'
+import { MirrorStore, messageKey } from '../src/mirror-store.js'
 
 test('persists recent messages atomically without retaining older history', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
@@ -89,5 +89,36 @@ test('persists retry counters across a store reopen', () => {
   reopenedRetryCache.del('message:participant')
   assert.equal(reopenedRetryCache.get('message:participant'), undefined)
   reopened.close()
+  fs.rmSync(directory, { recursive: true, force: true })
+})
+
+test('a dirty-key persist only rewrites the touched messages but still prunes by time', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
+  const filename = path.join(directory, 'mirror.sqlite')
+  const store = new MirrorStore(filename, { retentionDays: 7 })
+  const now = 1_000_000
+  const state = {
+    messages: [
+      { jid: 'chat@lid', id: 'one', timestamp: now - 10, text: 'first' },
+      { jid: 'chat@lid', id: 'two', timestamp: now - 5, text: 'second' },
+    ],
+    chats: {},
+    contacts: {},
+    groupEvents: [],
+    callEvents: [],
+    sync: {},
+  }
+  store.persist(state, now)
+
+  state.messages[0].text = 'first-changed-but-not-marked'
+  state.messages[1].text = 'second-changed'
+  store.persist(state, now, { dirtyMessageKeys: new Set([messageKey('chat@lid', 'two')]) })
+  const texts = Object.fromEntries(store.load().messages.map((message) => [message.id, message.text]))
+  assert.equal(texts.one, 'first', 'an untouched message must not be rewritten')
+  assert.equal(texts.two, 'second-changed')
+
+  store.persist(state, now + (8 * 86400), { dirtyMessageKeys: new Set() })
+  assert.deepEqual(store.load().messages, [], 'time-based pruning still runs with an empty dirty set')
+  store.close()
   fs.rmSync(directory, { recursive: true, force: true })
 })
