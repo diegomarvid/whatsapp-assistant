@@ -18,6 +18,7 @@ test('persists recent messages atomically without retaining older history', () =
     chats: { 'chat@lid': { jid: 'chat@lid', lastTimestamp: now - 1 } },
     contacts: { 'chat@lid': { id: 'chat@lid', name: 'Flor' } },
     groupEvents: [],
+    callEvents: [],
     sync: { observerStartedAt: now - 10 },
   }, now)
   store.close()
@@ -28,6 +29,7 @@ test('persists recent messages atomically without retaining older history', () =
     chats: { 'chat@lid': { jid: 'chat@lid', lastTimestamp: now - 1 } },
     contacts: { 'chat@lid': { id: 'chat@lid', name: 'Flor' } },
     groupEvents: [],
+    callEvents: [],
     sync: { observerStartedAt: now - 10 },
   })
   reopened.close()

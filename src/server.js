@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
+  Browsers,
   DisconnectReason,
   decryptPollVote,
   downloadMediaMessage,
@@ -19,7 +20,8 @@ import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
-import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
+import { coverageForChat } from './chat-coverage.js'
+import { loadHistoryPolicy } from './history-policy.js'
 import { MirrorStore } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
 
@@ -39,16 +41,17 @@ const videoEnvelopeDir = path.join(dataDir, 'video-envelopes')
 const downloadedVideoDir = path.join(dataDir, 'videos')
 const stickerEnvelopeDir = path.join(dataDir, 'sticker-envelopes')
 const downloadedStickerDir = path.join(dataDir, 'stickers')
-// Keep only recent operational context. The bridge must never become a private
-// archive of the whole account.
-const MAX_MESSAGES = 10000
-const RETENTION_DAYS = RECENT_RETENTION_DAYS
+// Keep a bounded local context. Seven days is the privacy-safe default; a user
+// may deliberately widen the window through the private history policy.
+let MAX_MESSAGES = 10000
+let RETENTION_DAYS = 7
+let historyPolicy = null
 
 let connection = 'starting'
 let lastError = null
 let socket = null
 let reconnectTimer = null
-let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], sync: {} }
+let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], callEvents: [], sync: {} }
 let cacheSaveQueue = Promise.resolve()
 let lastLiveMessageAt = null
 let mirrorStore = null
@@ -124,6 +127,7 @@ function ensureCacheShape() {
   cache.chats = cache.chats && typeof cache.chats === 'object' ? cache.chats : {}
   cache.contacts = cache.contacts && typeof cache.contacts === 'object' ? cache.contacts : {}
   cache.groupEvents = Array.isArray(cache.groupEvents) ? cache.groupEvents : []
+  cache.callEvents = Array.isArray(cache.callEvents) ? cache.callEvents : []
   cache.sync = cache.sync && typeof cache.sync === 'object' ? cache.sync : {}
 }
 
@@ -148,6 +152,7 @@ function chatCoverage(jid) {
     messages: cache.messages.filter((message) => message.jid === jid),
     connection,
     sync: cache.sync,
+    retentionDays: RETENTION_DAYS,
   })
 }
 
@@ -484,7 +489,7 @@ async function ingestMessages(messages, source = 'history') {
     }
   }
   pruneMessages()
-  if (cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
+  if (MAX_MESSAGES && cache.messages.length > MAX_MESSAGES) cache.messages = cache.messages.slice(-MAX_MESSAGES)
   return changed
 }
 
@@ -792,30 +797,62 @@ function applyGroupMetadataUpdates(updates, kind) {
   return changed
 }
 
-function auditCalls(calls) {
-  for (const call of calls || []) mirrorStore?.recordEvent({ event: 'call', jid: call.chatId || call.groupJid || call.from || null, messageId: call.id || null, detail: { status: call.status || null, video: Boolean(call.isVideo), group: Boolean(call.isGroup) } })
+function recordCalls(calls) {
+  let changed = false
+  for (const call of calls || []) {
+    const event = {
+      id: call.id || crypto.randomUUID(),
+      timestamp: Number(call.date ? new Date(call.date).getTime() / 1000 : nowSeconds()) || nowSeconds(),
+      chatId: call.chatId || null,
+      groupJid: call.groupJid || null,
+      from: call.from || null,
+      callerPn: call.callerPn || null,
+      status: call.status || null,
+      video: Boolean(call.isVideo),
+      group: Boolean(call.isGroup),
+      offline: Boolean(call.offline),
+      latencyMs: Number(call.latencyMs || 0) || null,
+    }
+    const index = cache.callEvents.findIndex((item) => item.id === event.id)
+    if (index >= 0) cache.callEvents[index] = { ...cache.callEvents[index], ...event }
+    else cache.callEvents.push(event)
+    mirrorStore?.recordEvent({ event: 'call', jid: event.chatId || event.groupJid || event.from, messageId: event.id, detail: { status: event.status, video: event.video, group: event.group } })
+    changed = true
+  }
+  const cutoff = nowSeconds() - (RETENTION_DAYS * 24 * 60 * 60)
+  cache.callEvents = cache.callEvents.filter((event) => event.timestamp >= cutoff).slice(-2000)
+  return changed
+}
+
+function mergeChat(chat) {
+  if (!chat?.id) return false
+  const previous = cache.chats[chat.id] || {}
+  const remoteLastTimestamp = Number(chat.conversationTimestamp || 0)
+  cache.chats[chat.id] = {
+    ...previous,
+    ...chat,
+    jid: chat.id,
+    name: chat.name || previous.name || null,
+    lastTimestamp: Math.max(Number(previous.lastTimestamp || 0), remoteLastTimestamp),
+    remoteLastTimestamp: Math.max(Number(previous.remoteLastTimestamp || 0), remoteLastTimestamp),
+  }
+  return true
+}
+
+function mergeContact(contact) {
+  if (!contact?.id) return false
+  const previous = cache.contacts[contact.id] || {}
+  cache.contacts[contact.id] = {
+    ...previous,
+    id: contact.id,
+    name: contact.name || contact.notify || contact.verifiedName || previous.name || null,
+  }
+  return true
 }
 
 async function handleHistorySet({ messages, chats, contacts }) {
-  for (const chat of chats || []) {
-    if (chat.id) {
-      const previousChat = cache.chats[chat.id] || {}
-      const remoteLastTimestamp = Number(chat.conversationTimestamp || 0)
-      cache.chats[chat.id] = {
-        ...previousChat,
-        jid: chat.id,
-        name: chat.name || previousChat.name || null,
-        lastTimestamp: Math.max(Number(previousChat.lastTimestamp || 0), remoteLastTimestamp),
-        remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), remoteLastTimestamp),
-      }
-    }
-  }
-  for (const contact of contacts || []) {
-    if (contact.id) cache.contacts[contact.id] = {
-      id: contact.id,
-      name: contact.name || contact.notify || contact.verifiedName || null,
-    }
-  }
+  for (const chat of chats || []) mergeChat(chat)
+  for (const contact of contacts || []) mergeContact(contact)
   cache.sync.lastHistorySyncAt = nowSeconds()
   await ingestMessages(messages || [], 'history')
   cache.sync.lastPersistedAt = nowSeconds()
@@ -862,7 +899,8 @@ async function connect() {
     version,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger,
-    syncFullHistory: false,
+    syncFullHistory: historyPolicy.syncFullHistory,
+    ...(historyPolicy.syncFullHistory ? { browser: Browsers.macOS('Desktop') } : {}),
     markOnlineOnConnect: false,
     getMessage: getMessageFromMirror,
     msgRetryCounterCache,
@@ -873,6 +911,14 @@ async function connect() {
       if (events['creds.update']) await saveCreds()
       if (events['connection.update']) await handleConnectionUpdate(events['connection.update'])
       if (events['messaging-history.set']) await handleHistorySet(events['messaging-history.set'])
+      if (events['messaging-history.status']) {
+        cache.sync.historySync = { ...events['messaging-history.status'], observedAt: nowSeconds() }
+        await saveCache()
+      }
+      if (events['chats.upsert']?.map(mergeChat).some(Boolean)) await saveCache()
+      if (events['chats.update']?.map(mergeChat).some(Boolean)) await saveCache()
+      if (events['contacts.upsert']?.map(mergeContact).some(Boolean)) await saveCache()
+      if (events['contacts.update']?.map(mergeContact).some(Boolean)) await saveCache()
       if (events['messages.upsert']) {
         const { messages } = events['messages.upsert']
         lastLiveMessageAt = nowSeconds()
@@ -919,7 +965,15 @@ async function connect() {
       if (events['groups.upsert']) {
         if (applyGroupMetadataUpdates(events['groups.upsert'], 'metadata_upsert')) await saveCache()
       }
-      if (events.call) auditCalls(events.call)
+      if (events['group.join-request']) {
+        const update = events['group.join-request']
+        if (appendGroupEvent({ groupJid: update.id, kind: 'join_request', action: update.action || null, participant: update.participant || null, author: update.author || null })) await saveCache()
+      }
+      if (events['group.member-tag.update']) {
+        const update = events['group.member-tag.update']
+        if (appendGroupEvent({ groupJid: update.groupId, kind: 'member_tag', action: update.label || null, participant: update.participant || null })) await saveCache()
+      }
+      if (events.call && recordCalls(events.call)) await saveCache()
     } catch (error) {
       cache.sync.ingestionHealthy = false
       cache.sync.lastIngestError = error.message
@@ -932,6 +986,9 @@ async function connect() {
 async function main() {
   await ensurePrivateDir(authDir)
   await ensurePrivateDir(dataDir)
+  historyPolicy = await loadHistoryPolicy(dataDir)
+  RETENTION_DAYS = historyPolicy.retentionDays
+  MAX_MESSAGES = historyPolicy.maxMessages
   await ensurePrivateDir(audioEnvelopeDir)
   await ensurePrivateDir(downloadedAudioDir)
   await ensurePrivateDir(imageEnvelopeDir)
@@ -966,7 +1023,7 @@ async function main() {
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isDocumentSend && !isMediaSend) return json(response, 405, { error: 'method_not_allowed' })
-    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
+    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (request.method === 'GET' && url.pathname === '/resolve') {

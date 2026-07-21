@@ -35,6 +35,32 @@ test('extracts literal http links without interpreting their destination', () =>
   assert.deepEqual(linksInText('Sin links o ftp://example.com.'), [])
 })
 
+test('preserves reply, mention, forward, preview and media facts without exposing view-once quotes', () => {
+  const message = safeMessage({
+    key: { id: 'facts-1', remoteJid: 'chat@lid' },
+    message: {
+      imageMessage: {
+        caption: 'Miralo', mimetype: 'image/jpeg', fileLength: 1234, width: 800, height: 600,
+        contextInfo: {
+          stanzaId: 'quoted-1', participant: 'ana@lid', remoteJid: 'chat@lid', mentionedJid: ['bea@lid'], isForwarded: true, forwardingScore: 2,
+          quotedMessage: { extendedTextMessage: { text: 'mensaje citado' } },
+        },
+      },
+    },
+  })
+  assert.deepEqual(message.quoted, { id: 'quoted-1', participant: 'ana@lid', remoteJid: 'chat@lid', type: 'extendedTextMessage', text: 'mensaje citado', viewOnce: false })
+  assert.deepEqual(message.mentions, ['bea@lid'])
+  assert.equal(message.forwarded, true)
+  assert.equal(message.forwardingScore, 2)
+  assert.deepEqual(message.media, { mimetype: 'image/jpeg', bytes: 1234, width: 800, height: 600, seconds: null, voiceNote: false, gif: false, fileName: null, pageCount: null })
+
+  const preview = safeMessage({
+    key: { id: 'preview-1', remoteJid: 'chat@lid' },
+    message: { extendedTextMessage: { text: 'https://example.com', matchedText: 'https://example.com', canonicalUrl: 'https://example.com', title: 'Example', description: 'Preview', thumbnailWidth: 100, thumbnailHeight: 50 } },
+  })
+  assert.deepEqual(preview.linkPreview, { url: 'https://example.com', matchedText: 'https://example.com', title: 'Example', description: 'Preview', previewType: null, thumbnailWidth: 100, thumbnailHeight: 50 })
+})
+
 test('normalizes media and structured WhatsApp facts without interpreting them', () => {
   const video = safeMessage({
     key: { id: 'video-1', remoteJid: 'group@g.us' },

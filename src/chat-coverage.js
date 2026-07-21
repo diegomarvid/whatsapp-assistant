@@ -1,11 +1,13 @@
-export const RECENT_RETENTION_DAYS = 7
+export const DEFAULT_RETENTION_DAYS = 7
+// Kept as an alias for callers built against earlier releases.
+export const RECENT_RETENTION_DAYS = DEFAULT_RETENTION_DAYS
 
 function numberOrNull(value) {
   const number = Number(value)
   return Number.isFinite(number) && number > 0 ? number : null
 }
 
-export function coverageForChat({ chat, messages, connection, sync }) {
+export function coverageForChat({ chat, messages, connection, sync, retentionDays = DEFAULT_RETENTION_DAYS }) {
   const latestMessageAt = messages.reduce((latest, message) => Math.max(latest, Number(message.timestamp) || 0), 0) || null
   const remoteLatestAt = numberOrNull(chat?.remoteLastTimestamp)
   const connectedAt = numberOrNull(sync?.lastConnectedAt || sync?.connectedAt)
@@ -36,6 +38,6 @@ export function coverageForChat({ chat, messages, connection, sync }) {
     lastObservedHistoryAt,
     observerStartedAt: numberOrNull(sync?.observerStartedAt),
     lastDisconnectedAt: numberOrNull(sync?.lastDisconnectedAt),
-    retentionDays: RECENT_RETENTION_DAYS,
+    retentionDays,
   }
 }

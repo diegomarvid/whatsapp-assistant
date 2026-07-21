@@ -10,6 +10,7 @@ function normalizeCache(cache) {
     chats: cache?.chats && typeof cache.chats === 'object' ? cache.chats : {},
     contacts: cache?.contacts && typeof cache.contacts === 'object' ? cache.contacts : {},
     groupEvents: Array.isArray(cache?.groupEvents) ? cache.groupEvents : [],
+    callEvents: Array.isArray(cache?.callEvents) ? cache.callEvents : [],
     sync: cache?.sync && typeof cache.sync === 'object' ? cache.sync : {},
   }
 }
@@ -97,7 +98,8 @@ export class MirrorStore {
     const contacts = Object.fromEntries(this.database.prepare('SELECT id, payload FROM contacts').all().map(({ id, payload }) => [id, parse(payload, {})]))
     const sync = parse(this.database.prepare("SELECT value FROM mirror_meta WHERE key = 'sync'").get()?.value, {})
     const groupEvents = parse(this.database.prepare("SELECT value FROM mirror_meta WHERE key = 'group_events'").get()?.value, [])
-    return normalizeCache({ messages, chats, contacts, groupEvents, sync })
+    const callEvents = parse(this.database.prepare("SELECT value FROM mirror_meta WHERE key = 'call_events'").get()?.value, [])
+    return normalizeCache({ messages, chats, contacts, groupEvents, callEvents, sync })
   }
 
   isEmpty() {
@@ -115,6 +117,7 @@ export class MirrorStore {
       for (const [jid, chat] of Object.entries(state.chats)) this.upsertChat.run(jid, JSON.stringify(chat))
       for (const [id, contact] of Object.entries(state.contacts)) this.upsertContact.run(id, JSON.stringify(contact))
       this.upsertMeta.run('group_events', JSON.stringify(state.groupEvents.filter((event) => Number(event.timestamp) >= cutoff)))
+      this.upsertMeta.run('call_events', JSON.stringify(state.callEvents.filter((event) => Number(event.timestamp) >= cutoff)))
       this.upsertMeta.run('sync', JSON.stringify(state.sync))
       this.database.prepare('DELETE FROM messages WHERE timestamp < ?').run(cutoff)
       this.database.prepare('DELETE FROM message_contents WHERE timestamp < ?').run(cutoff)

@@ -13,16 +13,19 @@ to scan a QR code.
 - The linked-device session lives in `auth/`. As long as that directory stays
   intact, a restart or Mac reboot reconnects automatically and **does not need
   another QR**.
-- WhatsApp is requested in **recent sync** mode (`syncFullHistory: false`).
-  The provider chooses the precise size of that initial recent window.
-- The durable local SQLite mirror keeps only the newest seven days, capped at
-  10,000 messages. Older data is deliberately pruned. This is not a complete
-  WhatsApp archive.
+- `wa setup` asks for the local history window when it has a TTY. The default
+  is seven days and uses **recent sync** (`syncFullHistory: false`). A
+  deliberate selection above seven days requests full history with a desktop
+  browser profile (`syncFullHistory: true`); WhatsApp decides the actual amount
+  returned and can fail or return less.
+- The durable local SQLite mirror keeps the configured day window. The seven
+  day default is capped at 10,000 messages; extended retention does not add a
+  smaller hidden message cap. This is still not a guaranteed complete archive.
 - A recoverable raw-message envelope, plus audio/image/document envelopes where
-  applicable, is retained privately for that same seven-day window. This lets
+  applicable, is retained privately for that same configured window. This lets
   Baileys retry or resolve an incomplete recent message without widening the
   local retention policy. The envelopes are never uploaded.
-- The bridge records a seven-day technical event audit (event kind, chat/message
+- The bridge records a technical event audit for the configured window (event kind, chat/message
   identifiers, timestamps and payload type; never message text) so a missing
   message can be diagnosed as an upstream event, placeholder, update, or local
   ingestion issue.
@@ -42,6 +45,18 @@ local user, and is excluded from Git.
    brew tap diegomarvid/tap
    brew install whatsapp-assistant
    wa setup
+   ```
+
+   Before linking, interactive `wa setup` asks how many days to retain. `7` is
+   the safe default; values such as `30`, `90` or `365` request full history.
+   Explain that this is a provider request, not a guarantee: a large request
+   can take longer, use more disk or make the initial sync fail. The policy is
+   private and can be inspected or changed explicitly:
+
+   ```bash
+   wa history-policy show
+   wa history-policy set 365
+   wa daemon restart
    ```
 
    `wa setup` creates a user LaunchAgent, waits for the bridge to initialize
@@ -67,7 +82,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -109,8 +124,8 @@ an availability boundary, not an interpretation rule.
 
 ### Facts that can come from before installation
 
-Only when WhatsApp includes them in its recent sync and they remain inside the
-seven-day local window, the mirror can show the message text, timestamp,
+Only when WhatsApp includes them in its sync and they remain inside the
+configured local window, the mirror can show the message text, timestamp,
 sender, quote, type and available attachment. It may show the current edited or
 ephemeral representation delivered in that sync. A reaction or receipt from a
 past message is usable only if WhatsApp included that factual field in the
@@ -119,10 +134,11 @@ present.
 
 ### Facts that cannot be reconstructed retroactively
 
-The mirror cannot fill in older history, a message's pre-edit text, prior
+The mirror cannot fill in older history that WhatsApp did not return, a message's pre-edit text, prior
 reaction/receipt timelines, poll votes whose creation key and encrypted update
 were not observed, or past group changes, call events and deletion sequences.
-It intentionally does not turn on full-history sync to attempt this.
+The user may explicitly request extended sync through `wa history-policy`, but
+the provider can still decline or limit what it returns.
 
 ### Facts observed while the bridge is active
 
@@ -135,6 +151,12 @@ only that no read receipt was reported; it does not mean the person did not
 read the message. Individual group receipts are available only for messages
 sent by this account. View-once content is never exposed or downloaded.
 
+For messages captured after the current bridge version, the factual payload
+also includes quoted-message identity/text (unless the quote is view-once),
+mentions, forwarding state, literal link preview metadata, and media facts such
+as byte size, dimensions, duration, voice-note/GIF flags and document pages.
+It does not contain generated semantic interpretation.
+
 ## Everyday CLI
 
 ```bash
@@ -145,6 +167,7 @@ wa find "Nombre del contacto"
 wa latest contacto
 wa latest-incoming contacto
 wa history contacto 20
+wa history-policy show
 wa delivery contacto <message-id>
 wa receipts grupo@g.us <message-id>
 wa reactions contacto <message-id>
@@ -222,9 +245,10 @@ read commands; only direct contacts use LID resolution.
 
 3. If a conversation seems to be missing, inspect `wa status` and `wa coverage
    contacto`, then `wa latest-incoming contacto`. The observer automatically
-   reconnects with the existing linked session and the CLI resolves the current
-   LID before reading it. Messages older than seven days are intentionally
-absent. The assistant is for recent operational context, not an archive.
+reconnects with the existing linked session and the CLI resolves the current
+LID before reading it. Messages outside the configured local window are
+intentionally absent. The assistant is for operational context, not a
+guaranteed archive.
 
 ## Receipts and reactions are factual, not inferred
 
@@ -250,9 +274,10 @@ does not unwrap, expose or download *view once* content.
 
 `wa polls` and `wa poll` expose votes only when the bridge has the local poll
 key and observed the encrypted vote update while connected. `wa calls` lists
-missed-call message events. `wa group-events` contains membership and metadata
-changes received while the observer was running. All three follow the same
-seven-day retention policy and are not an archive.
+call events received while the observer was active plus missed-call message
+events. `wa group-events` contains membership, join-request, member-tag and
+metadata changes received while the observer was running. All three follow the
+configured retention policy and are not an archive.
 
 4. If `wa transcribe` says an old audio is unavailable, it may predate the
    current recent-sync window or the audio-envelope capture. Do **not** reset
@@ -277,10 +302,12 @@ while waiting.
 
 Never do these as a reaction to an ordinary missing-message report:
 
-- Set `syncFullHistory: true` or force full history processing.
+- Change `syncFullHistory` manually, or force full history processing outside
+  `wa history-policy`. Use that command only after the user chose the larger
+  retention trade-off.
 - Clear/move `auth/`.
 - Delete `data/mirror.sqlite`, `data/messages.json` or `data/aliases.json`.
-- Re-link the device just to obtain a message older than the seven-day policy.
+- Re-link the device just to obtain a message outside the configured policy.
 
 Those actions either widen the privacy scope or force an unnecessary QR. State
 the trade-off and get the user's explicit agreement first.

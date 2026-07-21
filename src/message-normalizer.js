@@ -5,13 +5,19 @@ import { normalizedReactions, normalizedReceipts } from './message-engagement.js
 function unwrapSafeContent(message) {
   let content = message || {}
   let ephemeral = false
+  let ephemeralExpirationSeconds = null
   let edited = false
   // Do not unwrap view-once containers. Their content is intentionally not
   // exposed through this assistant, even though Baileys can technically unwrap
   // them for protocol operations.
   for (let depth = 0; depth < 5; depth += 1) {
-    if (content.viewOnceMessage || content.viewOnceMessageV2 || content.viewOnceMessageV2Extension) return { content, ephemeral, edited, viewOnce: true }
-    if (content.ephemeralMessage?.message) { content = content.ephemeralMessage.message; ephemeral = true; continue }
+    if (content.viewOnceMessage || content.viewOnceMessageV2 || content.viewOnceMessageV2Extension) return { content, ephemeral, ephemeralExpirationSeconds, edited, viewOnce: true }
+    if (content.ephemeralMessage?.message) {
+      ephemeralExpirationSeconds = numberOrNull(content.ephemeralMessage.ephemeralExpiration) || ephemeralExpirationSeconds
+      content = content.ephemeralMessage.message
+      ephemeral = true
+      continue
+    }
     if (content.documentWithCaptionMessage?.message) { content = content.documentWithCaptionMessage.message; continue }
     if (content.associatedChildMessage?.message) { content = content.associatedChildMessage.message; continue }
     if (content.groupStatusMessage?.message) { content = content.groupStatusMessage.message; continue }
@@ -20,7 +26,7 @@ function unwrapSafeContent(message) {
     if (content.protocolMessage?.editedMessage) { content = content.protocolMessage.editedMessage; edited = true; continue }
     break
   }
-  return { content, ephemeral, edited, viewOnce: false }
+  return { content, ephemeral, ephemeralExpirationSeconds, edited, viewOnce: false }
 }
 
 function interactiveResponse(content) {
@@ -70,6 +76,55 @@ function linksOfContent(content, text) {
     cleanUrlCandidate(extended.canonicalUrl),
     cleanUrlCandidate(extended.matchedText),
   ].filter(Boolean))]
+}
+
+function linkPreviewOf(content, links) {
+  const extended = content.extendedTextMessage
+  if (!extended || (!extended.title && !extended.description && !extended.matchedText && !extended.canonicalUrl)) return null
+  return {
+    url: cleanUrlCandidate(extended.canonicalUrl) || links[0] || null,
+    matchedText: extended.matchedText || null,
+    title: extended.title || null,
+    description: extended.description || null,
+    previewType: numberOrNull(extended.previewType),
+    thumbnailWidth: numberOrNull(extended.thumbnailWidth),
+    thumbnailHeight: numberOrNull(extended.thumbnailHeight),
+  }
+}
+
+function quotedMessageOf(contextInfo) {
+  if (!contextInfo?.stanzaId && !contextInfo?.quotedMessage) return null
+  const wrapper = unwrapSafeContent(contextInfo.quotedMessage || {})
+  const content = wrapper.content || {}
+  return {
+    id: contextInfo.stanzaId || null,
+    participant: contextInfo.participant || null,
+    remoteJid: contextInfo.remoteJid || null,
+    type: Object.keys(content)[0] || null,
+    text: wrapper.viewOnce ? null : textOfContent(content),
+    viewOnce: wrapper.viewOnce,
+  }
+}
+
+function mediaOf(content) {
+  const image = content.imageMessage
+  const video = content.videoMessage
+  const audio = content.audioMessage
+  const document = content.documentMessage
+  const sticker = content.stickerMessage
+  const media = image || video || audio || document || sticker
+  if (!media) return null
+  return {
+    mimetype: media.mimetype || null,
+    bytes: numberOrNull(media.fileLength),
+    width: numberOrNull(media.width),
+    height: numberOrNull(media.height),
+    seconds: numberOrNull(media.seconds),
+    voiceNote: Boolean(audio?.ptt),
+    gif: Boolean(video?.gifPlayback),
+    fileName: document?.fileName || null,
+    pageCount: numberOrNull(document?.pageCount),
+  }
 }
 
 function contextInfoOf(content) {
@@ -134,6 +189,7 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
   const sticker = content.stickerMessage
   const pollUpdate = content.pollUpdateMessage
   const text = textOfContent(content)
+  const links = linksOfContent(content, text)
   return {
     id: message.key?.id || crypto.randomUUID(),
     jid,
@@ -141,7 +197,8 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     participant: message.key?.participant || null,
     timestamp: Number(message.messageTimestamp || Math.floor(Date.now() / 1000)),
     text,
-    links: linksOfContent(content, text),
+    links,
+    linkPreview: linkPreviewOf(content, links),
     type: Object.keys(content)[0] || 'unknown',
     pushName: message.pushName || null,
     audioRef: null,
@@ -156,6 +213,10 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     documentMimetype: document?.mimetype || null,
     documentName: document?.fileName || null,
     quotedMessageId: contextInfo?.stanzaId || null,
+    quoted: quotedMessageOf(contextInfo),
+    mentions: contextInfo?.mentionedJid || [],
+    forwarded: Boolean(contextInfo?.isForwarded),
+    forwardingScore: numberOrNull(contextInfo?.forwardingScore),
     reactionToMessageId: reaction?.key?.id || null,
     reactionText: reaction?.text || null,
     location: normalizedLocation(content),
@@ -165,7 +226,9 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     pollVotes: [],
     interactiveResponse: interactiveResponse(content),
     call: normalizedCall(message, content),
+    media: mediaOf(content),
     ephemeral: wrapper.ephemeral,
+    ephemeralExpirationSeconds: wrapper.ephemeralExpirationSeconds,
     edited: wrapper.edited,
     viewOnce: wrapper.viewOnce,
     deleted: false,

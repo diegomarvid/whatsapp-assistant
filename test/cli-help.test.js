@@ -16,6 +16,7 @@ test('help gives a new user and an AI an actionable onboarding path', () => {
   assert.match(result.stdout, /nvm install 22/)
   assert.match(result.stdout, /wa setup/)
   assert.match(result.stdout, /wa doctor/)
+  assert.match(result.stdout, /history-policy show\|set/)
   assert.match(result.stdout, /latest-incoming/)
   assert.match(result.stdout, /wa image <alias or phone> <message-id>/)
   assert.match(result.stdout, /wa locations\|contacts\|polls\|calls\|links/)
@@ -38,6 +39,14 @@ test('messages help explains that links are structural URLs for the calling AI t
   assert.match(result.stdout, /wa links contacto/)
   assert.match(result.stdout, /URLs http\(s\) literales/)
   assert.match(result.stdout, /no abre, resume ni clasifica sitios/)
+})
+
+test('setup help discloses extended-history sync tradeoffs', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'setup'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /7 días es el default privado/)
+  assert.match(result.stdout, /WhatsApp decide cuánto historial entrega/)
+  assert.match(result.stdout, /wa history-policy set 7/)
 })
 
 test('data help distinguishes recent synced facts from live observed events', () => {

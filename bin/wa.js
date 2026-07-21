@@ -13,6 +13,7 @@ import { paths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
 import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
 import { linksInText } from '../src/message-normalizer.js'
+import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { dataDir, stateRoot, logsDir } = paths
@@ -41,7 +42,7 @@ Linux / VPS (Node 22+ y systemd):
   # Si falta Node 22+, instalarlo como usuario normal:
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
   . "$HOME/.nvm/nvm.sh" && nvm install 22
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -58,6 +59,7 @@ Comandos:
   wa status
   wa doctor                         # estado, daemon, QR y rutas; no expone secretos
   wa setup
+  wa history-policy show|set <days|all>
   wa qr                             # abre (macOS) o imprime (SSH) el QR pendiente
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
@@ -73,6 +75,7 @@ Comandos:
   wa latest <alias or phone>
   wa latest-incoming <alias or phone>
   wa coverage <alias or phone>
+  wa history-policy show|set <days|all>
   wa help data                       # qué datos recientes son históricos y cuáles requieren observación activa
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
@@ -107,16 +110,62 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
-    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El mirror sólo conserva hasta 7 días recientes; no es un archivo completo.\n  - Al vincular o reconectar, WhatsApp puede entregar una ventana reciente, cuyo tamaño exacto decide WhatsApp.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en esa ventana reciente:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial anterior a la ventana reciente, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan.\n\nComandos útiles: wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
+    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
-    privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
+    privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención default: 7 días; una ventana mayor requiere una elección explícita con wa history-policy.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
   if (!topic) return usage()
   if (!topics[topic]) throw new Error(`Unknown help topic: ${topic}. Use: wa help setup|messages|data|media|daemon|privacy`)
   console.log(topics[topic])
+}
+
+function historyPolicyReport(policy, { configured = true } = {}) {
+  return {
+    configured,
+    ...policy,
+    providerRequest: policy.syncFullHistory
+      ? 'Solicita full-history a WhatsApp con perfil desktop. WhatsApp puede entregar menos historial o rechazar/fallar el sync.'
+      : 'Solicita sólo sync reciente de WhatsApp.',
+    apply: 'Después de cambiarla, ejecutar `wa daemon restart` (o `wa setup` en una instalación nueva). No borra auth ni garantiza recuperar mensajes que WhatsApp no entregue.',
+  }
+}
+
+async function hasHistoryPolicy() {
+  return fileExists(historyPolicyPath(dataDir))
+}
+
+async function chooseHistoryPolicyForSetup() {
+  if (await hasHistoryPolicy()) return loadHistoryPolicy(dataDir)
+  if (!process.stdin.isTTY || !process.stdout.isTTY || process.env.WA_NONINTERACTIVE === '1') {
+    return saveHistoryPolicy(dataDir, DEFAULT_HISTORY_POLICY)
+  }
+  const { createInterface } = await import('node:readline/promises')
+  const prompt = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    console.log('\nHistorial local: el default es 7 días. Es privado y suficiente para contexto operativo reciente.')
+    console.log('Podés elegir más días (por ejemplo 30, 90 o 365). Eso pide full-history a WhatsApp; puede tardar, usar más disco y WhatsApp puede entregar menos o fallar durante el vínculo.')
+    const answer = (await prompt.question('¿Cuántos días querés conservar? [7]: ')).trim().toLocaleLowerCase()
+    const requested = !answer ? 7 : answer === 'all' ? MAX_RETENTION_DAYS : answer
+    const policy = historyPolicyForDays(requested)
+    if (policy.syncFullHistory) console.log(`\nSe solicitará hasta ${policy.retentionDays} días. Si el QR/sync falla, usar: wa history-policy set 7`)
+    return saveHistoryPolicy(dataDir, policy)
+  } finally {
+    prompt.close()
+  }
+}
+
+async function historyPolicyCommand(args) {
+  const action = args[0] || 'show'
+  if (action === 'show') return console.log(JSON.stringify(historyPolicyReport(await loadHistoryPolicy(dataDir), { configured: await hasHistoryPolicy() }), null, 2))
+  if (action !== 'set') return usage()
+  const requested = args[1]?.toLocaleLowerCase()
+  if (!requested) return usage()
+  const policy = historyPolicyForDays(requested === 'all' ? MAX_RETENTION_DAYS : requested)
+  await saveHistoryPolicy(dataDir, policy)
+  console.log(JSON.stringify(historyPolicyReport(policy), null, 2))
 }
 
 function run(command, args, options = {}) {
@@ -304,6 +353,7 @@ async function doctor() {
 }
 
 async function setup() {
+  await chooseHistoryPolicyForSetup()
   await installDaemon()
   const { qrPath, health } = await waitForSetup()
   if (qrPath) {
@@ -857,6 +907,7 @@ async function main() {
   if (command === 'doctor') return doctor()
   if (command === 'qr') return showQr()
   if (command === 'setup') return setup()
+  if (command === 'history-policy') return historyPolicyCommand(args)
   if (command === 'transcribe' && args[0] === 'setup') return setupTranscription()
   if (command === 'transcribe' && args[0] === 'doctor') return transcriptionDoctor()
   if (command === 'transcribe' && args[0] === 'pull') return pullTranscriptionModel(args[1])
@@ -1069,7 +1120,7 @@ async function main() {
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    const snapshot = ['polls', 'poll', 'group-events', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readSnapshot() : null
+    const snapshot = ['polls', 'poll', 'calls', 'group-events', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readSnapshot() : null
     if (command === 'coverage') {
       const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
       console.log(JSON.stringify({ chat: contact.name || target, ...coverage }, null, 2))
@@ -1178,9 +1229,11 @@ async function main() {
     }
     if (command === 'locations' || command === 'contacts' || command === 'polls' || command === 'calls') {
       if (command === 'calls') {
-        const calls = messages.filter((message) => message.call).slice(0, Number.parseInt(args[0] || '20', 10))
-        if (!calls.length) return console.log('No hay llamadas perdidas cacheadas para este chat.')
-        return console.log(JSON.stringify(calls.map((message) => ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, call: message.call })), null, 2))
+        const limit = Number.parseInt(args[0] || '20', 10)
+        const events = (snapshot.callEvents || []).filter((event) => event.chatId === contact.jid || event.groupJid === contact.jid || event.from === contact.jid).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+        const missedMessages = messages.filter((message) => message.call).slice(0, limit).map((message) => ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, call: message.call }))
+        if (!events.length && !missedMessages.length) return console.log('No hay llamadas cacheadas para este chat.')
+        return console.log(JSON.stringify({ events, missedCallMessages: missedMessages, note: 'Los eventos de llamada se conservan sólo desde que el bridge estaba activo; WhatsApp puede además generar un mensaje de llamada perdida.' }, null, 2))
       }
       const field = command === 'locations' ? 'location' : command === 'contacts' ? 'contacts' : 'poll'
       const selected = messages.filter((message) => field === 'contacts' ? message.contacts?.length : Boolean(message[field])).slice(0, Number.parseInt(args[0] || '20', 10))

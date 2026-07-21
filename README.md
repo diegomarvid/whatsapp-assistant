@@ -8,7 +8,8 @@ WhatsApp Assistant convierte una cuenta vinculada de WhatsApp en contexto local
 **reciente, verificable y accionable**. En vez de hacer que un agente adivine
 qué chat mirar o trabaje con una copia vieja, el comando `wa` le da mensajes,
 media, replies, receipts, reacciones y cobertura de sincronización desde un
-mirror privado de los últimos siete días.
+mirror privado de los últimos siete días por defecto —o de la ventana que la
+persona configure conscientemente durante el onboarding.
 
 No es una integración oficial de WhatsApp. Nunca publica una API a Internet ni
 interpreta el significado de tus conversaciones por reglas de texto.
@@ -19,7 +20,7 @@ interpreta el significado de tus conversaciones por reglas de texto.
 
 | | |
 | --- | --- |
-| 🔄 **Siempre reciente** | Un bridge en segundo plano recibe eventos y conserva una ventana móvil de siete días, sin convertir tu cuenta en un archivo histórico. |
+| 🔄 **Siempre reciente** | Un bridge en segundo plano recibe eventos y conserva una ventana móvil de siete días por defecto; se puede ampliar explícitamente cuando el caso lo justifica. |
 | 🎯 **El chat correcto** | Resuelve números, aliases, nombres de WhatsApp y el LID actual antes de leer, responder o reaccionar. |
 | ✅ **Acciones sobre hechos frescos** | `latest`, replies y reacciones validan cobertura `fresh` para no actuar sobre un mensaje que quedó viejo. |
 | 🔒 **Privado por diseño** | API sólo en `127.0.0.1`; sesión, SQLite, aliases y adjuntos quedan en tu máquina, fuera de Git y Homebrew. |
@@ -74,6 +75,8 @@ interpreta el significado de tus conversaciones por reglas de texto.
 
 - Escaneás un QR una vez; el servicio se reconecta luego de reinicios de macOS
   o Linux/VPS sin un navegador.
+- En onboarding elegís 7 días (default) o una ventana mayor; el CLI explica
+  que pedir full-history a WhatsApp no garantiza que el proveedor lo entregue.
 - Funciona como LaunchAgent en macOS o servicio `systemd --user` en Linux.
 - La sesión y SQLite sobreviven actualizaciones de Homebrew; `wa doctor` y
   `wa status` muestran qué falta sin revelar chats ni secretos.
@@ -122,8 +125,12 @@ wa setup
 ```
 
 `wa setup` instala y arranca un LaunchAgent local, y abre la imagen QR sólo si
-la cuenta todavía no está vinculada. Después del vínculo inicial, el servicio
-se reconecta automáticamente al iniciar sesión en macOS.
+la cuenta todavía no está vinculada. Antes de iniciar el bridge, pregunta
+cuántos días querés conservar: **7** es el default. Si elegís más, solicita
+full-history a WhatsApp con perfil desktop y guarda esa preferencia privada. La
+solicitud puede tardar, consumir más disco y WhatsApp puede entregar menos —o
+fallar el sync—; no se borra la sesión para cambiarla. Después del vínculo
+inicial, el servicio se reconecta automáticamente al iniciar sesión en macOS.
 
 Si ya usabas el checkout de este repositorio, migrá primero el estado privado
 para conservar la sesión y el mirror sin escanear otro QR:
@@ -136,6 +143,27 @@ wa setup
 El estado instalado queda en `~/Library/Application Support/WhatsApp Assistant/`:
 ahí viven `auth/`, SQLite, aliases, token y logs. Homebrew puede actualizar o
 desinstalar el código sin borrar conversaciones recientes ni credenciales.
+
+### 🗓️ Elegir la ventana de historial
+
+La retención local y el pedido de historial a WhatsApp son explícitos y quedan
+en un archivo privado. En una terminal interactiva `wa setup` pregunta la
+ventana; para una IA o instalación no interactiva, el default seguro es siete
+días.
+
+```bash
+wa history-policy show       # ver política activa y qué solicitó al proveedor
+wa history-policy set 30     # conservar 30 días y pedir full-history
+wa history-policy set 365    # un año, si WhatsApp lo entrega
+wa history-policy set all    # hasta 10 años locales; puede ser pesado
+wa daemon restart            # aplica un cambio a una sesión ya instalada
+```
+
+Más de siete días activa `syncFullHistory` y un perfil desktop de Baileys, que
+es un **pedido** al proveedor, no una garantía ni un bypass de WhatsApp. Si el
+vínculo o sync extendido falla, volver a `wa history-policy set 7`, reiniciar el
+daemon y conservar `auth/`; no hace falta borrar estado ni escanear un QR de
+nuevo salvo que WhatsApp haya cerrado la sesión.
 
 Si una persona o un agente necesita orientación dentro del propio CLI:
 
@@ -174,7 +202,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz
 wa setup
 ```
 
@@ -241,7 +269,7 @@ IA conozca el límite antes de interpretar una salida.
 
 | Dato | De antes de instalar | Desde que el bridge está activo |
 | --- | --- | --- |
-| Texto, hora, remitente, citas y adjuntos | Sí, sólo si WhatsApp lo incluyó en su sync reciente y sigue dentro de los 7 días. | Sí, mientras WhatsApp lo entregue. |
+| Texto, hora, remitente, citas y adjuntos | Sí, sólo si WhatsApp lo incluyó en el sync y sigue dentro de la ventana local configurada. | Sí, mientras WhatsApp lo entregue. |
 | Edición y contenido efímero | Puede verse el estado actual que llegó en el sync; no la versión original ni la secuencia anterior. | Se registran los cambios recibidos. |
 | Reacciones, entregas y vistos | Sólo si ese dato vino incluido en el mensaje sincronizado; no se promete para mensajes pasados. | Se registran las actualizaciones que WhatsApp reporte. |
 | Votos de encuestas | No se pueden reconstruir si no se observó la clave local y el voto. | Sí, cuando se observan creación y actualización. |
@@ -334,7 +362,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa unread-by grupo <message-id>` | Para un mensaje propio, participantes actuales sin **read receipt reportado**. No los llama “no leídos”. |
 | `wa reactions contacto-o-grupo <message-id>` | Reacciones actuales al mensaje, participante, emoji y hora si WhatsApp la reportó. |
 | `wa polls contacto` / `wa poll contacto <message-id>` | Encuestas observadas y sus votos descifrables, agrupados por opción y participante. |
-| `wa calls contacto` | Llamadas perdidas que WhatsApp haya entregado como evento de mensaje. |
+| `wa calls contacto` | Eventos de llamada que WhatsApp entregó mientras el bridge estaba activo, más mensajes de llamada perdida cuando existan. |
 | `wa links contacto` | URLs HTTP(S) literales del chat, con ID, autor, hora y cobertura del mirror; no abre ni resume destinos. |
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
@@ -353,6 +381,12 @@ Contactos como complemento. No copia la agenda al mirror.
 > Los mensajes editados, efímeros y respuestas interactivas se representan como
 > tales. Un mensaje revocado se marca como eliminado y se purgan sus adjuntos
 > locales. Los mensajes *view once* no se abren ni descargan deliberadamente.
+>
+> Cada mensaje nuevo también preserva hechos de contexto: mensaje citado
+> (sin revelar contenido *view once*), menciones, si fue reenviado, preview
+> local de un link (URL/título/descripción) y metadatos de media como tamaño,
+> dimensiones, duración, nota de voz, GIF y páginas de documento. No son
+> resúmenes generados por IA.
 
 ### 👥 Grupos de trabajo
 
@@ -434,7 +468,7 @@ flowchart LR
   U["👤 Usuario / alias / teléfono"] --> C["⌨️ CLI wa"]
   C --> R["🔎 /resolve\nPN → LID actual"]
   R --> B["🔌 Bridge Baileys\n127.0.0.1"]
-  B --> M[("🗄️ SQLite\nventana móvil: 7 días")]
+  B --> M[("🗄️ SQLite\nventana configurable\n7 días por default")]
   W["💬 WhatsApp Web events"] --> B
   C --> V{"✅ coverage\nfresh?"}
   M --> V
@@ -448,8 +482,10 @@ Los grupos mantienen su JID `…@g.us` y no se remapean como contactos.
 
 - La API escucha solamente en `127.0.0.1`; todas las rutas salvo `/health`
   requieren el token local.
-- El mirror conserva como máximo **siete días** y 10.000 mensajes: no es un
-  backup ni pretende pedir el historial completo.
+- El mirror conserva **siete días y hasta 10.000 mensajes** por default. Una
+  persona puede ampliar la ventana con `wa history-policy`; eso solicita más
+  historial a WhatsApp, pero nunca promete recuperar lo que el proveedor no
+  entregue y puede usar bastante más disco.
 - También guarda envelopes raw recientes para reintentos de Baileys, media
   seleccionada y un audit técnico sin texto. Nada se sube.
 - El CLI no intenta detectar saludos, urgencia, intención ni “pendientes” por
