@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mimeTypeForFile } from '../src/file-mime.js'
 import { safeMessage } from '../src/message-normalizer.js'
 import { coverageForChat } from '../src/chat-coverage.js'
-import { applyDirectStatus, applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
+import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
 
 test('normalizes document metadata and reply context without crashing', () => {
   const message = safeMessage({
@@ -67,6 +67,31 @@ test('normalizes WhatsApp receipt and reaction facts from history', () => {
   assert.deepEqual(message.reactions, [{ participant: 'ana@lid', emoji: '👍', timestamp: 120 }])
 })
 
+test('unwraps edited and ephemeral content but does not expose view-once content', () => {
+  const edited = safeMessage({
+    key: { id: 'edit-1', remoteJid: 'chat@lid' },
+    message: { ephemeralMessage: { message: { protocolMessage: { editedMessage: { extendedTextMessage: { text: 'texto corregido' } } } } } },
+  })
+  const viewOnce = safeMessage({
+    key: { id: 'once-1', remoteJid: 'chat@lid' },
+    message: { viewOnceMessageV2: { message: { imageMessage: { caption: 'privado', mimetype: 'image/jpeg' } } } },
+  })
+  assert.equal(edited.text, 'texto corregido')
+  assert.equal(edited.edited, true)
+  assert.equal(edited.ephemeral, true)
+  assert.equal(viewOnce.viewOnce, true)
+  assert.equal(viewOnce.imageMimetype, null)
+  assert.equal(viewOnce.text, '')
+})
+
+test('normalizes interactive replies and missed calls as factual message metadata', () => {
+  const reply = safeMessage({ key: { id: 'reply-1', remoteJid: 'chat@lid' }, message: { buttonsResponseMessage: { selectedButtonId: 'confirmar', selectedDisplayText: 'Confirmar' } } })
+  const call = safeMessage({ key: { id: 'call-1', remoteJid: 'chat@lid' }, messageStubType: 41, message: { call: {} } })
+  assert.equal(reply.text, 'Confirmar')
+  assert.deepEqual(reply.interactiveResponse, { kind: 'button', id: 'confirmar', text: 'Confirmar' })
+  assert.deepEqual(call.call, { kind: 'missed', video: true, group: false })
+})
+
 test('keeps only the current reaction from each participant and supports removal', () => {
   const message = { reactions: [] }
   assert.equal(applyReaction(message, { key: { participant: 'ana@lid' }, text: '❤️', senderTimestampMs: 1000 }), true)
@@ -92,6 +117,15 @@ test('does not downgrade a direct delivery status when WhatsApp replays an older
   assert.deepEqual(message, { status: 3, statusAt: 120 })
   assert.equal(applyDirectStatus(message, 4, 140, 999), true)
   assert.deepEqual(message, { status: 4, statusAt: 140 })
+})
+
+test('keeps the latest decoded vote for each participant in a poll', () => {
+  const message = { poll: { options: ['Sí', 'No'] }, pollVotes: [] }
+  assert.equal(applyPollVote(message, { participant: 'ana@lid', options: ['Sí'], senderTimestampMs: 1000 }), true)
+  assert.equal(applyPollVote(message, { participant: 'ana@lid', options: ['No'], senderTimestampMs: 2000 }), true)
+  assert.deepEqual(message.pollVotes, [{ participant: 'ana@lid', options: ['No'], timestamp: 2 }])
+  assert.equal(applyPollVote(message, { participant: 'ana@lid', options: [], senderTimestampMs: 3000 }), true)
+  assert.deepEqual(message.pollVotes, [])
 })
 
 test('marks a chat stale when WhatsApp reports a newer chat cursor than the local cache', () => {

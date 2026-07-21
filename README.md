@@ -82,7 +82,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.2.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.0.tar.gz
 wa setup
 ```
 
@@ -221,6 +221,9 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa receipts grupo <message-id>` | Receipts individuales reportados por WhatsApp para **un mensaje propio** de grupo: entregado, leído o reproducido por participante. |
 | `wa unread-by grupo <message-id>` | Para un mensaje propio, participantes actuales sin **read receipt reportado**. No los llama “no leídos”. |
 | `wa reactions contacto-o-grupo <message-id>` | Reacciones actuales al mensaje, participante, emoji y hora si WhatsApp la reportó. |
+| `wa polls contacto` / `wa poll contacto <message-id>` | Encuestas observadas y sus votos descifrables, agrupados por opción y participante. |
+| `wa calls contacto` | Llamadas perdidas que WhatsApp haya entregado como evento de mensaje. |
+| `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |
 
@@ -233,6 +236,10 @@ Contactos como complemento. No copia la agenda al mirror.
 > mensaje. WhatsApp puede omitirlo por privacidad, conectividad o porque el
 > bridge todavía no recibió el evento. La salida usa deliberadamente
 > `withoutReportedReadReceipt` para reflejar ese límite.
+>
+> Los mensajes editados, efímeros y respuestas interactivas se representan como
+> tales. Un mensaje revocado se marca como eliminado y se purgan sus adjuntos
+> locales. Los mensajes *view once* no se abren ni descargan deliberadamente.
 
 ### 👥 Grupos de trabajo
 

@@ -17,6 +17,7 @@ test('persists recent messages atomically without retaining older history', () =
     ],
     chats: { 'chat@lid': { jid: 'chat@lid', lastTimestamp: now - 1 } },
     contacts: { 'chat@lid': { id: 'chat@lid', name: 'Flor' } },
+    groupEvents: [],
     sync: { observerStartedAt: now - 10 },
   }, now)
   store.close()
@@ -26,6 +27,7 @@ test('persists recent messages atomically without retaining older history', () =
     messages: [{ jid: 'chat@lid', id: 'latest', timestamp: now - 1, text: 'latest' }],
     chats: { 'chat@lid': { jid: 'chat@lid', lastTimestamp: now - 1 } },
     contacts: { 'chat@lid': { id: 'chat@lid', name: 'Flor' } },
+    groupEvents: [],
     sync: { observerStartedAt: now - 10 },
   })
   reopened.close()
@@ -54,6 +56,19 @@ test('keeps a recent raw message envelope available for Baileys retries', () => 
   assert.deepEqual(store.loadMessageContent({ jid: 'chat@lid', id: 'one' }), payload)
   store.persist({ messages: [], chats: {}, contacts: {}, sync: {} }, 100 + (8 * 86400))
   assert.equal(store.loadMessageContent({ jid: 'chat@lid', id: 'one' }), null)
+  store.close()
+  fs.rmSync(directory, { recursive: true, force: true })
+})
+
+test('keeps a poll decryption secret private and prunes it with recent state', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
+  const filename = path.join(directory, 'mirror.sqlite')
+  const store = new MirrorStore(filename, { retentionDays: 7 })
+  const secret = Buffer.from('poll-secret')
+  store.savePollSecret({ jid: 'group@g.us', id: 'poll-1', timestamp: 100, secret })
+  assert.deepEqual(store.loadPollSecret({ jid: 'group@g.us', id: 'poll-1' }), secret)
+  store.persist({ messages: [], chats: {}, contacts: {}, groupEvents: [], sync: {} }, 100 + (8 * 86400))
+  assert.equal(store.loadPollSecret({ jid: 'group@g.us', id: 'poll-1' }), null)
   store.close()
   fs.rmSync(directory, { recursive: true, force: true })
 })

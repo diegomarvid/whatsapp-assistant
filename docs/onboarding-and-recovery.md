@@ -67,7 +67,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.2.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.0.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -115,6 +115,10 @@ wa history contacto 20
 wa delivery contacto <message-id>
 wa receipts grupo@g.us <message-id>
 wa reactions contacto <message-id>
+wa polls contacto
+wa poll contacto <message-id>
+wa calls contacto
+wa group-events grupo@g.us
 wa search contacto "presupuesto"
 wa transcribe contacto latest
 wa images contacto
@@ -196,6 +200,19 @@ must never be described as “people who did not read it”: privacy settings,
 connectivity and observer uptime can all suppress a receipt. `wa reactions`
 returns only the reaction state currently reported by WhatsApp; an emptied
 reaction is removed when WhatsApp sends that update.
+
+## Content lifecycle and group facts
+
+The bridge keeps the factual lifecycle of recent messages: edited content is
+shown as edited, ephemeral content is labelled, and a WhatsApp revocation marks
+the local message as deleted and removes cached media for it. It deliberately
+does not unwrap, expose or download *view once* content.
+
+`wa polls` and `wa poll` expose votes only when the bridge has the local poll
+key and observed the encrypted vote update while connected. `wa calls` lists
+missed-call message events. `wa group-events` contains membership and metadata
+changes received while the observer was running. All three follow the same
+seven-day retention policy and are not an archive.
 
 4. If `wa transcribe` says an old audio is unavailable, it may predate the
    current recent-sync window or the audio-envelope capture. Do **not** reset

@@ -3,6 +3,11 @@ function unixSeconds(value) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null
 }
 
+function voteTimestamp(value) {
+  const milliseconds = Number(value)
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? Math.floor(milliseconds / 1000) : null
+}
+
 export function normalizedReceipts(userReceipt = []) {
   const receipts = {}
   for (const receipt of userReceipt || []) {
@@ -85,6 +90,17 @@ export function applyDirectStatus(message, status, statusAt, fallbackAt) {
   if (Number.isFinite(previousStatus) && nextStatus <= previousStatus) return false
   message.status = nextStatus
   message.statusAt = unixSeconds(statusAt) || fallbackAt
+  return true
+}
+
+export function applyPollVote(message, { participant, options, senderTimestampMs }) {
+  if (!message?.poll || !participant) return false
+  const votes = (message.pollVotes || []).filter((vote) => vote.participant !== participant)
+  if (options?.length) votes.push({ participant, options, timestamp: voteTimestamp(senderTimestampMs) })
+  const previous = JSON.stringify(message.pollVotes || [])
+  const next = JSON.stringify(votes)
+  if (previous === next) return false
+  message.pollVotes = votes
   return true
 }
 

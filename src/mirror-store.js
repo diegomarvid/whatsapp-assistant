@@ -9,6 +9,7 @@ function normalizeCache(cache) {
     messages: Array.isArray(cache?.messages) ? cache.messages : [],
     chats: cache?.chats && typeof cache.chats === 'object' ? cache.chats : {},
     contacts: cache?.contacts && typeof cache.contacts === 'object' ? cache.contacts : {},
+    groupEvents: Array.isArray(cache?.groupEvents) ? cache.groupEvents : [],
     sync: cache?.sync && typeof cache.sync === 'object' ? cache.sync : {},
   }
 }
@@ -48,6 +49,14 @@ export class MirrorStore {
         PRIMARY KEY (jid, id)
       );
       CREATE INDEX IF NOT EXISTS message_contents_by_time ON message_contents (timestamp);
+      CREATE TABLE IF NOT EXISTS poll_secrets (
+        jid TEXT NOT NULL,
+        id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        secret BLOB NOT NULL,
+        PRIMARY KEY (jid, id)
+      );
+      CREATE INDEX IF NOT EXISTS poll_secrets_by_time ON poll_secrets (timestamp);
       CREATE TABLE IF NOT EXISTS event_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         received_at INTEGER NOT NULL,
@@ -74,6 +83,8 @@ export class MirrorStore {
     this.upsertMeta = this.database.prepare('INSERT INTO mirror_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
     this.upsertMessageContent = this.database.prepare('INSERT INTO message_contents (jid, id, timestamp, payload) VALUES (?, ?, ?, ?) ON CONFLICT(jid, id) DO UPDATE SET timestamp = excluded.timestamp, payload = excluded.payload')
     this.getMessageContent = this.database.prepare('SELECT payload FROM message_contents WHERE jid = ? AND id = ?')
+    this.upsertPollSecret = this.database.prepare('INSERT INTO poll_secrets (jid, id, timestamp, secret) VALUES (?, ?, ?, ?) ON CONFLICT(jid, id) DO UPDATE SET timestamp = excluded.timestamp, secret = excluded.secret')
+    this.getPollSecret = this.database.prepare('SELECT secret FROM poll_secrets WHERE jid = ? AND id = ?')
     this.insertAuditEvent = this.database.prepare('INSERT INTO event_audit (received_at, event, jid, message_id, message_timestamp, message_type, detail) VALUES (?, ?, ?, ?, ?, ?, ?)')
     this.getRetryValue = this.database.prepare('SELECT value FROM retry_cache WHERE namespace = ? AND key = ? AND expires_at >= ?')
     this.upsertRetryValue = this.database.prepare('INSERT INTO retry_cache (namespace, key, value, expires_at) VALUES (?, ?, ?, ?) ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at')
@@ -85,7 +96,8 @@ export class MirrorStore {
     const chats = Object.fromEntries(this.database.prepare('SELECT jid, payload FROM chats').all().map(({ jid, payload }) => [jid, parse(payload, {})]))
     const contacts = Object.fromEntries(this.database.prepare('SELECT id, payload FROM contacts').all().map(({ id, payload }) => [id, parse(payload, {})]))
     const sync = parse(this.database.prepare("SELECT value FROM mirror_meta WHERE key = 'sync'").get()?.value, {})
-    return normalizeCache({ messages, chats, contacts, sync })
+    const groupEvents = parse(this.database.prepare("SELECT value FROM mirror_meta WHERE key = 'group_events'").get()?.value, [])
+    return normalizeCache({ messages, chats, contacts, groupEvents, sync })
   }
 
   isEmpty() {
@@ -102,9 +114,11 @@ export class MirrorStore {
       }
       for (const [jid, chat] of Object.entries(state.chats)) this.upsertChat.run(jid, JSON.stringify(chat))
       for (const [id, contact] of Object.entries(state.contacts)) this.upsertContact.run(id, JSON.stringify(contact))
+      this.upsertMeta.run('group_events', JSON.stringify(state.groupEvents.filter((event) => Number(event.timestamp) >= cutoff)))
       this.upsertMeta.run('sync', JSON.stringify(state.sync))
       this.database.prepare('DELETE FROM messages WHERE timestamp < ?').run(cutoff)
       this.database.prepare('DELETE FROM message_contents WHERE timestamp < ?').run(cutoff)
+      this.database.prepare('DELETE FROM poll_secrets WHERE timestamp < ?').run(cutoff)
       this.database.prepare('DELETE FROM event_audit WHERE received_at < ?').run(cutoff)
       this.database.prepare('DELETE FROM retry_cache WHERE expires_at < ?').run(nowSeconds)
       this.database.exec('COMMIT')
@@ -122,6 +136,16 @@ export class MirrorStore {
   loadMessageContent({ jid, id }) {
     const payload = this.getMessageContent.get(jid, id)?.payload
     return payload ? Buffer.from(payload) : null
+  }
+
+  savePollSecret({ jid, id, timestamp, secret }) {
+    if (!jid || !id || !secret) return
+    this.upsertPollSecret.run(jid, id, Number(timestamp) || Math.floor(Date.now() / 1000), Buffer.from(secret))
+  }
+
+  loadPollSecret({ jid, id }) {
+    const secret = this.getPollSecret.get(jid, id)?.secret
+    return secret ? Buffer.from(secret) : null
   }
 
   recordEvent({ receivedAt = Math.floor(Date.now() / 1000), event, jid = null, messageId = null, messageTimestamp = null, messageType = null, detail = null }) {

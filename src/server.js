@@ -5,8 +5,10 @@ import path from 'node:path'
 import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
   DisconnectReason,
+  decryptPollVote,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
+  getKeyAuthor,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from 'baileys'
@@ -16,7 +18,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
-import { applyDirectStatus, applyReaction, applyReceipt } from './message-engagement.js'
+import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
 import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
 import { MirrorStore } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
@@ -46,7 +48,7 @@ let connection = 'starting'
 let lastError = null
 let socket = null
 let reconnectTimer = null
-let cache = { messages: [], chats: {}, contacts: {}, sync: {} }
+let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], sync: {} }
 let cacheSaveQueue = Promise.resolve()
 let lastLiveMessageAt = null
 let mirrorStore = null
@@ -121,6 +123,7 @@ function ensureCacheShape() {
   cache.messages = Array.isArray(cache.messages) ? cache.messages : []
   cache.chats = cache.chats && typeof cache.chats === 'object' ? cache.chats : {}
   cache.contacts = cache.contacts && typeof cache.contacts === 'object' ? cache.contacts : {}
+  cache.groupEvents = Array.isArray(cache.groupEvents) ? cache.groupEvents : []
   cache.sync = cache.sync && typeof cache.sync === 'object' ? cache.sync : {}
 }
 
@@ -252,6 +255,18 @@ function retainMessageContent(raw) {
   })
 }
 
+function retainPollSecret(raw, message) {
+  if (!message?.poll) return
+  const secret = raw?.messageContextInfo?.messageSecret || raw?.message?.messageContextInfo?.messageSecret
+  if (secret) mirrorStore?.savePollSecret({ jid: message.jid, id: message.id, timestamp: message.timestamp, secret })
+}
+
+function rememberIdentity(jid, name) {
+  if (!jid || !name) return
+  const previous = cache.contacts[jid] || {}
+  cache.contacts[jid] = { ...previous, id: jid, name, updatedAt: nowSeconds() }
+}
+
 async function getMessageFromMirror(key) {
   const jid = key?.remoteJid
   const id = key?.id
@@ -306,14 +321,52 @@ function mergeIncomingMessage(existing, incoming) {
     reactions: existing.reactions,
     status: existing.status,
     statusAt: existing.statusAt,
+    pollVotes: existing.pollVotes,
+    deleted: existing.deleted,
+    deletedAt: existing.deletedAt,
   }
   const hasUsableContent = incoming.type !== 'unknown' || incoming.text || incoming.reactionText
   if (hasUsableContent) Object.assign(existing, incoming)
   Object.assign(existing, refs)
   if (!Object.keys(incoming.receipts || {}).length) existing.receipts = engagement.receipts || {}
   if (!incoming.reactions?.length) existing.reactions = engagement.reactions || []
+  if (!incoming.pollVotes?.length) existing.pollVotes = engagement.pollVotes || []
   existing.status = engagement.status ?? existing.status
   existing.statusAt = engagement.statusAt ?? existing.statusAt
+  existing.deleted = engagement.deleted ?? existing.deleted
+  existing.deletedAt = engagement.deletedAt ?? existing.deletedAt
+}
+
+function namesForPollVote(poll, selectedOptions) {
+  const byHash = new Map((poll?.options || []).map((option) => [crypto.createHash('sha256').update(option).digest().toString(), option]))
+  return (selectedOptions || []).map((option) => byHash.get(Buffer.from(option).toString()) || null).filter(Boolean)
+}
+
+function applyIncomingPollVote(raw) {
+  const update = raw?.message?.pollUpdateMessage
+  const targetKey = update?.pollCreationMessageKey
+  const targetJid = targetKey?.remoteJid || raw?.key?.remoteJid
+  if (!update?.vote || !targetKey?.id || !targetJid) return false
+  const message = cache.messages.find((item) => item.jid === targetJid && item.id === targetKey.id)
+  const secret = mirrorStore?.loadPollSecret({ jid: targetJid, id: targetKey.id })
+  if (!message?.poll || !secret || !socket?.user?.id) return false
+  try {
+    const vote = decryptPollVote(update.vote, {
+      pollCreatorJid: getKeyAuthor(targetKey, socket.user.id),
+      pollMsgId: targetKey.id,
+      pollEncKey: secret,
+      voterJid: getKeyAuthor(raw.key, socket.user.id),
+    })
+    return applyPollVote(message, {
+      participant: getKeyAuthor(raw.key, socket.user.id),
+      options: namesForPollVote(message.poll, vote.selectedOptions),
+      senderTimestampMs: update.senderTimestampMs,
+    })
+  } catch (error) {
+    mirrorStore?.recordEvent({ event: 'poll_vote_decrypt_failed', jid: targetJid, messageId: targetKey.id, detail: { error: error.message } })
+    logger.warn({ err: error, messageId: targetKey.id }, 'Could not decrypt WhatsApp poll vote')
+    return false
+  }
 }
 
 async function ingestMessages(messages, source = 'history') {
@@ -321,9 +374,16 @@ async function ingestMessages(messages, source = 'history') {
   for (const raw of messages) {
     try {
       auditMessageEvent(raw, `messages.${source}`)
+      const pollChanged = applyIncomingPollVote(raw)
+      if (raw?.message?.pollUpdateMessage) {
+        changed = pollChanged || changed
+        continue
+      }
       retainMessageContent(raw)
       const message = safeMessage(raw, { source })
       if (!message) continue
+      retainPollSecret(raw, message)
+      rememberIdentity(message.participant || (!message.fromMe ? message.jid : null), message.pushName)
       const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
       if (existing) {
       mergeIncomingMessage(existing, message)
@@ -645,6 +705,81 @@ async function applyReactionUpdates(updates) {
   return changed
 }
 
+async function removeMessageMedia(message) {
+  const files = [
+    [audioEnvelopeDir, message.audioRef], [imageEnvelopeDir, message.imageRef], [documentEnvelopeDir, message.documentRef], [videoEnvelopeDir, message.videoRef], [stickerEnvelopeDir, message.stickerRef],
+  ]
+  await Promise.all(files.filter(([, filename]) => filename).map(([directory, filename]) => fs.rm(path.join(directory, filename), { force: true })))
+  await Promise.all([downloadedAudioDir, downloadedImageDir, downloadedDocumentDir, downloadedVideoDir, downloadedStickerDir].map(async (directory) => {
+    const entries = await fs.readdir(directory).catch(() => [])
+    await Promise.all(entries.filter((filename) => filename.startsWith(message.id)).map((filename) => fs.rm(path.join(directory, filename), { force: true })))
+  }))
+}
+
+async function applyMessageDeletes(deletion) {
+  let changed = false
+  const markDeleted = async (message) => {
+    if (!message || message.deleted) return
+    await removeMessageMedia(message)
+    message.deleted = true
+    message.deletedAt = nowSeconds()
+    message.originalType = message.type
+    message.type = 'revokedMessage'
+    message.text = ''
+    message.audioRef = null
+    message.imageRef = null
+    message.documentRef = null
+    message.videoRef = null
+    message.stickerRef = null
+    changed = true
+  }
+  if (deletion?.all && deletion?.jid) {
+    for (const message of cache.messages.filter((item) => item.jid === deletion.jid)) await markDeleted(message)
+    mirrorStore?.recordEvent({ event: 'messages.delete_all', jid: deletion.jid })
+    return changed
+  }
+  for (const key of deletion?.keys || []) {
+    const message = cache.messages.find((item) => item.jid === key.remoteJid && item.id === key.id)
+    await markDeleted(message)
+    mirrorStore?.recordEvent({ event: 'messages.delete', jid: key.remoteJid || null, messageId: key.id || null })
+  }
+  return changed
+}
+
+function appendGroupEvent(event) {
+  if (!event?.groupJid) return false
+  const item = { id: crypto.randomUUID(), timestamp: nowSeconds(), ...event }
+  cache.groupEvents.push(item)
+  const cutoff = nowSeconds() - (RETENTION_DAYS * 24 * 60 * 60)
+  cache.groupEvents = cache.groupEvents.filter((entry) => entry.timestamp >= cutoff).slice(-2000)
+  mirrorStore?.recordEvent({ event: `group.${event.kind}`, jid: event.groupJid, detail: { participant: event.participant || null, author: event.author || null, action: event.action || null } })
+  return true
+}
+
+function applyGroupParticipantUpdates(updates) {
+  let changed = false
+  for (const update of updates || []) {
+    for (const participant of update.participants || []) {
+      changed = appendGroupEvent({ groupJid: update.id, kind: 'participant', action: update.action || null, participant, author: update.author || null }) || changed
+    }
+  }
+  return changed
+}
+
+function applyGroupMetadataUpdates(updates, kind) {
+  let changed = false
+  for (const update of updates || []) {
+    const groupJid = update.id
+    if (!groupJid) continue
+    changed = appendGroupEvent({ groupJid, kind, action: null, subject: update.subject || null }) || changed
+  }
+  return changed
+}
+
+function auditCalls(calls) {
+  for (const call of calls || []) mirrorStore?.recordEvent({ event: 'call', jid: call.chatId || call.groupJid || call.from || null, messageId: call.id || null, detail: { status: call.status || null, video: Boolean(call.isVideo), group: Boolean(call.isGroup) } })
+}
+
 async function handleHistorySet({ messages, chats, contacts }) {
   for (const chat of chats || []) {
     if (chat.id) {
@@ -752,6 +887,23 @@ async function connect() {
           await saveCache()
         }
       }
+      if (events['messages.delete']) {
+        const changed = await applyMessageDeletes(events['messages.delete'])
+        if (changed) {
+          cache.sync.lastPersistedAt = nowSeconds()
+          await saveCache()
+        }
+      }
+      if (events['group-participants.update']) {
+        if (applyGroupParticipantUpdates(events['group-participants.update'])) await saveCache()
+      }
+      if (events['groups.update']) {
+        if (applyGroupMetadataUpdates(events['groups.update'], 'metadata_update')) await saveCache()
+      }
+      if (events['groups.upsert']) {
+        if (applyGroupMetadataUpdates(events['groups.upsert'], 'metadata_upsert')) await saveCache()
+      }
+      if (events.call) auditCalls(events.call)
     } catch (error) {
       cache.sync.ingestionHealthy = false
       cache.sync.lastIngestError = error.message
