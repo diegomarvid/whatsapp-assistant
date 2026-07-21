@@ -11,11 +11,17 @@ export function coverageForChat({ chat, messages, connection, sync }) {
   const connectedAt = numberOrNull(sync?.lastConnectedAt || sync?.connectedAt)
   const lastPersistedAt = numberOrNull(sync?.lastPersistedAt)
   const lastObservedLiveAt = numberOrNull(chat?.lastObservedLiveAt)
+  const lastObservedHistoryAt = numberOrNull(chat?.lastObservedHistoryAt)
+  // A history-set received after this connection opened is a fresh snapshot
+  // from WhatsApp, not merely inherited disk state. The remote cursor check
+  // below still rejects it when the returned messages do not reach that cursor.
+  const observedAfterConnection = [lastObservedLiveAt, lastObservedHistoryAt]
+    .some((observedAt) => observedAt && (!connectedAt || observedAt >= connectedAt))
   const reasons = []
 
   if (connection !== 'open') reasons.push('bridge_not_connected')
   if (sync?.ingestionHealthy === false) reasons.push('ingestion_unhealthy')
-  if (!lastObservedLiveAt || (connectedAt && lastObservedLiveAt < connectedAt)) reasons.push('chat_not_observed_after_connection')
+  if (!observedAfterConnection) reasons.push('chat_not_observed_after_connection')
   if (remoteLatestAt && (!latestMessageAt || remoteLatestAt > latestMessageAt)) reasons.push('remote_chat_ahead_of_cache')
 
   return {
@@ -27,6 +33,7 @@ export function coverageForChat({ chat, messages, connection, sync }) {
     connectedAt,
     lastPersistedAt,
     lastObservedLiveAt,
+    lastObservedHistoryAt,
     observerStartedAt: numberOrNull(sync?.observerStartedAt),
     lastDisconnectedAt: numberOrNull(sync?.lastDisconnectedAt),
     retentionDays: RECENT_RETENTION_DAYS,

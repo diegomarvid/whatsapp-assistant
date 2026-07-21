@@ -94,6 +94,28 @@ test('does not call an inherited cache fresh until this connection observed the 
   assert.deepEqual(coverage.reasons, ['chat_not_observed_after_connection'])
 })
 
+test('accepts a complete history snapshot received after this connection opened', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 200, ingestionHealthy: true, lastHistorySyncAt: 201 },
+    chat: { remoteLastTimestamp: 100, lastObservedHistoryAt: 201 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.status, 'fresh')
+  assert.equal(coverage.fresh, true)
+})
+
+test('does not trust history observed before the current connection', () => {
+  const coverage = coverageForChat({
+    connection: 'open',
+    sync: { connectedAt: 200, ingestionHealthy: true },
+    chat: { remoteLastTimestamp: 100, lastObservedHistoryAt: 199 },
+    messages: [{ timestamp: 100 }],
+  })
+  assert.equal(coverage.fresh, false)
+  assert.deepEqual(coverage.reasons, ['chat_not_observed_after_connection'])
+})
+
 test('detects common outgoing document MIME types', () => {
   assert.equal(mimeTypeForFile('/tmp/reporte.xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   assert.equal(mimeTypeForFile('/tmp/nota.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')

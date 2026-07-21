@@ -65,7 +65,7 @@ Instalá Node.js 22+ y el paquete desde un release. No requiere navegador ni
 interfaz gráfica:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.1.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.2.tar.gz
 wa setup
 ```
 
@@ -130,13 +130,13 @@ de `ct`.
 
 ```bash
 wa transcribe doctor       # inspecciona runtime y modelos locales; no descarga
-wa transcribe setup        # instala sólo la librería Python adecuada
+wa transcribe setup        # opcional: instala anticipadamente la librería Python adecuada
 wa transcribe pull         # descarga un modelo, explícitamente
 wa transcribe flor latest
 ```
 
-Al pedir una transcripción por primera vez, el CLI también puede crear ese
-runtime privado automáticamente. Nunca baja un modelo de forma implícita: si
+Al pedir una transcripción por primera vez, el CLI crea ese runtime privado
+automáticamente. Nunca baja un modelo de forma implícita: si
 no encuentra uno local, termina con una instrucción para que la IA pida
 aprobación antes de ejecutar `wa transcribe pull`.
 

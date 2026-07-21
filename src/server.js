@@ -242,7 +242,22 @@ async function resolveCurrentJid(jid) {
   const mapping = socket?.signalRepository?.lidMapping
   if (!mapping?.getLIDForPN) return jid
   try {
-    return (await mapping.getLIDForPN(jid)) || jid
+    const resolvedJid = (await mapping.getLIDForPN(jid)) || jid
+    if (resolvedJid === jid) return jid
+
+    // A newly linked client can receive its initial history under the phone
+    // JID before Baileys has materialized the equivalent LID chat locally.
+    // Never redirect a read to an empty alias: use the freshest local alias.
+    const cacheRecency = (candidate) => {
+      const chat = cache.chats[candidate]
+      const messageTimestamp = cache.messages
+        .filter((message) => message.jid === candidate)
+        .reduce((latest, message) => Math.max(latest, Number(message.timestamp) || 0), 0)
+      return Math.max(Number(chat?.lastTimestamp) || 0, Number(chat?.remoteLastTimestamp) || 0, messageTimestamp)
+    }
+    const requestedRecency = cacheRecency(jid)
+    const resolvedRecency = cacheRecency(resolvedJid)
+    return resolvedRecency >= requestedRecency || requestedRecency === 0 ? resolvedJid : jid
   } catch (error) {
     logger.warn({ err: error, jid }, 'Could not resolve current WhatsApp LID for phone JID')
     return jid
@@ -285,6 +300,11 @@ async function ingestMessages(messages, source = 'history') {
       if (source === 'live') {
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
         cache.chats[message.jid] = { ...previousChat, lastObservedLiveAt: nowSeconds(), lastObservedLiveMessageId: message.id }
+        changed = true
+      }
+      if (source === 'history') {
+        const previousChat = cache.chats[message.jid] || { jid: message.jid }
+        cache.chats[message.jid] = { ...previousChat, lastObservedHistoryAt: nowSeconds(), lastObservedHistoryMessageId: message.id }
         changed = true
       }
       if (message.type === 'audioMessage' && !existing.audioRef) {
@@ -330,6 +350,8 @@ async function ingestMessages(messages, source = 'history') {
         remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), message.timestamp),
         lastObservedLiveAt: source === 'live' ? nowSeconds() : previousChat.lastObservedLiveAt || null,
         lastObservedLiveMessageId: source === 'live' ? message.id : previousChat.lastObservedLiveMessageId || null,
+        lastObservedHistoryAt: source === 'history' ? nowSeconds() : previousChat.lastObservedHistoryAt || null,
+        lastObservedHistoryMessageId: source === 'history' ? message.id : previousChat.lastObservedHistoryMessageId || null,
       }
       changed = true
     } catch (error) {

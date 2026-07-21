@@ -61,7 +61,7 @@ local user, and is excluded from Git.
    On Linux/VPS with systemd, install Node.js 22+ and then use:
 
    ```bash
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.1.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.2.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -122,11 +122,11 @@ name/number mapping, save it with `wa alias add` so later requests like
 3. Runs the private Python Whisper runtime with a locally available model.
 4. Prints the transcript. It does not send anything to the contact.
 
-Transcription is optional and is not installed by `npm install`. Run `wa
-transcribe setup` to install the matching library into the private
+Transcription is optional and is not installed by `npm install`. On the first
+`wa transcribe` request the CLI installs the matching library into the private
 `transcribe-venv/` under the WhatsApp Assistant state directory. Apple Silicon
 uses `mlx-whisper`; Linux and Intel Macs use `faster-whisper`. `wa transcribe
-setup` never downloads a Whisper model: use `wa transcribe doctor` to inspect
+setup` remains available to do that proactively and never downloads a Whisper model: use `wa transcribe doctor` to inspect
 the compatible Hugging Face cache, then explicitly run `wa transcribe pull` if
 the user approves a download. The bridge and all non-audio commands work
 without it.
