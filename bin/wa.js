@@ -82,7 +82,10 @@ async function installDaemon() {
   if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS. Run the bridge with `npm start` on other platforms.')
   await ensureRuntimeDirectories()
   await fs.mkdir(path.dirname(launchAgentPath), { recursive: true })
-  const plist = launchAgentPlist({ nodePath: process.execPath, serverPath: path.join(root, 'src', 'server.js'), stateRoot, logsDir })
+  const serverPath = path.join(root, 'src', 'server.js')
+  const entryPath = process.env.WA_DAEMON_ENTRY || serverPath
+  const entryArguments = process.env.WA_DAEMON_ENTRY ? ['__daemon'] : []
+  const plist = launchAgentPlist({ nodePath: process.env.WA_DAEMON_NODE || process.execPath, serverPath, stateRoot, logsDir, entryPath, entryArguments })
   await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
   tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
   run('launchctl', ['bootstrap', launchctlDomain(), launchAgentPath])
@@ -456,6 +459,7 @@ function discoveryTerms(list, listName, extras = []) {
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
+  if (command === '__daemon') return import('../src/server.js')
   if (command === 'setup') return setup()
   if (command === 'migrate-state') return migrateState(args[0])
   if (command === 'daemon') {

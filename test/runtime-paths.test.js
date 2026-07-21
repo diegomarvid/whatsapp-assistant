@@ -37,3 +37,16 @@ test('renders a private launch agent that pins state outside the package', () =>
   assert.match(plist, /<key>WorkingDirectory<\/key><string>\/opt\/homebrew\/lib\/node_modules\/whatsapp-assistant\/src<\/string>/)
   assert.doesNotMatch(plist, /auth\//)
 })
+
+test('supports a stable CLI entry point for package-manager upgrades', () => {
+  const plist = launchAgentPlist({
+    nodePath: '/opt/homebrew/opt/node@24/bin/node',
+    serverPath: '/opt/homebrew/Cellar/whatsapp-assistant/0.2.2/libexec/lib/node_modules/whatsapp-assistant/src/server.js',
+    entryPath: '/opt/homebrew/opt/whatsapp-assistant/libexec/lib/node_modules/whatsapp-assistant/bin/wa.js',
+    entryArguments: ['__daemon'],
+    stateRoot: '/Users/example/Library/Application Support/WhatsApp Assistant',
+    logsDir: '/Users/example/Library/Application Support/WhatsApp Assistant/logs',
+  })
+  assert.match(plist, /opt\/whatsapp-assistant\/libexec\/lib\/node_modules\/whatsapp-assistant\/bin\/wa\.js/)
+  assert.match(plist, /<string>__daemon<\/string>/)
+})

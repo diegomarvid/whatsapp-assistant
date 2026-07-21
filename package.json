@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-assistant",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local, read-only WhatsApp Web bridge powered by Baileys",
   "type": "module",
   "scripts": {

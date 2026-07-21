@@ -15,14 +15,14 @@ function xmlArray(values) {
   return `<array>${values.map((value) => `<string>${escapeXml(value)}</string>`).join('')}</array>`
 }
 
-export function launchAgentPlist({ nodePath, serverPath, stateRoot, logsDir, workingDirectory = path.dirname(serverPath) }) {
+export function launchAgentPlist({ nodePath, serverPath, stateRoot, logsDir, entryPath = serverPath, entryArguments = [], workingDirectory = path.dirname(serverPath) }) {
   const stdoutPath = path.join(logsDir, 'bridge.log')
   const stderrPath = path.join(logsDir, 'bridge-error.log')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${launchAgentLabel}</string>
-  <key>ProgramArguments</key>${xmlArray([nodePath, serverPath])}
+  <key>ProgramArguments</key>${xmlArray([nodePath, entryPath, ...entryArguments])}
   <key>WorkingDirectory</key><string>${escapeXml(workingDirectory)}</string>
   <key>EnvironmentVariables</key><dict>
     <key>WA_STATE_DIR</key><string>${escapeXml(stateRoot)}</string>
