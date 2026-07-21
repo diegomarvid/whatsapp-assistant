@@ -31,6 +31,7 @@ function usage() {
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>]
   wa pending [--since 24h]
+  wa pending --groups <list> [--since 24h]
   wa transcribe <alias or phone> latest
   wa audios <alias or phone> [limit]
   wa audio <alias or phone> <message-id>
@@ -92,6 +93,12 @@ function isDirectChat(jid) {
 
 function normalizeText(value) {
   return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+}
+
+function looksActionableGroupMessage(text) {
+  const value = String(text || '').trim()
+  if (!value) return false
+  return value.length >= 40 || /[?¿]|\b(porfavor|porfa|necesito|pod(e|es|és)|revis|avisa|confirm|mand|pendiente|cuando|fecha|hoy|mañana|urgente)\b/i.test(value)
 }
 
 function macContacts(args) {
@@ -478,13 +485,33 @@ async function main() {
   }
   if (command === 'pending') {
     let sinceSeconds = 86400
-    if (args[0] === '--since') {
-      const match = (args[1] || '').match(/^(\d+)(h|d)$/)
-      if (!match) throw new Error('Use --since <n>h or <n>d')
-      sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
+    let groupList = null
+    while (args.length) {
+      const option = args.shift()
+      if (option === '--since') {
+        const match = (args.shift() || '').match(/^(\d+)(h|d)$/)
+        if (!match) throw new Error('Use --since <n>h or <n>d')
+        sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
+      } else if (option === '--groups') {
+        groupList = args.shift()?.toLocaleLowerCase()
+        if (!groupList) throw new Error('Use --groups <list>')
+      } else throw new Error(`Unknown option: ${option}`)
     }
     const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
     const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
+    if (groupList) {
+      const list = (await loadGroupLists()).lists[groupList]
+      if (!list?.groups?.length) return console.log(`No hay grupos guardados para ${groupList}.`)
+      const reviews = list.groups
+        .map((group) => ({ group, messages: cache.messages.filter((message) => message.jid === group.jid).sort((a, b) => b.timestamp - a.timestamp) }))
+        .filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff && looksActionableGroupMessage(messages[0].text))
+      if (!reviews.length) return console.log(`No hay pedidos o preguntas recientes sin respuesta tuya en grupos de ${groupList}.`)
+      for (const { group, messages } of reviews) {
+        const message = messages[0]
+        console.log(`${formatTime(message.timestamp)} — ${group.subject || group.jid}: ${message.text.slice(0, 500)} [id: ${message.id}]`)
+      }
+      return
+    }
     const open = Object.values(cache.chats).filter((chat) => isDirectChat(chat.jid)).map((chat) => ({ chat, messages: cache.messages.filter((message) => message.jid === chat.jid).sort((a, b) => b.timestamp - a.timestamp) })).filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff)
     if (!open.length) return console.log('No hay chats directos recientes pendientes de respuesta.')
     for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }

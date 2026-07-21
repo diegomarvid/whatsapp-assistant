@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mimeTypeForFile } from '../src/file-mime.js'
 import { safeMessage } from '../src/message-normalizer.js'
 
 test('normalizes document metadata and reply context without crashing', () => {
@@ -25,4 +26,10 @@ test('normalizes images and reactions without requiring optional fields', () => 
 
 test('returns null for messages with no chat identity', () => {
   assert.equal(safeMessage({ message: { conversation: 'ignored' } }), null)
+})
+
+test('detects common outgoing document MIME types', () => {
+  assert.equal(mimeTypeForFile('/tmp/reporte.xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  assert.equal(mimeTypeForFile('/tmp/nota.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  assert.equal(mimeTypeForFile('/tmp/foto.JPG'), 'image/jpeg')
 })

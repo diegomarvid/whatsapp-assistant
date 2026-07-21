@@ -15,6 +15,7 @@ import { Boom } from '@hapi/boom'
 import pino from 'pino'
 import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
+import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -409,7 +410,7 @@ async function main() {
         const result = await socket.sendMessage(jid, {
           document,
           fileName: path.basename(filePath),
-          mimetype: 'application/pdf',
+          mimetype: mimeTypeForFile(filePath),
           caption: caption?.trim() || undefined,
         })
         json(response, 200, { sent: true, id: result?.key?.id || null })

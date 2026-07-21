@@ -45,6 +45,7 @@ npm link
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
 | `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
+| `wa pending --groups maspeak --since 24h` | Señala actividad reciente sin respuesta tuya en grupos conocidos |
 | `wa audios contacto` / `wa audio contacto <id>` | Lista o descarga un audio seleccionado |
 | `wa transcribe contacto <id|latest>` | Descarga y transcribe un audio seleccionado |
 | `wa images contacto` / `wa image contacto <id>` | Lista o descarga una imagen seleccionada |
@@ -57,6 +58,10 @@ npm link
 Los aliases viven en `data/aliases.json`, que nunca entra a Git. Las acciones
 de escritura (`send`, `send-file`, `react`) requieren un comando explícito; el
 bridge nunca responde, reacciona ni envía archivos por su cuenta.
+
+`wa send-file` conserva el nombre y detecta automáticamente el tipo de archivo
+(PDF, Excel, Word, imagen, CSV, ZIP y formatos comunes); siempre lo envía como
+documento y requiere una instrucción explícita.
 
 `wa find` funciona sin agenda local: prioriza aliases privados, nombres que
 WhatsApp sincroniza (`pushName` / contactos / chats) y coincidencias en
