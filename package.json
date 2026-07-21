@@ -1,6 +1,6 @@
 {
   "name": "@diegomarvid/whatsapp-assistant",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Local, read-only WhatsApp Web bridge powered by Baileys",
   "homepage": "https://github.com/diegomarvid/whatsapp-assistant#readme",
   "repository": {
