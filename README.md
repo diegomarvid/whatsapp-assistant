@@ -1,24 +1,112 @@
 # 💬 WhatsApp Assistant
 
-> Un bridge local de WhatsApp con Baileys y un CLI pensado para consultar el
-> contexto **reciente y correcto** de una conversación.
+> **Tu WhatsApp reciente, disponible para vos o tu agente de IA desde una CLI
+> local.** Lee el chat correcto, recupera adjuntos, entiende los hechos que
+> WhatsApp reporta y actúa sólo cuando se lo pedís.
 
-WhatsApp Assistant mantiene un mirror privado de los últimos siete días y
-expone un comando `wa` para leer, buscar, descargar adjuntos y —únicamente
-cuando se pide en forma explícita— enviar, responder o reaccionar. No es una
-integración oficial de WhatsApp y nunca abre una API a Internet.
+WhatsApp Assistant convierte una cuenta vinculada de WhatsApp en contexto local
+**reciente, verificable y accionable**. En vez de hacer que un agente adivine
+qué chat mirar o trabaje con una copia vieja, el comando `wa` le da mensajes,
+media, replies, receipts, reacciones y cobertura de sincronización desde un
+mirror privado de los últimos siete días.
+
+No es una integración oficial de WhatsApp. Nunca publica una API a Internet ni
+interpreta el significado de tus conversaciones por reglas de texto.
 
 ![Arquitectura del bridge local](docs/assets/whatsapp-assistant-architecture.drawio.png)
 
-## ✨ Qué resuelve
+## ⚡ Una conexión, mucho más contexto útil
 
 | | |
 | --- | --- |
-| 🔄 **Contexto reciente** | El bridge recibe eventos mientras está conectado y conserva sólo una ventana móvil de siete días. |
-| 🎯 **Chat correcto** | Resuelve el número telefónico histórico al LID actual de WhatsApp antes de leer o actuar. |
-| ✅ **Acciones seguras** | `latest`, reacciones y replies verifican cobertura `fresh`, para no operar sobre un mensaje viejo. |
-| 🔒 **Local y privado** | API limitada a `127.0.0.1`; credenciales, cache y aliases nunca entran a Git. |
-| 🧠 **Sin heurísticas de idioma** | El CLI presenta hechos; interpretar intención, urgencia o pendientes es trabajo de la IA. |
+| 🔄 **Siempre reciente** | Un bridge en segundo plano recibe eventos y conserva una ventana móvil de siete días, sin convertir tu cuenta en un archivo histórico. |
+| 🎯 **El chat correcto** | Resuelve números, aliases, nombres de WhatsApp y el LID actual antes de leer, responder o reaccionar. |
+| ✅ **Acciones sobre hechos frescos** | `latest`, replies y reacciones validan cobertura `fresh` para no actuar sobre un mensaje que quedó viejo. |
+| 🔒 **Privado por diseño** | API sólo en `127.0.0.1`; sesión, SQLite, aliases y adjuntos quedan en tu máquina, fuera de Git y Homebrew. |
+| 🧠 **Ideal para agentes** | Devuelve datos estructurados y paths absolutos; la IA interpreta el contenido con sus propias capacidades, en cualquier idioma. |
+
+## ✨ Todo lo que podés hacer
+
+### 💬 Leer conversaciones con contexto real
+
+- Encontrar personas por alias, teléfono, nombre de WhatsApp o actividad
+  reciente: `wa find "Florencia"`.
+- Ver el último mensaje entrante, la conversación reciente o buscar en todos
+  los chats de la ventana: `latest-incoming`, `history`, `search` y
+  `search-all`.
+- Saber si una lectura está realmente al día antes de concluir algo:
+  `wa coverage contacto`.
+- Mantener listas privadas de grupos de trabajo, inspeccionarlos y descubrir
+  nuevos sin hardcodear el universo de grupos.
+
+### 👀 Ver lo que pasó alrededor de un mensaje
+
+- Consultar entrega, leído, reproducido y receipts por participante para
+  mensajes propios; sin convertir la falta de un receipt en una conclusión.
+- Ver reacciones actuales, encuestas y votos observables, respuestas
+  interactivas, ubicaciones, contactos, llamadas perdidas y eventos de grupo.
+- Conservar el estado actual de mensajes editados, efímeros o revocados dentro
+  de la ventana reciente.
+
+### 📎 Trabajar con los adjuntos, no sólo con el texto
+
+- Listar y descargar selectivamente audios, imágenes, videos, stickers y
+  documentos. El resultado es un path local que cualquier IA puede abrir con
+  su herramienta visual o documental.
+- Transcribir audios localmente con un runtime Python privado y reutilizar un
+  modelo Whisper ya descargado cuando existe.
+- No asumir que una imagen o un PDF es texto: el bridge entrega el archivo y
+  deja su interpretación al runtime que lo invoca.
+
+### ✉️ Actuar cuando vos lo indicás
+
+- Enviar texto, documentos, imágenes, videos, audios y notas de voz.
+- Responder citando exactamente un mensaje o reaccionar al último entrante
+  **confirmado**.
+- Mencionar participantes explícitos en grupos.
+- Nada se envía por iniciativa del bridge: cada `send`, `reply` o `react`
+  requiere una instrucción explícita.
+
+### 🧱 Dejarlo funcionando una vez
+
+- Escaneás un QR una vez; el servicio se reconecta luego de reinicios de macOS
+  o Linux/VPS sin un navegador.
+- Funciona como LaunchAgent en macOS o servicio `systemd --user` en Linux.
+- La sesión y SQLite sobreviven actualizaciones de Homebrew; `wa doctor` y
+  `wa status` muestran qué falta sin revelar chats ni secretos.
+
+## 🎯 Ejemplos que justifican tenerlo siempre activo
+
+| Si necesitás… | El agente puede hacer… |
+| --- | --- |
+| **No perder un follow-up** | Leer los últimos mensajes de una persona o de un conjunto de grupos, con hora, autor y adjuntos reales. |
+| **Responder con precisión** | Verificar cobertura, leer el último entrante y ejecutar un `reply` que cita ese mensaje —no uno anterior. |
+| **Entender un audio o una foto** | Descargar el adjunto puntual, abrirlo con la capacidad disponible y transcribirlo localmente si es audio. |
+| **Saber qué pasó en un grupo** | Consultar reacciones, receipts de tus mensajes, votos, participantes y eventos de grupo que WhatsApp haya reportado. |
+| **Compartir una entrega** | Enviar un PDF, imagen, video o audio por WhatsApp desde una ruta local con un mensaje explícito. |
+
+## 🤖 Guía rápida para una IA
+
+La interfaz está diseñada para que un agente no tenga que conocer Baileys ni
+adivinar el estado de WhatsApp. El recorrido seguro es:
+
+```bash
+# 1. Resolver la persona y comprobar que el mirror está actualizado
+wa find "Nombre"
+wa coverage contacto
+
+# 2. Leer hechos recientes, con IDs para cualquier acción posterior
+wa latest-incoming contacto --ids
+wa history contacto 20 --ids
+
+# 3. Sólo ante una instrucción explícita: actuar sobre el ID confirmado
+wa reply contacto <message-id> "Mensaje pedido por el usuario"
+```
+
+Para límites temporales, receipts, reacciones y datos que no pueden
+reconstruirse del pasado, ejecutar siempre `wa help data` antes de inferir algo.
+Para la instalación y recuperación completa, seguir
+[`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md).
 
 ## 🚀 Instalación rápida
 
@@ -114,12 +202,11 @@ Esto asume una distro con systemd. En un contenedor o distro sin systemd, el
 bridge sigue funcionando con `npm start`, pero hay que ejecutarlo bajo el
 supervisor propio del entorno.
 
-### Requisitos base
+### 🛠 Desarrollo desde checkout (opcional)
 
-- Node.js **22 o superior**.
-- Una cuenta de WhatsApp para vincular una sola vez por QR.
-- macOS o Linux con systemd si se quiere un servicio administrado. La búsqueda
-  opcional en Contactos es una mejora exclusiva de macOS.
+Para contribuir o correr el bridge desde el repositorio en vez de instalar el
+paquete, necesitás Node.js **22 o superior**. La búsqueda opcional en Contactos
+es una mejora exclusiva de macOS.
 
 ```bash
 git clone https://github.com/diegomarvid/whatsapp-assistant.git
