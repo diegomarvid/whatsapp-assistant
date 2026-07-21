@@ -440,10 +440,13 @@ acopla el bridge a un runtime concreto de IA.
 | `wa reply contacto latest-incoming "Entendido"` | Responde citando un mensaje concreto. |
 | `wa send contacto "mensaje"` | Envía un texto. |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un archivo como documento. |
-| `wa send-image contacto /ruta/foto.jpg "caption"` | Envía una imagen nativa. |
+| `wa send-image contacto /ruta/foto.jpg "caption" --reply-to latest-incoming` | Envía una imagen nativa, opcionalmente citando un mensaje. |
 | `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |
 | `wa send-audio contacto /ruta/audio.ogg --voice` | Envía audio; `--voice` lo marca como nota de voz. |
 | `wa send grupo@g.us "Hola" --mention flor` | Envía texto y menciona contactos explícitos en un grupo. |
+| `wa edit contacto <id\|latest> "texto nuevo"` | Edita un mensaje **propio** ya enviado. |
+| `wa unsend contacto <id\|latest>` | Revoca (elimina para todos) un mensaje **propio**. |
+| `wa mark-read contacto <id\|latest-incoming>` | Emite un read receipt explícito para un mensaje entrante. El bridge nunca marca leído por su cuenta. |
 
 El bridge nunca envía, reacciona ni responde por su cuenta. `send`, `send-file`, `send-image`, `send-video`, `send-audio`,
 `react` y `reply` requieren un comando explícito; las operaciones que usan
@@ -495,6 +498,12 @@ Los grupos mantienen su JID `…@g.us` y no se remapean como contactos.
 - El CLI no intenta detectar saludos, urgencia, intención ni “pendientes” por
   regex o palabras clave. La IA interpreta el contenido después de leer los
   hechos estructurales.
+- Canales/newsletters (`…@newsletter`), comunidades y estados de WhatsApp no
+  se espejan: el mirror cubre chats directos, grupos y sus eventos. Si un JID
+  de canal aparece en una cita o reenvío se conserva como dato, pero no hay
+  historial ni acciones sobre él.
+- `unknownTypeMessages` en `wa status` es el canary de drift: si WhatsApp
+  cambia formatos de mensaje sin romper la API, ese contador sube.
 
 Para el detalle de qué estado es privado y queda excluido de Git, ver
 [`docs/private-state.md`](docs/private-state.md).
@@ -532,9 +541,13 @@ ser loopback-only.
 | `GET /snapshot` | Vista reciente consistente del mirror. |
 | `GET /resolve?jid=<jid>` | Resuelve un PN al LID vivo conocido por Baileys. |
 | `GET /coverage?jid=<jid>` | Frescura verificable de un chat (`fresh`, razones y timestamps). |
+| `GET /identities` | Nombres, actividad y conteos por chat, sin cuerpos de mensajes. |
 | `GET /chats?limit=50` | Chats conocidos, más recientes primero. |
 | `GET /messages?jid=<jid>&limit=50` | Mensajes sincronizados de un chat. |
-| `GET /search?q=<texto>&limit=30` | Búsqueda local en mensajes recientes. |
+| `GET /search?q=&since=&scope=&jids=&normalized=1` | Búsqueda local con ventana, alcance y folding de diacríticos opcionales. |
+| `GET /events?kind=group\|call&jid=` | Eventos de grupo o llamadas observados por el bridge. |
+| `POST /messages/edit` / `POST /messages/revoke` | Edita o revoca un mensaje propio. |
+| `POST /messages/read` | Emite un read receipt explícito para un mensaje entrante. |
 | `GET /groups` / `GET /groups?jid=<jid>` | Grupos participados o detalle con participantes. |
 | `POST /messages/send` | Envía texto, opcionalmente citando un mensaje (usa el envelope raw local para que la cita de media renderice) y con menciones. |
 | `POST /messages/react` | Reacciona a un mensaje concreto. |

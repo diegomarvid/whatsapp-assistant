@@ -13,7 +13,7 @@ import { paths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
 import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
 import { linksInText } from '../src/message-normalizer.js'
-import { isDirectChat, parseSince, searchAllMatches } from '../src/search-scope.js'
+import { isDirectChat, normalizeSearchText as normalizeText, parseSince } from '../src/search-scope.js'
 import { bridgeBaseUrl } from '../src/bridge-endpoint.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 
@@ -107,16 +107,19 @@ Comandos:
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
   wa send <alias or phone> <message> [--mention <contacto> ...]
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
-  wa send-file <alias or phone> <file> [caption]
-  wa send-image|send-video <alias or phone> <file> [caption] [--mention <contacto> ...]
-  wa send-audio <alias or phone> <file> [--voice]`)
+  wa edit <alias or phone> <message-id|latest> <new text>      # sólo mensajes propios
+  wa unsend <alias or phone> <message-id|latest>               # revoca un mensaje propio
+  wa mark-read <alias or phone> <message-id|latest-incoming>   # emite read receipt explícito
+  wa send-file <alias or phone> <file> [caption] [--reply-to <id|latest-incoming>]
+  wa send-image|send-video <alias or phone> <file> [caption] [--mention <contacto> ...] [--reply-to <id|latest-incoming>]
+  wa send-audio <alias or phone> <file> [--voice] [--reply-to <id|latest-incoming>]`)
 }
 
 function help(topic) {
   const topics = {
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
-    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
+    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención default: 7 días; una ventana mayor requiere una elección explícita con wa history-policy.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
@@ -447,11 +450,8 @@ function phoneFromJid(jid) {
   return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
 }
 
-function normalizeText(value) {
-  return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
-}
-
 function macContacts(args) {
+  if (process.platform !== 'darwin' || process.env.WA_NO_MAC_CONTACTS === '1') return []
   const result = spawnSync('swift', [contactsSearchScript, ...args], { encoding: 'utf8', timeout: 30000 })
   if (result.error || result.status !== 0) return []
   try { return JSON.parse(result.stdout) } catch { return [] }
@@ -472,21 +472,25 @@ async function withCurrentJid(contact) {
   return { ...contact, jid: resolved.jid || contact.jid, originalJid: contact.jid }
 }
 
+async function readIdentities() {
+  return request('/identities')
+}
+
 async function resolve(target) {
   const aliases = await loadAliases()
   const key = target.toLocaleLowerCase()
-  const cache = await readSnapshot()
+  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target) && !aliases[key]) return withCurrentJid({ phone: phoneFromJid(target), jid: target, alias: null, name: null })
+  if (/^[+\d][\d\s()-]*$/.test(target) && !aliases[key]) return withCurrentJid({ phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null })
+  const { chats } = await readIdentities()
   if (aliases[key]) {
     const alias = aliases[key]
-    const aliasMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizeText(alias.name || ''))
+    const aliasMatches = chats.filter((chat) => normalizeText(chat.name || '') === normalizeText(alias.name || ''))
     if (aliasMatches.length === 1) return withCurrentJid({ ...alias, jid: aliasMatches[0].jid, alias: key })
     return withCurrentJid({ ...alias, alias: key })
   }
-  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target)) return withCurrentJid({ phone: phoneFromJid(target), jid: target, alias: null, name: null })
-  if (/^[+\d][\d\s()-]*$/.test(target)) return withCurrentJid({ phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null })
   const normalizedTarget = normalizeText(target)
-  const whatsappMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizedTarget)
-  if (whatsappMatches.length === 1) return withCurrentJid({ phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || cache.contacts[whatsappMatches[0].jid]?.name || null })
+  const whatsappMatches = chats.filter((chat) => normalizeText(chat.name || '') === normalizedTarget)
+  if (whatsappMatches.length === 1) return withCurrentJid({ phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || null })
   if (whatsappMatches.length > 1) throw new Error(`More than one WhatsApp chat matches “${target}”. Use a phone number or save an alias.`)
   const exactMatches = macContactsForQuery(target)
     .filter((match) => normalizeText(match.name) === normalizeText(target))
@@ -506,12 +510,6 @@ async function request(endpoint, { timeoutMs = 5000 } = {}) {
   }
   if (!response.ok) throw new Error(`Bridge request failed (${response.status}): ${await response.text()}`)
   return response.json()
-}
-
-async function readSnapshot() {
-  // The snapshot grows with extended retention; give it more room than the
-  // point queries before declaring the observer unavailable.
-  return request('/snapshot', { timeoutMs: 20000 })
 }
 
 async function requireFreshCoverage(contact) {
@@ -573,33 +571,39 @@ async function downloadSticker(jid, messageId) {
   return response.json()
 }
 
-async function reactToMessage(jid, messageId, emoji) {
+async function bridgePost(pathname, body, failureMessage) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/messages/react`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ jid, messageId, emoji }) })
-  if (!response.ok) throw new Error(`Could not react: ${(await response.json()).message || response.status}`)
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error(`${failureMessage}: ${(await response.json()).message || response.status}`)
   return response.json()
 }
 
-async function sendMessage(jid, text, replyToMessageId = null, mentions = []) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/messages/send`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jid, text, replyToMessageId, mentions }),
-  })
-  if (!response.ok) throw new Error(`Could not send message: ${(await response.json()).message || response.status}`)
-  return response.json()
+function reactToMessage(jid, messageId, emoji) {
+  return bridgePost('/messages/react', { jid, messageId, emoji }, 'Could not react')
 }
 
-async function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/media/send`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jid, kind, filePath, caption, mentions, voice }),
-  })
-  if (!response.ok) throw new Error(`Could not send ${kind}: ${(await response.json()).message || response.status}`)
-  return response.json()
+function sendMessage(jid, text, replyToMessageId = null, mentions = []) {
+  return bridgePost('/messages/send', { jid, text, replyToMessageId, mentions }, 'Could not send message')
+}
+
+function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false, replyToMessageId = null) {
+  return bridgePost('/media/send', { jid, kind, filePath, caption, mentions, voice, replyToMessageId }, `Could not send ${kind}`)
+}
+
+function editMessage(jid, messageId, text) {
+  return bridgePost('/messages/edit', { jid, messageId, text }, 'Could not edit message')
+}
+
+function revokeMessage(jid, messageId) {
+  return bridgePost('/messages/revoke', { jid, messageId }, 'Could not unsend message')
+}
+
+function markMessageRead(jid, messageId) {
+  return bridgePost('/messages/read', { jid, messageId }, 'Could not mark as read')
 }
 
 async function splitMentions(args) {
@@ -621,15 +625,33 @@ function ensureMentionsAreForGroup(jid, mentions) {
   if (mentions.length && !jid.endsWith('@g.us')) throw new Error('Mentions are only supported when sending to a WhatsApp group.')
 }
 
-async function sendFile(jid, filePath, caption) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/documents/send`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jid, filePath, caption }),
-  })
-  if (!response.ok) throw new Error(`Could not send document: ${(await response.json()).message || response.status}`)
-  return response.json()
+function sendFile(jid, filePath, caption, replyToMessageId = null) {
+  return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId }, 'Could not send document')
+}
+
+function extractOption(args, name) {
+  const index = args.indexOf(name)
+  if (index < 0) return null
+  const [, value] = args.splice(index, 2)
+  if (!value) throw new Error(`Use ${name} <value>`)
+  return value
+}
+
+// Resolves an explicit id or a latest/latest-incoming selector to a concrete
+// message id; selectors additionally require fresh coverage so an action never
+// silently targets a stale "latest".
+async function resolveMessageSelector(contact, selector, { ownOnly = false, incomingOnly = false } = {}) {
+  const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
+  const target = selector === 'latest'
+    ? messages.find((message) => !ownOnly || message.fromMe)
+    : selector === 'latest-incoming'
+      ? messages.find((message) => !message.fromMe)
+      : messages.find((message) => message.id === selector)
+  if (!target) throw new Error(`No matching message found for selector: ${selector}`)
+  if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
+  if (ownOnly && !target.fromMe) throw new Error('This action only applies to a message sent by this account.')
+  if (incomingOnly && target.fromMe) throw new Error('This action only applies to an incoming message.')
+  return target
 }
 
 async function loadTranscriptionConfig() {
@@ -834,73 +856,54 @@ function printMessages(messages, { ids = false, cache = null, empty = 'No hay me
 }
 
 async function cacheMatches(query) {
-  const cache = await readSnapshot()
   const normalized = normalizeText(query)
-  const signals = new Map()
-  for (const chat of Object.values(cache.chats)) {
-    if (!isDirectChat(chat.jid)) continue
-    signals.set(chat.jid, {
-      jid: chat.jid,
-      names: new Set([chat.name, cache.contacts[chat.jid]?.name].filter(Boolean)),
-      messageCount: 0,
-      lastTimestamp: chat.lastTimestamp || 0,
-      matchingText: null,
-    })
+  const [{ chats }, textMatches] = await Promise.all([
+    readIdentities(),
+    normalized
+      ? request(`/search?q=${encodeURIComponent(query)}&scope=direct&normalized=1&limit=50`).then(({ messages }) => messages)
+      : Promise.resolve([]),
+  ])
+  const matchingTextByJid = new Map()
+  for (const message of textMatches) {
+    if (!matchingTextByJid.has(message.jid)) matchingTextByJid.set(message.jid, message.text)
   }
-  for (const message of cache.messages) {
-    if (!isDirectChat(message.jid)) continue
-    const signal = signals.get(message.jid) || {
-      jid: message.jid,
-      names: new Set(),
-      messageCount: 0,
-      lastTimestamp: 0,
-      matchingText: null,
-    }
-    if (message.pushName && !message.fromMe) signal.names.add(message.pushName)
-    signal.messageCount += 1
-    signal.lastTimestamp = Math.max(signal.lastTimestamp, message.timestamp || 0)
-    if (!signal.matchingText && normalized && normalizeText(message.text || '').includes(normalized)) signal.matchingText = message.text
-    signals.set(message.jid, signal)
-  }
-  return [...signals.values()]
-    .map((signal) => {
-      const names = [...signal.names]
-      const name = names[0] || null
-      const matchingName = names.find((candidate) => normalizeText(candidate).includes(normalized))
+  return chats
+    .filter((chat) => isDirectChat(chat.jid))
+    .map((chat) => {
+      const matchingName = chat.name && normalizeText(chat.name).includes(normalized) ? chat.name : null
+      const matchingText = matchingTextByJid.get(chat.jid) || null
       const score = matchingName
         ? (normalizeText(matchingName) === normalized ? 900 : 700)
-        : signal.matchingText ? 200 : 0
-      return { ...signal, name, matchingName, score }
+        : matchingText ? 200 : 0
+      return { ...chat, lastTimestamp: chat.lastTimestamp || 0, matchingName, matchingText, score }
     })
     .filter((signal) => signal.score > 0)
     .sort((left, right) => right.score - left.score || right.lastTimestamp - left.lastTimestamp)
 }
 
 async function recentChats(limit) {
-  const cache = await readSnapshot()
-  const chats = Object.values(cache.chats)
+  const identities = await readIdentities()
+  const chats = identities.chats
     .filter((chat) => isDirectChat(chat.jid))
     .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
     .slice(0, limit)
   const contacts = macContactsForPhones(chats.map((chat) => phoneFromJid(chat.jid)))
   const contactByPhone = new Map(contacts.flatMap((contact) => contact.phones.map((phone) => [phone.replace(/\D/g, ''), contact.name])))
-  return { cache, chats, contactByPhone }
+  return { chats, contactByPhone }
 }
 
 async function groupCandidates(terms) {
-  const normalizedTerms = terms.map(normalizeText).filter(Boolean)
-  const [groups, cache] = await Promise.all([
+  const normalizedTerms = [...new Set(terms.map(normalizeText).filter(Boolean))]
+  const [groups, ...termMatches] = await Promise.all([
     whatsappGroups(),
-    readSnapshot(),
+    ...normalizedTerms.map((term) => request(`/search?q=${encodeURIComponent(term)}&scope=groups&normalized=1&limit=100`)
+      .then(({ messages }) => messages.map((message) => ({ ...message, matchingTerm: term })))
+      .catch(() => [])),
   ])
   const messagesByGroup = new Map()
-  for (const message of cache.messages) {
-    if (!message.jid?.endsWith('@g.us')) continue
-    const text = message.text || ''
-    const matchingTerm = normalizedTerms.find((term) => normalizeText(text).includes(term))
-    if (!matchingTerm) continue
+  for (const message of termMatches.flat()) {
     const evidence = messagesByGroup.get(message.jid) || []
-    evidence.push({ text, timestamp: message.timestamp, matchingTerm })
+    evidence.push({ text: message.text || '', timestamp: message.timestamp, matchingTerm: message.matchingTerm })
     messagesByGroup.set(message.jid, evidence)
   }
   return groups.map((group) => {
@@ -990,12 +993,12 @@ async function main() {
   }
   if (command === 'recent') {
     const limit = Math.min(Math.max(Number.parseInt(args[0] || '20', 10) || 20, 1), 50)
-    const { cache, chats, contactByPhone } = await recentChats(limit)
+    const { chats, contactByPhone } = await recentChats(limit)
     const aliases = await loadAliases()
     const aliasByPhone = new Map(Object.values(aliases).map((item) => [item.phone, item.name || item.phone]))
     for (const chat of chats) {
       const phone = phoneFromJid(chat.jid)
-      const name = aliasByPhone.get(phone) || cache.contacts[chat.jid]?.name || chat.name || contactByPhone.get(phone) || 'sin nombre'
+      const name = aliasByPhone.get(phone) || chat.name || contactByPhone.get(phone) || 'sin nombre'
       console.log(`${formatTime(chat.lastTimestamp)} — ${name} (${phone || chat.jid})`)
     }
     return
@@ -1015,13 +1018,13 @@ async function main() {
       const jid = args.shift()
       const limit = Math.min(Math.max(Number.parseInt(args[0] || '12', 10) || 12, 1), 50)
       if (!jid) return usage()
-      const [groups, cache] = await Promise.all([whatsappGroups(), readSnapshot()])
+      const [groups, { messages: groupMessages }] = await Promise.all([whatsappGroups(), request(`/messages?jid=${encodeURIComponent(jid)}&limit=200`)])
       const group = groups.find((item) => item.jid === jid)
       if (!group) throw new Error(`Unknown WhatsApp group: ${jid}`)
       console.log(`Grupo: ${group.subject || 'sin título'} (${group.jid})`)
       if (group.desc) console.log(`Descripción: ${group.desc}`)
-      const messages = cache.messages
-        .filter((message) => message.jid === jid && message.text?.trim())
+      const messages = groupMessages
+        .filter((message) => message.text?.trim())
         .sort((left, right) => right.timestamp - left.timestamp)
         .slice(0, limit)
       for (const message of messages) console.log(`${formatTime(message.timestamp)} — ${message.fromMe ? 'Vos' : message.pushName || 'Contacto'}: ${message.text.slice(0, 500)}`)
@@ -1096,19 +1099,22 @@ async function main() {
   if (command === 'send-file') {
     const target = args.shift()
     const filePath = args.shift()
-    const caption = args.join(' ').trim()
     if (!target || !filePath) return usage()
+    const replySelector = extractOption(args, '--reply-to')
+    const caption = args.join(' ').trim()
     const file = path.resolve(filePath)
     const stat = await fs.stat(file)
     if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
     const contact = await resolve(target)
-    const result = await sendFile(contact.jid, file, caption)
+    const replyTo = replySelector ? (await resolveMessageSelector(contact, replySelector)).id : null
+    const result = await sendFile(contact.jid, file, caption, replyTo)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
   if (command === 'send-image' || command === 'send-video' || command === 'send-audio') {
     const target = args.shift()
     const filePath = args.shift()
     if (!target || !filePath) return usage()
+    const replySelector = extractOption(args, '--reply-to')
     const { values, mentions } = await splitMentions(args)
     const voiceIndex = values.indexOf('--voice')
     const voice = voiceIndex >= 0
@@ -1119,9 +1125,38 @@ async function main() {
     if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
     const contact = await resolve(target)
     ensureMentionsAreForGroup(contact.jid, mentions)
+    const replyTo = replySelector ? (await resolveMessageSelector(contact, replySelector)).id : null
     const kind = command.replace('send-', '')
-    const result = await sendMedia(contact.jid, kind, file, values.join(' ').trim(), mentions, voice)
+    const result = await sendMedia(contact.jid, kind, file, values.join(' ').trim(), mentions, voice, replyTo)
     return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}.`)
+  }
+  if (command === 'edit') {
+    const target = args.shift()
+    const messageId = args.shift()
+    const text = args.join(' ').trim()
+    if (!target || !messageId || !text) return usage()
+    const contact = await resolve(target)
+    const message = await resolveMessageSelector(contact, messageId, { ownOnly: true })
+    await editMessage(contact.jid, message.id, text)
+    return console.log(`Edited (${message.id}).`)
+  }
+  if (command === 'unsend') {
+    const target = args.shift()
+    const selector = args.shift()
+    if (!target || !selector) return usage()
+    const contact = await resolve(target)
+    const message = await resolveMessageSelector(contact, selector, { ownOnly: true })
+    await revokeMessage(contact.jid, message.id)
+    return console.log(`Unsent (${message.id}).`)
+  }
+  if (command === 'mark-read') {
+    const target = args.shift()
+    const selector = args.shift()
+    if (!target || !selector) return usage()
+    const contact = await resolve(target)
+    const message = await resolveMessageSelector(contact, selector, { incomingOnly: true })
+    await markMessageRead(contact.jid, message.id)
+    return console.log(`Marked as read (${message.id}).`)
   }
   if (command === 'search-all') {
     const query = args.shift()?.trim()
@@ -1138,17 +1173,16 @@ async function main() {
       else if (option === '--ids') ids = true
       else throw new Error(`Unknown option: ${option}`)
     }
-    const cache = await readSnapshot()
-    const allowedGroups = groupList ? new Set((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
-    const matches = searchAllMatches({
-      messages: cache.messages,
-      query,
-      nowSeconds: Math.floor(Date.now() / 1000),
-      sinceSeconds,
-      scope,
-      allowedGroups,
-      limit: 100,
-    })
+    const allowedGroups = groupList ? ((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
+    const parameters = new URLSearchParams({ q: query, limit: '100' })
+    if (sinceSeconds) parameters.set('since', String(sinceSeconds))
+    if (scope !== 'all') parameters.set('scope', scope)
+    if (allowedGroups?.length) parameters.set('jids', allowedGroups.join(','))
+    const [{ messages: matches }, identities] = await Promise.all([
+      request(`/search?${parameters.toString()}`),
+      readIdentities(),
+    ])
+    const cache = { chats: Object.fromEntries(identities.chats.map((chat) => [chat.jid, chat])), contacts: identities.contacts }
     return printMessages(matches, { ids, cache, empty: 'Sin coincidencias en la ventana local retenida.' })
   }
   if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'links' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
@@ -1156,7 +1190,7 @@ async function main() {
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    const snapshot = ['polls', 'poll', 'calls', 'group-events', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readSnapshot() : null
+    const snapshot = ['polls', 'poll', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readIdentities() : null
     if (command === 'coverage') {
       const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
       console.log(JSON.stringify({ chat: contact.name || target, ...coverage }, null, 2))
@@ -1266,7 +1300,7 @@ async function main() {
     if (command === 'locations' || command === 'contacts' || command === 'polls' || command === 'calls') {
       if (command === 'calls') {
         const limit = Number.parseInt(args[0] || '20', 10)
-        const events = (snapshot.callEvents || []).filter((event) => event.chatId === contact.jid || event.groupJid === contact.jid || event.from === contact.jid).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+        const { events } = await request(`/events?kind=call&jid=${encodeURIComponent(contact.jid)}&limit=${limit}`)
         const missedMessages = messages.filter((message) => message.call).slice(0, limit).map((message) => ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, call: message.call }))
         if (!events.length && !missedMessages.length) return console.log('No hay llamadas cacheadas para este chat.')
         return console.log(JSON.stringify({ events, missedCallMessages: missedMessages, note: 'Los eventos de llamada se conservan sólo desde que el bridge estaba activo; WhatsApp puede además generar un mensaje de llamada perdida.' }, null, 2))
@@ -1279,9 +1313,12 @@ async function main() {
     if (command === 'group-events') {
       if (!contact.jid.endsWith('@g.us')) throw new Error('group-events is only available for WhatsApp groups.')
       const limit = Number.parseInt(args[0] || '20', 10)
-      const events = (snapshot.groupEvents || []).filter((event) => event.groupJid === contact.jid).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+      const [{ events }, identities] = await Promise.all([
+        request(`/events?kind=group&jid=${encodeURIComponent(contact.jid)}&limit=${limit}`),
+        readIdentities(),
+      ])
       if (!events.length) return console.log('No hay cambios de grupo cacheados para este grupo.')
-      return console.log(JSON.stringify(events.map((event) => ({ ...event, participant: event.participant ? contactIdentity(event.participant, snapshot.contacts) : null, author: event.author ? contactIdentity(event.author, snapshot.contacts) : null })), null, 2))
+      return console.log(JSON.stringify(events.map((event) => ({ ...event, participant: event.participant ? contactIdentity(event.participant, identities.contacts) : null, author: event.author ? contactIdentity(event.author, identities.contacts) : null })), null, 2))
     }
     if (command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'poll') {
       const messageId = args.shift()

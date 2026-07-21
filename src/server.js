@@ -23,6 +23,7 @@ import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from '.
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
 import { quotedReplyEnvelope } from './quoted-reply.js'
+import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
 import { loadHistoryPolicy } from './history-policy.js'
 import { MirrorStore, messageKey } from './mirror-store.js'
@@ -618,6 +619,37 @@ function pruneMessages() {
   if (cache.messages.length !== before) indexMessages()
 }
 
+// Returns Baileys send options quoting an existing cached message, {} when no
+// reply target was requested, or null when the target is unknown.
+function quotedSendOptions(jid, replyToMessageId) {
+  if (!replyToMessageId) return {}
+  const quoted = findMessage(jid, replyToMessageId)
+  if (!quoted) return null
+  return {
+    quoted: quotedReplyEnvelope({
+      jid,
+      quoted,
+      loadRawMessage: () => {
+        try {
+          const payload = mirrorStore?.loadMessageContent({ jid, id: quoted.id })
+          return payload ? deserialize(payload) : null
+        } catch (error) {
+          logger.warn({ err: error, messageId: quoted.id }, 'Could not load raw quoted content; falling back to cached text')
+          return null
+        }
+      },
+    }),
+  }
+}
+
+// A protocol action (edit, revoke, read receipt) targets a message through
+// its original key; only messages still in the mirror can be targeted.
+function messageActionKey(jid, message) {
+  const key = { remoteJid: jid, id: message.id, fromMe: Boolean(message.fromMe) }
+  if (message.participant) key.participant = message.participant
+  return key
+}
+
 function normalizeLimit(value, fallback = 50, ceiling = 200) {
   const number = Number.parseInt(value || '', 10)
   return Number.isFinite(number) ? Math.min(Math.max(number, 1), ceiling) : fallback
@@ -1122,11 +1154,19 @@ async function main() {
     const isStickerDownload = request.method === 'POST' && url.pathname === '/stickers/download'
     const isMessageReaction = request.method === 'POST' && url.pathname === '/messages/react'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
+    const isMessageEdit = request.method === 'POST' && url.pathname === '/messages/edit'
+    const isMessageRevoke = request.method === 'POST' && url.pathname === '/messages/revoke'
+    const isMessageRead = request.method === 'POST' && url.pathname === '/messages/read'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isDocumentSend && !isMediaSend) return json(response, 405, { error: 'method_not_allowed' })
-    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend) return json(response, 405, { error: 'method_not_allowed' })
+    if (url.pathname === '/health') {
+      // Canary for WhatsApp payload drift: a rising unknown-type share means
+      // the provider changed message shapes without breaking any Baileys API.
+      const unknownTypeMessages = cache.messages.reduce((count, message) => count + (message.type === 'unknown' ? 1 : 0), 0)
+      return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages, ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
+    }
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (request.method === 'GET' && url.pathname === '/resolve') {
@@ -1174,50 +1214,77 @@ async function main() {
         if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
-        const quoted = replyToMessageId ? findMessage(jid, replyToMessageId) : null
-        if (replyToMessageId && !quoted) return json(response, 404, { error: 'reply_target_not_found' })
-        const options = quoted ? {
-          quoted: quotedReplyEnvelope({
-            jid,
-            quoted,
-            loadRawMessage: () => {
-              try {
-                const payload = mirrorStore?.loadMessageContent({ jid, id: quoted.id })
-                return payload ? deserialize(payload) : null
-              } catch (error) {
-                logger.warn({ err: error, messageId: quoted.id }, 'Could not load raw quoted content; falling back to cached text')
-                return null
-              }
-            },
-          }),
-        } : {}
+        const options = quotedSendOptions(jid, replyToMessageId)
+        if (!options) return json(response, 404, { error: 'reply_target_not_found' })
         const result = await socket.sendMessage(jid, { text: text.trim(), mentions: mentions?.length ? mentions : undefined }, options)
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return
     }
+    if (isMessageEdit) {
+      requestBody(request).then(async ({ jid, messageId, text }) => {
+        if (!jid || !messageId || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_edit' })
+        if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const message = findMessage(jid, messageId)
+        if (!message) return json(response, 404, { error: 'message_not_found' })
+        if (!message.fromMe) return json(response, 422, { error: 'edit_failed', message: 'Only a message sent by this account can be edited.' })
+        const result = await socket.sendMessage(jid, { text: text.trim(), edit: messageActionKey(jid, message) })
+        json(response, 200, { edited: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'edit_failed', message: error.message }))
+      return
+    }
+    if (isMessageRevoke) {
+      requestBody(request).then(async ({ jid, messageId }) => {
+        if (!jid || !messageId) return json(response, 400, { error: 'invalid_revoke' })
+        if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const message = findMessage(jid, messageId)
+        if (!message) return json(response, 404, { error: 'message_not_found' })
+        if (!message.fromMe) return json(response, 422, { error: 'revoke_failed', message: 'Only a message sent by this account can be revoked.' })
+        const result = await socket.sendMessage(jid, { delete: messageActionKey(jid, message) })
+        json(response, 200, { revoked: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'revoke_failed', message: error.message }))
+      return
+    }
+    if (isMessageRead) {
+      requestBody(request).then(async ({ jid, messageId }) => {
+        if (!jid || !messageId) return json(response, 400, { error: 'invalid_read' })
+        if (!socket?.readMessages) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const message = findMessage(jid, messageId)
+        if (!message) return json(response, 404, { error: 'message_not_found' })
+        if (message.fromMe) return json(response, 422, { error: 'read_failed', message: 'Only an incoming message can be marked as read.' })
+        await socket.readMessages([messageActionKey(jid, message)])
+        json(response, 200, { read: true })
+      }).catch((error) => json(response, 422, { error: 'read_failed', message: error.message }))
+      return
+    }
     if (isDocumentSend) {
-      requestBody(request).then(async ({ jid, filePath, caption }) => {
+      requestBody(request).then(async ({ jid, filePath, caption, replyToMessageId }) => {
         if (!jid || typeof filePath !== 'string' || !filePath) return json(response, 400, { error: 'invalid_document' })
         if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
+        if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const options = quotedSendOptions(jid, replyToMessageId)
+        if (!options) return json(response, 404, { error: 'reply_target_not_found' })
         const document = await fs.readFile(filePath)
         const result = await socket.sendMessage(jid, {
           document,
           fileName: path.basename(filePath),
           mimetype: mimeTypeForFile(filePath),
           caption: caption?.trim() || undefined,
-        })
+        }, options)
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
       return
     }
     if (isMediaSend) {
-      requestBody(request).then(async ({ jid, filePath, kind, caption, mentions, voice }) => {
+      requestBody(request).then(async ({ jid, filePath, kind, caption, mentions, voice, replyToMessageId }) => {
         if (!jid || typeof filePath !== 'string' || !['image', 'video', 'audio'].includes(kind)) return json(response, 400, { error: 'invalid_media' })
         if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
+        if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const options = quotedSendOptions(jid, replyToMessageId)
+        if (!options) return json(response, 404, { error: 'reply_target_not_found' })
         const media = await fs.readFile(filePath)
         const mimetype = mimeTypeForFile(filePath)
         const content = {
@@ -1227,7 +1294,7 @@ async function main() {
           mentions: mentions?.length ? mentions : undefined,
           ptt: kind === 'audio' && Boolean(voice),
         }
-        const result = await socket.sendMessage(jid, content)
+        const result = await socket.sendMessage(jid, content, options)
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'media_send_failed', message: error.message }))
       return
@@ -1294,6 +1361,41 @@ async function main() {
       return
     }
     const limit = normalizeLimit(url.searchParams.get('limit'))
+    if (url.pathname === '/identities') {
+      // Names, activity and counts only — no message bodies. This keeps the
+      // CLI's identity resolution cheap even under extended retention.
+      const messageCounts = new Map()
+      const latestByJid = new Map()
+      for (const message of cache.messages) {
+        messageCounts.set(message.jid, (messageCounts.get(message.jid) || 0) + 1)
+        latestByJid.set(message.jid, Math.max(latestByJid.get(message.jid) || 0, message.timestamp || 0))
+      }
+      const chats = Object.values(cache.chats).map((chat) => ({
+        jid: chat.jid,
+        name: cache.contacts[chat.jid]?.name || chat.name || null,
+        lastTimestamp: Number(chat.lastTimestamp) || latestByJid.get(chat.jid) || null,
+        messageCount: messageCounts.get(chat.jid) || 0,
+      }))
+      const known = new Set(chats.map((chat) => chat.jid))
+      for (const [jid, messageCount] of messageCounts) {
+        if (!known.has(jid)) chats.push({ jid, name: cache.contacts[jid]?.name || null, lastTimestamp: latestByJid.get(jid) || null, messageCount })
+      }
+      const contacts = Object.fromEntries(Object.entries(cache.contacts).map(([jid, contact]) => [jid, { name: contact.name || null }]))
+      return json(response, 200, { chats, contacts })
+    }
+    if (url.pathname === '/events') {
+      const kind = url.searchParams.get('kind')
+      const jid = url.searchParams.get('jid')
+      if (kind === 'group') {
+        const events = cache.groupEvents.filter((event) => !jid || event.groupJid === jid).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+        return json(response, 200, { events })
+      }
+      if (kind === 'call') {
+        const events = cache.callEvents.filter((event) => !jid || event.chatId === jid || event.groupJid === jid || event.from === jid).sort((a, b) => b.timestamp - a.timestamp).slice(0, limit)
+        return json(response, 200, { events })
+      }
+      return json(response, 400, { error: 'invalid_kind' })
+    }
     if (url.pathname === '/chats') {
       const chats = Object.values(cache.chats)
         .map((chat) => ({ ...chat, name: cache.contacts[chat.jid]?.name || chat.name || null }))
@@ -1311,12 +1413,20 @@ async function main() {
       return json(response, 200, { jid, messages })
     }
     if (url.pathname === '/search') {
-      const query = url.searchParams.get('q')?.trim().toLocaleLowerCase()
+      const query = url.searchParams.get('q')?.trim()
       if (!query) return json(response, 400, { error: 'missing_query' })
-      const messages = cache.messages
-        .filter((message) => message.text.toLocaleLowerCase().includes(query))
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, limit)
+      const requestedScope = url.searchParams.get('scope')
+      const jids = url.searchParams.get('jids')
+      const messages = searchAllMatches({
+        messages: cache.messages,
+        query,
+        nowSeconds: nowSeconds(),
+        sinceSeconds: Number.parseInt(url.searchParams.get('since') || '', 10) || null,
+        scope: ['direct', 'groups'].includes(requestedScope) ? requestedScope : 'all',
+        allowedGroups: jids ? new Set(jids.split(',').filter(Boolean)) : null,
+        limit,
+        normalized: url.searchParams.get('normalized') === '1',
+      })
       return json(response, 200, { query, messages })
     }
     return json(response, 404, { error: 'not_found' })
