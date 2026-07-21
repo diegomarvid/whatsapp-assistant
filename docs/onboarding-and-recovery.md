@@ -59,12 +59,15 @@ local user, and is excluded from Git.
    ```
 
    On Linux/VPS, use the final non-root account that will own the WhatsApp
-   session. It needs Node.js 22+ and systemd; do not run `wa` with sudo.
-   Confirm Node first, then use:
+   session. It needs Node.js 22+ and systemd; do not run `wa` with sudo. If
+   Node is absent or global npm would require elevated permissions, install it
+   for this user with nvm, then use:
 
    ```bash
+   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+   . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```

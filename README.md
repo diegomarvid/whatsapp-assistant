@@ -64,8 +64,16 @@ un QR pendiente; nunca muestra credenciales ni contenido de chats.
 Requiere Node.js 22+ y una distribución con systemd. No requiere navegador ni
 interfaz gráfica. Usá un usuario normal del VPS —no `root` ni `sudo wa`— para
 que el servicio, QR y sesión privada pertenezcan al mismo usuario. Si todavía
-no tenés Node, instalá el LTS 22+ con el gestor recomendado para tu distribución
-(o `nvm`) y confirmá antes de seguir:
+no tenés Node, la ruta recomendada evita permisos globales de npm instalándolo
+con `nvm` para el mismo usuario que va a vincular WhatsApp:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+. "$HOME/.nvm/nvm.sh"
+nvm install 22
+```
+
+Abrí una shell nueva si el instalador lo indica y confirmá antes de seguir:
 
 ```bash
 node --version # v22 o superior
@@ -74,7 +82,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz
 wa setup
 ```
 

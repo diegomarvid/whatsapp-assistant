@@ -37,7 +37,10 @@ Inicio en una instalación nueva:
   wa status                        # esperar: connection = open
 
 Linux / VPS (Node 22+ y systemd):
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
+  # Si falta Node 22+, instalarlo como usuario normal:
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  . "$HOME/.nvm/nvm.sh" && nvm install 22
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -92,7 +95,7 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere Node 22+ y systemd):\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
     media: `Adjuntos:\n  wa audios contacto\n  wa audio contacto <message-id>\n  wa transcribe setup\n  wa transcribe doctor\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nLa transcripción es opcional y local. setup instala el runtime Python aislado, pero nunca descarga un modelo sin wa transcribe pull explícito. image, file y audio devuelven paths para que la IA los abra con sus propias capacidades.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
