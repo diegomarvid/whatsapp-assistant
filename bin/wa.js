@@ -6,8 +6,10 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
+import qrcodeTerminal from 'qrcode-terminal'
 import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
 import { paths } from '../src/runtime-paths.js'
+import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { dataDir, stateRoot, logsDir } = paths
@@ -17,11 +19,12 @@ const tokenPath = path.join(dataDir, 'bridge-token')
 const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
 const baseUrl = 'http://127.0.0.1:3847'
 const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
+const systemdUnitPath = systemdUserUnitPath({ home: os.homedir() })
 
 function usage() {
   console.log(`WhatsApp Assistant — bridge local de contexto reciente
 
-Inicio en una Mac nueva:
+Inicio en una instalación nueva:
   brew tap diegomarvid/tap && brew install whatsapp-assistant
   wa setup                         # instala el daemon y muestra el QR si hace falta
   wa status                        # esperar: connection = open
@@ -38,7 +41,7 @@ Comandos:
   wa status
   wa doctor                         # estado, daemon, QR y rutas; no expone secretos
   wa setup
-  wa qr                             # abre/imprime el QR pendiente, si existe
+  wa qr                             # abre (macOS) o imprime (SSH) el QR pendiente
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
   wa aliases
@@ -73,10 +76,10 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  1. brew tap diegomarvid/tap && brew install whatsapp-assistant\n  2. wa setup\n  3. Escanear el QR que el comando abre en WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  4. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS: brew tap diegomarvid/tap && brew install whatsapp-assistant\n  Linux: instalar Node 22+, luego npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz\n\n  1. wa setup\n  2. Escanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  3. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
     media: `Adjuntos:\n  wa audios contacto\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nTranscribir es opcional: requiere ct y un backend local de Whisper. El bridge base no depende de Whisper.`,
-    daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. Mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.`,
+    daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez si querés que sobreviva al logout: sudo loginctl enable-linger $USER`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
   if (!topic) return usage()
@@ -109,20 +112,30 @@ function launchctlDomain() {
 }
 
 async function installDaemon() {
-  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS. Run the bridge with `npm start` on other platforms.')
   await ensureRuntimeDirectories()
-  await fs.mkdir(path.dirname(launchAgentPath), { recursive: true })
   const serverPath = path.join(root, 'src', 'server.js')
   const entryPath = process.env.WA_DAEMON_ENTRY || serverPath
   const entryArguments = process.env.WA_DAEMON_ENTRY ? ['__daemon'] : []
+  const nodePath = process.env.WA_DAEMON_NODE || process.execPath
+  const workingDirectory = process.env.WA_DAEMON_CWD || path.dirname(serverPath)
+  if (process.platform === 'linux') {
+    await fs.mkdir(path.dirname(systemdUnitPath), { recursive: true, mode: 0o700 })
+    const unit = systemdUserUnit({ nodePath, entryPath, entryArguments, stateRoot, logsDir, workingDirectory })
+    await fs.writeFile(systemdUnitPath, unit, { mode: 0o600 })
+    run('systemctl', ['--user', 'daemon-reload'])
+    run('systemctl', ['--user', 'enable', '--now', systemdServiceName])
+    return
+  }
+  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}. Run the bridge with \`npm start\` under your process supervisor.`)
+  await fs.mkdir(path.dirname(launchAgentPath), { recursive: true })
   const plist = launchAgentPlist({
-    nodePath: process.env.WA_DAEMON_NODE || process.execPath,
+    nodePath,
     serverPath,
     stateRoot,
     logsDir,
     entryPath,
     entryArguments,
-    workingDirectory: process.env.WA_DAEMON_CWD || path.dirname(serverPath),
+    workingDirectory,
   })
   await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
   tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
@@ -130,7 +143,16 @@ async function installDaemon() {
 }
 
 async function daemonStatus() {
-  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  if (process.platform === 'linux') {
+    const result = tryRun('systemctl', ['--user', 'status', '--no-pager', systemdServiceName])
+    if (result.status !== 0) {
+      console.log(`Daemon not installed or not running. Run: wa daemon install`)
+      return
+    }
+    console.log(result.stdout.trim())
+    return
+  }
+  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
   const result = tryRun('launchctl', ['print', `${launchctlDomain()}/${launchAgentLabel}`])
   if (result.status !== 0) {
     console.log(`Daemon not installed or not running. Run: wa daemon install`)
@@ -140,13 +162,24 @@ async function daemonStatus() {
 }
 
 async function restartDaemon() {
-  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  if (process.platform === 'linux') {
+    if (!await fileExists(systemdUnitPath)) return installDaemon()
+    run('systemctl', ['--user', 'restart', systemdServiceName])
+    return
+  }
+  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
   if (!await fileExists(launchAgentPath)) return installDaemon()
   run('launchctl', ['kickstart', '-k', `${launchctlDomain()}/${launchAgentLabel}`])
 }
 
 async function uninstallDaemon() {
-  if (process.platform !== 'darwin') throw new Error('The managed daemon is currently implemented for macOS.')
+  if (process.platform === 'linux') {
+    tryRun('systemctl', ['--user', 'disable', '--now', systemdServiceName])
+    await fs.rm(systemdUnitPath, { force: true })
+    tryRun('systemctl', ['--user', 'daemon-reload'])
+    return
+  }
+  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
   tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
   await fs.rm(launchAgentPath, { force: true })
 }
@@ -158,8 +191,9 @@ async function fileExists(filename) {
 async function waitForSetup(timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs
   const qrPath = path.join(dataDir, 'link-qr.png')
+  const qrTextPath = path.join(dataDir, 'link-qr.txt')
   while (Date.now() < deadline) {
-    if (await fileExists(qrPath)) return { qrPath, health: null }
+    if (await fileExists(qrPath) || await fileExists(qrTextPath)) return { qrPath, health: null }
     try {
       const health = await request('/health')
       if (health.connection === 'open') return { qrPath: null, health }
@@ -171,12 +205,19 @@ async function waitForSetup(timeoutMs = 90000) {
 
 async function showQr() {
   const qrPath = path.join(dataDir, 'link-qr.png')
-  if (!await fileExists(qrPath)) {
+  const qrTextPath = path.join(dataDir, 'link-qr.txt')
+  if (!await fileExists(qrPath) && !await fileExists(qrTextPath)) {
     console.log('No QR is pending. Run `wa status`; if the bridge is not open, run `wa doctor`.')
     return
   }
-  console.log(`Scan this QR in WhatsApp: Settings → Linked devices → Link a device\n${qrPath}`)
-  if (process.platform === 'darwin') tryRun('open', [qrPath])
+  console.log('Scan this QR in WhatsApp: Settings → Linked devices → Link a device')
+  if (await fileExists(qrTextPath)) {
+    qrcodeTerminal.generate((await fs.readFile(qrTextPath, 'utf8')).trim(), { small: true })
+  }
+  if (await fileExists(qrPath)) {
+    console.log(qrPath)
+    if (process.platform === 'darwin') tryRun('open', [qrPath])
+  }
 }
 
 async function doctor() {
@@ -184,11 +225,12 @@ async function doctor() {
   try { health = await request('/health') } catch {}
   console.log(JSON.stringify({
     stateRoot,
-    daemonLabel: launchAgentLabel,
-    daemonPlistExists: await fileExists(launchAgentPath),
+    daemon: process.platform === 'linux'
+      ? { type: 'systemd-user', name: systemdServiceName, unitExists: await fileExists(systemdUnitPath) }
+      : { type: 'launch-agent', label: launchAgentLabel, plistExists: await fileExists(launchAgentPath) },
     authExists: await fileExists(paths.authDir),
     sqliteExists: await fileExists(path.join(dataDir, 'mirror.sqlite')),
-    qrPending: await fileExists(path.join(dataDir, 'link-qr.png')),
+    qrPending: await fileExists(path.join(dataDir, 'link-qr.png')) || await fileExists(path.join(dataDir, 'link-qr.txt')),
     health,
     nextStep: health?.connection === 'open' ? 'ready' : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.',
   }, null, 2))
@@ -204,6 +246,10 @@ async function setup() {
   } else {
     console.log(`The bridge is still starting. Run: wa qr\nIf no QR appears, run: wa doctor`)
   }
+}
+
+function daemonDisplayName() {
+  return process.platform === 'linux' ? systemdServiceName : launchAgentLabel
 }
 
 async function migrateState(sourceRoot) {
@@ -534,7 +580,7 @@ async function main() {
   if (command === 'migrate-state') return migrateState(args[0])
   if (command === 'daemon') {
     const action = args[0]
-    if (action === 'install') { await installDaemon(); return console.log(`Daemon installed: ${launchAgentLabel}`) }
+    if (action === 'install') { await installDaemon(); return console.log(`Daemon installed: ${daemonDisplayName()}`) }
     if (action === 'status') return daemonStatus()
     if (action === 'restart') { await restartDaemon(); return console.log('Daemon restarted.') }
     if (action === 'uninstall') { await uninstallDaemon(); return console.log('Daemon removed. Private state was preserved.') }

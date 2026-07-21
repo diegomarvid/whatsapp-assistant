@@ -6,8 +6,7 @@ to scan a QR code.
 
 ## Normal operating mode
 
-- Baileys can run as a local macOS LaunchAgent (for example,
-  `com.example.whatsapp-assistant`).
+- Baileys can run as a local macOS LaunchAgent or Linux systemd user service.
 - It listens only on `127.0.0.1:3847`; it does not expose an internet-facing
   API. Sending is available only through the local CLI after an explicit user
   instruction.
@@ -59,6 +58,19 @@ local user, and is excluded from Git.
    wa setup
    ```
 
+   On Linux/VPS with systemd, install Node.js 22+ and then use:
+
+   ```bash
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz
+   wa setup
+   sudo loginctl enable-linger "$USER"
+   ```
+
+   `wa setup` installs `whatsapp-assistant.service` as a systemd user service,
+   writes private runtime state to `~/.local/state/whatsapp-assistant/` by
+   default and prints the temporary QR in the SSH terminal. `enable-linger` is
+   needed once on a VPS so the user service survives logout and reboot.
+
 2. For development from a checkout, install dependencies and the local CLI:
 
    ```bash
@@ -66,14 +78,15 @@ local user, and is excluded from Git.
    npm link
    ```
 
-3. The development checkout can load or start a LaunchAgent manually:
+3. The development checkout can load or start a LaunchAgent manually on macOS:
 
    ```bash
    launchctl bootstrap gui/$(id -u) \
      "$HOME/Library/LaunchAgents/com.example.whatsapp-assistant.plist"
    ```
 
-4. Scan the QR shown at `data/link-qr.png` only if `auth/` has not been
+4. Scan the QR shown by `wa qr` (or at `data/link-qr.png` in a development
+   checkout) only if `auth/` has not been
    created yet, or WhatsApp explicitly logged the device out.
 5. Wait for `wa status` to report `"connection": "open"`. The cache count can
    rise for a little while after that as the recent sync arrives.
@@ -137,13 +150,13 @@ read commands; only direct contacts use LID resolution.
 
    ```bash
    wa status
-   launchctl print gui/$(id -u)/com.example.whatsapp-assistant
+   wa daemon status
    ```
 
 2. If it is not `open`, restart the existing service only:
 
    ```bash
-   launchctl kickstart -k gui/$(id -u)/com.example.whatsapp-assistant
+   wa daemon restart
    ```
 
    Wait a few seconds and run `wa status` again. This preserves the linked

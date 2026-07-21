@@ -25,6 +25,7 @@ const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const qrPath = path.join(dataDir, 'link-qr.png')
+const qrTextPath = path.join(dataDir, 'link-qr.txt')
 const audioEnvelopeDir = path.join(dataDir, 'audio-envelopes')
 const downloadedAudioDir = path.join(dataDir, 'audio')
 const imageEnvelopeDir = path.join(dataDir, 'image-envelopes')
@@ -532,6 +533,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) 
   if (qr) {
     console.log('\nScan this QR in WhatsApp: Settings → Linked devices → Link a device\n')
     qrcodeTerminal.generate(qr, { small: true })
+    await fs.writeFile(qrTextPath, `${qr}\n`, { mode: 0o600 })
     await QRCode.toFile(qrPath, qr, { width: 720, margin: 2, errorCorrectionLevel: 'M' })
     await fs.chmod(qrPath, 0o600)
     console.log(`QR image saved to ${qrPath}`)
@@ -543,7 +545,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) 
     cache.sync.lastConnectedAt = cache.sync.connectedAt
     cache.sync.ingestionHealthy = true
     await saveCache()
-    await fs.rm(qrPath, { force: true })
+    await Promise.all([fs.rm(qrPath, { force: true }), fs.rm(qrTextPath, { force: true })])
     console.log('WhatsApp bridge connected (read-only).')
   }
   if (next === 'close') {

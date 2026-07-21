@@ -59,11 +59,45 @@ necesita vincular un dispositivo y deja como verificación final `wa status`.
 `wa doctor` muestra rutas, estado del daemon, presencia de SQLite/auth y si hay
 un QR pendiente; nunca muestra credenciales ni contenido de chats.
 
+### 🐧 Linux / VPS con systemd
+
+Instalá Node.js 22+ y el paquete desde un release. No requiere navegador ni
+interfaz gráfica:
+
+```bash
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz
+wa setup
+```
+
+`wa setup` crea un servicio de usuario de systemd en
+`~/.config/systemd/user/whatsapp-assistant.service`, conserva el estado privado
+en `~/.local/state/whatsapp-assistant/` (o `WA_STATE_DIR`) e imprime el QR
+directamente en la terminal SSH, además de guardar una imagen privada. Para que
+el observer siga vivo al cerrar la sesión SSH o reiniciar el VPS, habilitá
+linger una sola vez con permisos de administrador:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
+
+Verificá el servicio sin exponer la cuenta:
+
+```bash
+wa doctor
+wa daemon status
+wa status
+```
+
+Esto asume una distro con systemd. En un contenedor o distro sin systemd, el
+bridge sigue funcionando con `npm start`, pero hay que ejecutarlo bajo el
+supervisor propio del entorno.
+
 ### Requisitos base
 
 - Node.js **22 o superior**.
 - Una cuenta de WhatsApp para vincular una sola vez por QR.
-- macOS si se quiere usar el LaunchAgent y la búsqueda opcional en Contactos.
+- macOS o Linux con systemd si se quiere un servicio administrado. La búsqueda
+  opcional en Contactos y el OCR con Vision son funciones de macOS.
 
 ```bash
 git clone https://github.com/diegomarvid/whatsapp-assistant.git
@@ -136,7 +170,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | --- | --- |
 | `wa status` | Estado del bridge y cantidad de mensajes cacheados. |
 | `wa doctor` | Diagnóstico sin secretos: daemon, rutas privadas, SQLite, QR y health. |
-| `wa qr` | Abre o imprime la ubicación de un QR pendiente de escaneo. |
+| `wa qr` | Abre el QR en macOS o lo imprime en la terminal (ideal por SSH). |
 | `wa find "Nombre"` | Busca aliases, identidad WhatsApp, mensajes recientes y Contactos de macOS opcionales. |
 | `wa recent 20` | Chats individuales recientes con identidad WhatsApp. |
 | `wa latest contacto` | Último evento del chat, entrante o saliente. |
@@ -172,7 +206,7 @@ siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
 | `wa transcribe contacto latest` | Descarga el audio más reciente y lo transcribe con `ct`/Whisper. |
 | `wa transcribe contacto <message-id>` | Transcribe un audio concreto; el ID sale de `wa audios` o `wa history --ids`. |
 | `wa images contacto` / `wa image contacto <message-id>` | Lista o descarga una imagen seleccionada. |
-| `wa image-text contacto <message-id>` | Hace OCR local con Vision de macOS. |
+| `wa image-text contacto <message-id>` | Hace OCR local con Vision de macOS (no disponible en Linux). |
 | `wa files contacto` / `wa file contacto <message-id>` | Lista o descarga un documento entrante seleccionado. |
 
 El comando de transcripción correcto es `wa transcribe contacto latest` o
@@ -242,8 +276,8 @@ Para el detalle de qué estado es privado y queda excluido de Git, ver
 - `wa daemon status` muestra el servicio; `wa daemon restart` lo reinicia sin
   desvincular WhatsApp. `wa daemon uninstall` elimina sólo el servicio y deja
   intacto el estado privado.
-- `wa setup` instala el LaunchAgent en macOS y abre el QR como imagen, no como
-  una pestaña de navegador.
+- `wa setup` instala un LaunchAgent en macOS o un servicio `systemd --user` en
+  Linux. En SSH imprime el QR en la terminal, sin navegador.
 - Dejá el proceso/LaunchAgent corriendo para recibir los eventos nuevos.
 - Si algo parece viejo, usar primero `wa status`, `wa coverage contacto` y
   `wa latest-incoming contacto`.
