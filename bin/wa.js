@@ -1,38 +1,33 @@
 #!/usr/bin/env node
 
-import crypto from 'node:crypto'
+// Thin CLI entry point: command parsing, help text and the dispatcher.
+// Bridge I/O, identity resolution, formatting, daemon control and
+// transcription live in single-purpose modules under src/.
 import fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
-import os from 'node:os'
 import qrcodeTerminal from 'qrcode-terminal'
-import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
-import { paths } from '../src/runtime-paths.js'
-import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
-import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
-import { linksInText } from '../src/message-normalizer.js'
-import { isDirectChat, normalizeSearchText as normalizeText, parseSince } from '../src/search-scope.js'
-import { bridgeBaseUrl } from '../src/bridge-endpoint.js'
+import {
+  downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
+  editMessage, markMessageRead, reactToMessage, readIdentities, request,
+  requireFreshCoverage, resolveMessageSelector, revokeMessage,
+  sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
+} from '../src/bridge-client.js'
+import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
+import { cacheMatches, loadAliases, phoneFromJid, phoneToJid, recentChats, resolveContact as resolve, saveAliases } from '../src/contact-resolve.js'
+import { daemonDisplayName, daemonStatus, installDaemon, launchAgentPath, lingerInstruction, linuxServiceDiagnostics, restartDaemon, systemdUnitPath, uninstallDaemon } from '../src/daemon-control.js'
+import { tryRun } from '../src/exec.js'
+import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
+import { launchAgentLabel } from '../src/launch-agent.js'
+import { macContactsForQuery } from '../src/mac-contacts.js'
+import { paths, projectRoot } from '../src/runtime-paths.js'
+import { parseSince } from '../src/search-scope.js'
+import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
+import { configureTranscription, pullTranscriptionModel, setupTranscription, transcribe, transcriptionDoctor } from '../src/transcription.js'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const packageInfo = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'))
+const packageInfo = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
 const npmInstallCommand = `npm install -g ${packageInfo.name}`
-const { dataDir, stateRoot, logsDir } = paths
-const aliasesPath = path.join(dataDir, 'aliases.json')
-const groupListsPath = path.join(dataDir, 'group-lists.json')
-const tokenPath = path.join(dataDir, 'bridge-token')
-const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
-const baseUrl = bridgeBaseUrl()
-const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
-const systemdUnitPath = systemdUserUnitPath({ home: os.homedir() })
-const transcriptionConfigPath = path.join(dataDir, 'transcription.json')
-const transcriptionVenvPath = path.join(stateRoot, 'transcribe-venv')
-const transcriptionPythonPath = path.join(transcriptionVenvPath, 'bin', 'python')
-const transcriptionScript = path.join(root, 'src', 'transcribe-audio.py')
-const pullModelScript = path.join(root, 'src', 'pull-whisper-model.py')
+const { dataDir, stateRoot } = paths
 
 function usage() {
   console.log(`WhatsApp Assistant — bridge local de contexto reciente
@@ -175,136 +170,6 @@ async function historyPolicyCommand(args) {
   console.log(JSON.stringify(historyPolicyReport(policy), null, 2))
 }
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { encoding: 'utf8', ...options })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(result.stderr?.trim() || result.stdout?.trim() || `${command} failed`)
-  return result.stdout?.trim() || ''
-}
-
-function tryRun(command, args, options = {}) {
-  return spawnSync(command, args, { encoding: 'utf8', ...options })
-}
-
-async function ensureRuntimeDirectories() {
-  await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 })
-  await fs.chmod(stateRoot, 0o700)
-  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
-  await fs.chmod(dataDir, 0o700)
-  await fs.mkdir(logsDir, { recursive: true, mode: 0o700 })
-  await fs.chmod(logsDir, 0o700)
-}
-
-function launchctlDomain() {
-  return `gui/${process.getuid()}`
-}
-
-function linuxServiceDiagnostics() {
-  const manager = tryRun('systemctl', ['--user', 'show-environment'])
-  const linger = tryRun('loginctl', ['show-user', String(process.getuid()), '-p', 'Linger', '--value'])
-  return {
-    type: 'systemd-user',
-    name: systemdServiceName,
-    unitExists: null,
-    userManager: manager.status === 0 ? 'available' : null,
-    linger: linger.status === 0 ? linger.stdout.trim() === 'yes' : null,
-  }
-}
-
-function assertSetupPrerequisites() {
-  const nodeMajor = Number(process.versions.node.split('.')[0])
-  if (nodeMajor < 22) throw new Error(`WhatsApp Assistant requires Node.js 22 or newer; found ${process.version}. Install Node 22+, open a new shell, then rerun \`wa setup\`.`)
-  if (process.platform !== 'linux') return
-  const manager = tryRun('systemctl', ['--user', 'show-environment'])
-  if (manager.status !== 0) {
-    throw new Error('A systemd user manager is required for VPS persistence. Log in as the final non-root user (do not run `wa` with sudo), then run `systemctl --user status` and retry `wa setup`. On a system without systemd, run the bridge with your own supervisor.')
-  }
-}
-
-function lingerInstruction() {
-  return `sudo loginctl enable-linger "${os.userInfo().username}"`
-}
-
-async function installDaemon() {
-  assertSetupPrerequisites()
-  await ensureRuntimeDirectories()
-  const serverPath = path.join(root, 'src', 'server.js')
-  const entryPath = process.env.WA_DAEMON_ENTRY || serverPath
-  const entryArguments = process.env.WA_DAEMON_ENTRY ? ['__daemon'] : []
-  const nodePath = process.env.WA_DAEMON_NODE || process.execPath
-  const workingDirectory = process.env.WA_DAEMON_CWD || path.dirname(serverPath)
-  const bridgePort = process.env.WA_BRIDGE_PORT || null
-  if (process.platform === 'linux') {
-    await fs.mkdir(path.dirname(systemdUnitPath), { recursive: true, mode: 0o700 })
-    const unit = systemdUserUnit({ nodePath, entryPath, entryArguments, stateRoot, logsDir, workingDirectory, bridgePort })
-    await fs.writeFile(systemdUnitPath, unit, { mode: 0o600 })
-    run('systemctl', ['--user', 'daemon-reload'])
-    run('systemctl', ['--user', 'enable', '--now', systemdServiceName])
-    return
-  }
-  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}. Run the bridge with \`npm start\` under your process supervisor.`)
-  await fs.mkdir(path.dirname(launchAgentPath), { recursive: true })
-  const plist = launchAgentPlist({
-    nodePath,
-    serverPath,
-    stateRoot,
-    logsDir,
-    entryPath,
-    entryArguments,
-    workingDirectory,
-    bridgePort,
-  })
-  await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
-  tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
-  run('launchctl', ['bootstrap', launchctlDomain(), launchAgentPath])
-}
-
-async function daemonStatus() {
-  if (process.platform === 'linux') {
-    const result = tryRun('systemctl', ['--user', 'status', '--no-pager', systemdServiceName])
-    if (result.status !== 0) {
-      console.log(`Daemon not installed or not running. Run: wa daemon install`)
-      return
-    }
-    console.log(result.stdout.trim())
-    return
-  }
-  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
-  const result = tryRun('launchctl', ['print', `${launchctlDomain()}/${launchAgentLabel}`])
-  if (result.status !== 0) {
-    console.log(`Daemon not installed or not running. Run: wa daemon install`)
-    return
-  }
-  console.log(result.stdout.trim())
-}
-
-async function restartDaemon() {
-  if (process.platform === 'linux') {
-    if (!await fileExists(systemdUnitPath)) return installDaemon()
-    run('systemctl', ['--user', 'restart', systemdServiceName])
-    return
-  }
-  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
-  if (!await fileExists(launchAgentPath)) return installDaemon()
-  run('launchctl', ['kickstart', '-k', `${launchctlDomain()}/${launchAgentLabel}`])
-}
-
-async function uninstallDaemon() {
-  if (process.platform === 'linux') {
-    tryRun('systemctl', ['--user', 'disable', '--now', systemdServiceName])
-    await fs.rm(systemdUnitPath, { force: true })
-    tryRun('systemctl', ['--user', 'daemon-reload'])
-    return
-  }
-  if (process.platform !== 'darwin') throw new Error(`No managed daemon is available for ${process.platform}.`)
-  tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
-  await fs.rm(launchAgentPath, { force: true })
-}
-
-async function fileExists(filename) {
-  try { await fs.access(filename); return true } catch { return false }
-}
-
 async function waitForSetup(timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs
   const qrPath = path.join(dataDir, 'link-qr.png')
@@ -340,7 +205,7 @@ async function showQr() {
 async function installedBaileysVersion() {
   try {
     const { createRequire } = await import('node:module')
-    return createRequire(path.join(root, 'package.json'))('baileys/package.json').version
+    return createRequire(path.join(projectRoot, 'package.json'))('baileys/package.json').version
   } catch {
     return null
   }
@@ -388,10 +253,6 @@ async function setup() {
   }
 }
 
-function daemonDisplayName() {
-  return process.platform === 'linux' ? systemdServiceName : launchAgentLabel
-}
-
 async function migrateState(sourceRoot) {
   if (!sourceRoot) return usage()
   const source = path.resolve(sourceRoot)
@@ -406,204 +267,6 @@ async function migrateState(sourceRoot) {
     await fs.cp(path.join(sourceData, entry), path.join(dataDir, entry), { recursive: true, force: false, errorOnExist: true })
   }
   console.log(`Migrated private state to ${stateRoot}. Run: wa setup`)
-}
-
-async function loadAliases() {
-  try {
-    return JSON.parse(await fs.readFile(aliasesPath, 'utf8'))
-  } catch (error) {
-    if (error.code === 'ENOENT') return {}
-    throw error
-  }
-}
-
-async function saveAliases(aliases) {
-  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
-  const temp = `${aliasesPath}.${crypto.randomUUID()}.tmp`
-  await fs.writeFile(temp, `${JSON.stringify(aliases, null, 2)}\n`, { mode: 0o600 })
-  await fs.rename(temp, aliasesPath)
-}
-
-async function loadGroupLists() {
-  try {
-    return JSON.parse(await fs.readFile(groupListsPath, 'utf8'))
-  } catch (error) {
-    if (error.code === 'ENOENT') return { lists: {} }
-    throw error
-  }
-}
-
-async function saveGroupLists(groupLists) {
-  await fs.mkdir(dataDir, { recursive: true, mode: 0o700 })
-  const temp = `${groupListsPath}.${crypto.randomUUID()}.tmp`
-  await fs.writeFile(temp, `${JSON.stringify(groupLists, null, 2)}\n`, { mode: 0o600 })
-  await fs.rename(temp, groupListsPath)
-}
-
-function phoneToJid(value) {
-  const digits = value.replace(/\D/g, '')
-  if (!digits) throw new Error(`Invalid phone number: ${value}`)
-  return `${digits}@s.whatsapp.net`
-}
-
-function phoneFromJid(jid) {
-  return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
-}
-
-function macContacts(args) {
-  if (process.platform !== 'darwin' || process.env.WA_NO_MAC_CONTACTS === '1') return []
-  const result = spawnSync('swift', [contactsSearchScript, ...args], { encoding: 'utf8', timeout: 30000 })
-  if (result.error || result.status !== 0) return []
-  try { return JSON.parse(result.stdout) } catch { return [] }
-}
-
-function macContactsForQuery(query) {
-  return macContacts([query])
-}
-
-function macContactsForPhones(phones) {
-  const uniquePhones = [...new Set(phones.filter(Boolean))]
-  return uniquePhones.length ? macContacts(['--phones', ...uniquePhones]) : []
-}
-
-async function withCurrentJid(contact) {
-  if (!contact?.jid || !contact.jid.endsWith('@s.whatsapp.net')) return contact
-  const resolved = await request(`/resolve?jid=${encodeURIComponent(contact.jid)}`)
-  return { ...contact, jid: resolved.jid || contact.jid, originalJid: contact.jid }
-}
-
-async function readIdentities() {
-  return request('/identities')
-}
-
-async function resolve(target) {
-  const aliases = await loadAliases()
-  const key = target.toLocaleLowerCase()
-  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target) && !aliases[key]) return withCurrentJid({ phone: phoneFromJid(target), jid: target, alias: null, name: null })
-  if (/^[+\d][\d\s()-]*$/.test(target) && !aliases[key]) return withCurrentJid({ phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null })
-  const { chats } = await readIdentities()
-  if (aliases[key]) {
-    const alias = aliases[key]
-    const aliasMatches = chats.filter((chat) => normalizeText(chat.name || '') === normalizeText(alias.name || ''))
-    if (aliasMatches.length === 1) return withCurrentJid({ ...alias, jid: aliasMatches[0].jid, alias: key })
-    return withCurrentJid({ ...alias, alias: key })
-  }
-  const normalizedTarget = normalizeText(target)
-  const whatsappMatches = chats.filter((chat) => normalizeText(chat.name || '') === normalizedTarget)
-  if (whatsappMatches.length === 1) return withCurrentJid({ phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || null })
-  if (whatsappMatches.length > 1) throw new Error(`More than one WhatsApp chat matches “${target}”. Use a phone number or save an alias.`)
-  const exactMatches = macContactsForQuery(target)
-    .filter((match) => normalizeText(match.name) === normalizeText(target))
-  const phones = [...new Set(exactMatches.flatMap((match) => match.phones.map((phone) => phone.replace(/\D/g, '')).filter(Boolean)))]
-  if (phones.length === 1) return withCurrentJid({ phone: phones[0], jid: phoneToJid(phones[0]), alias: null, name: exactMatches[0].name })
-  if (phones.length > 1) throw new Error(`More than one contact matches “${target}”. Use a phone number or save an alias.`)
-  throw new Error(`Unknown alias “${target}”. Run: wa alias add ${target} <phone> "Name"`)
-}
-
-async function request(endpoint, { timeoutMs = 5000 } = {}) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  let response
-  try {
-    response = await fetch(`${baseUrl}${endpoint}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(timeoutMs) })
-  } catch (error) {
-    throw new Error(`WhatsApp observer unavailable: ${error.name === 'TimeoutError' ? 'request timed out' : error.message}`)
-  }
-  if (!response.ok) throw new Error(`Bridge request failed (${response.status}): ${await response.text()}`)
-  return response.json()
-}
-
-async function requireFreshCoverage(contact) {
-  const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
-  if (!coverage.fresh) {
-    throw new Error(`Latest selector is unavailable because this chat is not freshly synchronized (${coverage.reasons.join(', ')}). Run: wa coverage ${contact.alias || contact.name || contact.phone || contact.jid}`)
-  }
-  return coverage
-}
-
-async function whatsappGroups() {
-  const { groups } = await request('/groups')
-  return groups || []
-}
-
-async function whatsappGroup(jid) {
-  const { group } = await request(`/groups?jid=${encodeURIComponent(jid)}`)
-  return group
-}
-
-async function downloadAudio(jid, messageId) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/audio/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  })
-  if (!response.ok) throw new Error(`Could not download audio: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-async function downloadImage(jid, messageId) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/images/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}` },
-  })
-  if (!response.ok) throw new Error(`Could not download image: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-async function downloadDocument(jid, messageId) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/documents/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
-  if (!response.ok) throw new Error(`Could not download document: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-async function downloadVideo(jid, messageId) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/videos/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
-  if (!response.ok) throw new Error(`Could not download video: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-async function downloadSticker(jid, messageId) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}/stickers/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
-  if (!response.ok) throw new Error(`Could not download sticker: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-async function bridgePost(pathname, body, failureMessage) {
-  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
-  const response = await fetch(`${baseUrl}${pathname}`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) throw new Error(`${failureMessage}: ${(await response.json()).message || response.status}`)
-  return response.json()
-}
-
-function reactToMessage(jid, messageId, emoji) {
-  return bridgePost('/messages/react', { jid, messageId, emoji }, 'Could not react')
-}
-
-function sendMessage(jid, text, replyToMessageId = null, mentions = []) {
-  return bridgePost('/messages/send', { jid, text, replyToMessageId, mentions }, 'Could not send message')
-}
-
-function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false, replyToMessageId = null) {
-  return bridgePost('/media/send', { jid, kind, filePath, caption, mentions, voice, replyToMessageId }, `Could not send ${kind}`)
-}
-
-function editMessage(jid, messageId, text) {
-  return bridgePost('/messages/edit', { jid, messageId, text }, 'Could not edit message')
-}
-
-function revokeMessage(jid, messageId) {
-  return bridgePost('/messages/revoke', { jid, messageId }, 'Could not unsend message')
-}
-
-function markMessageRead(jid, messageId) {
-  return bridgePost('/messages/read', { jid, messageId }, 'Could not mark as read')
 }
 
 async function splitMentions(args) {
@@ -625,311 +288,12 @@ function ensureMentionsAreForGroup(jid, mentions) {
   if (mentions.length && !jid.endsWith('@g.us')) throw new Error('Mentions are only supported when sending to a WhatsApp group.')
 }
 
-function sendFile(jid, filePath, caption, replyToMessageId = null) {
-  return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId }, 'Could not send document')
-}
-
 function extractOption(args, name) {
   const index = args.indexOf(name)
   if (index < 0) return null
   const [, value] = args.splice(index, 2)
   if (!value) throw new Error(`Use ${name} <value>`)
   return value
-}
-
-// Resolves an explicit id or a latest/latest-incoming selector to a concrete
-// message id; selectors additionally require fresh coverage so an action never
-// silently targets a stale "latest".
-async function resolveMessageSelector(contact, selector, { ownOnly = false, incomingOnly = false } = {}) {
-  const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-  const target = selector === 'latest'
-    ? messages.find((message) => !ownOnly || message.fromMe)
-    : selector === 'latest-incoming'
-      ? messages.find((message) => !message.fromMe)
-      : messages.find((message) => message.id === selector)
-  if (!target) throw new Error(`No matching message found for selector: ${selector}`)
-  if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
-  if (ownOnly && !target.fromMe) throw new Error('This action only applies to a message sent by this account.')
-  if (incomingOnly && target.fromMe) throw new Error('This action only applies to an incoming message.')
-  return target
-}
-
-async function loadTranscriptionConfig() {
-  try { return JSON.parse(await fs.readFile(transcriptionConfigPath, 'utf8')) } catch (error) {
-    if (error.code === 'ENOENT') return {}
-    throw error
-  }
-}
-
-async function saveTranscriptionConfig(config) {
-  await ensureRuntimeDirectories()
-  await fs.writeFile(transcriptionConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
-}
-
-function pythonForSetup() {
-  const candidates = [process.env.WA_PYTHON, 'python3'].filter(Boolean)
-  for (const candidate of candidates) {
-    const result = tryRun(candidate, ['-c', 'import sys; print(sys.executable)'])
-    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim()
-  }
-  return null
-}
-
-function backendImportName(backend) {
-  return backend === 'mlx' ? 'mlx_whisper' : 'faster_whisper'
-}
-
-function privateRuntimeReady(backend) {
-  if (!existsSync(transcriptionPythonPath)) return false
-  return tryRun(transcriptionPythonPath, ['-c', `import ${backendImportName(backend)}`]).status === 0
-}
-
-function activeTranscriptionRuntime(config) {
-  const backend = transcriptionBackend()
-  const selected = selectLocalModel({ backend, configuredModel: config.model, home: os.homedir() })
-  return {
-    backend,
-    selected,
-    defaultModel: defaultModelFor(backend),
-    runtimePathExists: existsSync(transcriptionPythonPath),
-    runtimeInstalled: privateRuntimeReady(backend),
-  }
-}
-
-async function transcriptionDoctor() {
-  const config = await loadTranscriptionConfig()
-  const runtime = activeTranscriptionRuntime(config)
-  const ffmpegAvailable = tryRun('ffmpeg', ['-version']).status === 0
-  console.log(JSON.stringify({
-    ...runtime,
-    configuredModel: config.model || null,
-    language: config.language || 'es',
-    runtimePath: transcriptionPythonPath,
-    ffmpegAvailable,
-    cachedCompatibleModels: cachedCompatibleModels(runtime.backend, { home: os.homedir() }),
-    downloadsModelsAutomatically: false,
-    nextStep: !runtime.runtimeInstalled
-      ? runtime.runtimePathExists
-        ? `The private runtime is incomplete (missing ${backendImportName(runtime.backend)}). The next \`wa transcribe\` repairs it automatically without downloading a model.`
-        : 'Run `wa transcribe` to create a private Python runtime automatically. This does not download a model.'
-      : runtime.backend === 'mlx' && !ffmpegAvailable
-        ? 'Install ffmpeg (for example, `brew install ffmpeg`) before transcribing audio on Apple Silicon.'
-      : !runtime.selected
-        ? `Ask the user before downloading ${runtime.defaultModel}, then run \`wa transcribe pull ${runtime.defaultModel}\`, or configure an existing directory with \`wa transcribe config model-path <dir>\`.`
-        : 'ready',
-  }, null, 2))
-}
-
-async function setupTranscription({ verbose = true } = {}) {
-  await ensureRuntimeDirectories()
-  const backend = transcriptionBackend()
-  if (!existsSync(transcriptionPythonPath)) {
-    const python = pythonForSetup()
-    if (!python) throw new Error('Python 3 is required for local transcription. Install Python 3, then run `wa transcribe setup`.')
-    run(python, ['-m', 'venv', transcriptionVenvPath])
-  }
-  run(transcriptionPythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'])
-  const dependencies = backend === 'mlx' ? ['mlx-whisper', 'huggingface-hub'] : ['faster-whisper', 'huggingface-hub']
-  run(transcriptionPythonPath, ['-m', 'pip', 'install', ...dependencies])
-  if (verbose) {
-    console.log(`Installed ${backend} in ${transcriptionVenvPath}. No Whisper model was downloaded.`)
-    await transcriptionDoctor()
-  }
-}
-
-async function pullTranscriptionModel(requestedModel) {
-  const config = await loadTranscriptionConfig()
-  const runtime = activeTranscriptionRuntime(config)
-  if (!runtime.runtimeInstalled) throw new Error('Run `wa transcribe setup` before downloading a model.')
-  const model = requestedModel || config.model || runtime.defaultModel
-  if (path.isAbsolute(model)) throw new Error('A local model path cannot be downloaded. Configure a Hugging Face model ID instead.')
-  console.log(`Downloading Whisper model ${model}...`)
-  const result = run(transcriptionPythonPath, [pullModelScript, model], { timeout: 30 * 60 * 1000 })
-  await saveTranscriptionConfig({ ...config, model })
-  console.log(result)
-}
-
-async function configureTranscription(args) {
-  const action = args.shift()
-  if (action === 'show') return transcriptionDoctor()
-  const value = args.join(' ').trim()
-  if (!value || !['model', 'model-path', 'language'].includes(action)) throw new Error('Use: wa transcribe config show|model <huggingface-id>|model-path <directory>|language <code|auto>')
-  const config = await loadTranscriptionConfig()
-  if (action === 'language') {
-    const language = value.toLocaleLowerCase()
-    if (language !== 'auto' && !/^[a-z]{2,3}$/.test(language)) throw new Error('Use an ISO language code such as es or en, or auto for Whisper detection.')
-    await saveTranscriptionConfig({ ...config, language })
-    return console.log(`Configured transcription language: ${language}`)
-  }
-  if (action === 'model-path') {
-    const absolutePath = path.resolve(value)
-    const stat = await fs.stat(absolutePath).catch(() => null)
-    if (!stat?.isDirectory()) throw new Error(`Model directory not found: ${absolutePath}`)
-    await saveTranscriptionConfig({ ...config, model: absolutePath })
-    return console.log(`Configured local Whisper model: ${absolutePath}`)
-  }
-  if (!/^[^\s/]+\/[^\s/]+$/.test(value)) throw new Error('Use a Hugging Face model ID such as mlx-community/whisper-large-v3-turbo.')
-  await saveTranscriptionConfig({ ...config, model: value })
-  console.log(`Configured Whisper model: ${value}. It will not download until you run wa transcribe pull.`)
-}
-
-async function transcribe(audioPath) {
-  const config = await loadTranscriptionConfig()
-  let runtime = activeTranscriptionRuntime(config)
-  if (!runtime.runtimeInstalled) {
-    process.stderr.write(`Preparing the private ${runtime.backend} transcription runtime (one time; no model download)…\n`)
-    await setupTranscription({ verbose: false })
-    runtime = activeTranscriptionRuntime(config)
-  }
-  if (!runtime.runtimeInstalled) throw new Error(`Could not initialize the private ${runtime.backend} transcription runtime. Run \`wa transcribe setup\` for the detailed installer output.`)
-  if (!runtime.selected) throw new Error(`No compatible Whisper model is installed locally. Ask the user before downloading ${runtime.defaultModel}; then run: wa transcribe pull ${runtime.defaultModel}`)
-  const language = config.language || 'es'
-  const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, language, audioPath], { timeout: 10 * 60 * 1000 })
-  return result.trim()
-}
-
-function formatTime(timestamp) {
-  return new Intl.DateTimeFormat('es-UY', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Montevideo' }).format(new Date(timestamp * 1000))
-}
-
-function contactIdentity(jid, contacts = {}) {
-  const name = jid === 'self' ? 'Vos' : contacts[jid]?.name || null
-  return { jid, name }
-}
-
-function groupReceiptReport(message, group, contacts) {
-  const selfJid = group.selfJid || null
-  const participants = (group.participants || []).map((participant) => participant.jid).filter((jid) => jid && jid !== selfJid)
-  const receipts = Object.entries(message.receipts || {}).map(([participant, receipt]) => ({ participant: contactIdentity(participant, contacts), ...receipt }))
-  const readBy = new Set(Object.entries(message.receipts || {}).filter(([, receipt]) => receipt.readAt).map(([participant]) => participant))
-  return {
-    message: { id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, type: message.type },
-    participantCount: participants.length,
-    receipts,
-    readBy: receipts.filter((receipt) => receipt.readAt).map((receipt) => receipt.participant),
-    withoutReportedReadReceipt: participants.filter((participant) => !readBy.has(participant)).map((participant) => contactIdentity(participant, contacts)),
-    note: 'withoutReportedReadReceipt no significa que la persona no lo vio: WhatsApp puede no enviar el receipt por privacidad, conectividad o porque el bridge no estaba conectado.',
-  }
-}
-
-function pollReport(message, contacts) {
-  const votes = message.pollVotes || []
-  return {
-    id: message.id,
-    timestamp: message.timestamp,
-    question: message.poll?.question || null,
-    options: (message.poll?.options || []).map((option) => ({
-      option,
-      voters: votes.filter((vote) => vote.options?.includes(option)).map((vote) => ({ ...contactIdentity(vote.participant, contacts), timestamp: vote.timestamp || null })),
-    })),
-    note: 'Sólo incluye votos que el bridge pudo descifrar y observar desde que estaba conectado.',
-  }
-}
-
-function linksForMessage(message) {
-  return Array.isArray(message.links) && message.links.length ? message.links : linksInText(message.text)
-}
-
-function chatLabel(jid, cache) {
-  const name = cache?.contacts?.[jid]?.name || cache?.chats?.[jid]?.name || null
-  return name ? `${name} (${jid})` : jid
-}
-
-function printMessages(messages, { ids = false, cache = null, empty = 'No hay mensajes cacheados para este chat.' } = {}) {
-  if (!messages.length) return console.log(empty)
-  for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
-    const author = message.fromMe ? 'Vos' : message.pushName || 'Contacto'
-    const text = message.deleted ? '[mensaje eliminado]' : message.text || `[${message.type}]`
-    const structured = message.location ? `ubicación: ${message.location.latitude ?? '?'} , ${message.location.longitude ?? '?'}`
-      : message.contacts?.length ? `${message.contacts.length} contacto(s)`
-        : message.poll ? `encuesta: ${message.poll.question || 'sin pregunta'}`
-          : message.pollUpdate ? `voto de encuesta: ${message.pollUpdate.pollCreationMessageKey || 'sin referencia'}`
-            : message.call ? `llamada perdida${message.call.video ? ' de video' : ''}`
-              : message.interactiveResponse ? `respuesta interactiva: ${message.interactiveResponse.text || message.interactiveResponse.id || message.interactiveResponse.kind}`
-                : null
-    const status = message.fromMe && message.status !== null && message.status !== undefined ? `estado ${['error', 'pendiente', 'enviado', 'entregado', 'leído', 'reproducido'][message.status] || message.status}` : null
-    const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null, message.edited ? 'editado' : null, message.ephemeral ? 'efímero' : null, message.viewOnce ? 'view-once no expuesto' : null, structured, status].filter(Boolean).join(' · ')
-    const source = message.source === 'live' ? '' : ' [cache histórico]'
-    const chat = cache ? `[${chatLabel(message.jid, cache)}] ` : ''
-    console.log(`${chat}${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
-  }
-}
-
-async function cacheMatches(query) {
-  const normalized = normalizeText(query)
-  const [{ chats }, textMatches] = await Promise.all([
-    readIdentities(),
-    normalized
-      ? request(`/search?q=${encodeURIComponent(query)}&scope=direct&normalized=1&limit=50`).then(({ messages }) => messages)
-      : Promise.resolve([]),
-  ])
-  const matchingTextByJid = new Map()
-  for (const message of textMatches) {
-    if (!matchingTextByJid.has(message.jid)) matchingTextByJid.set(message.jid, message.text)
-  }
-  return chats
-    .filter((chat) => isDirectChat(chat.jid))
-    .map((chat) => {
-      const matchingName = chat.name && normalizeText(chat.name).includes(normalized) ? chat.name : null
-      const matchingText = matchingTextByJid.get(chat.jid) || null
-      const score = matchingName
-        ? (normalizeText(matchingName) === normalized ? 900 : 700)
-        : matchingText ? 200 : 0
-      return { ...chat, lastTimestamp: chat.lastTimestamp || 0, matchingName, matchingText, score }
-    })
-    .filter((signal) => signal.score > 0)
-    .sort((left, right) => right.score - left.score || right.lastTimestamp - left.lastTimestamp)
-}
-
-async function recentChats(limit) {
-  const identities = await readIdentities()
-  const chats = identities.chats
-    .filter((chat) => isDirectChat(chat.jid))
-    .sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0))
-    .slice(0, limit)
-  const contacts = macContactsForPhones(chats.map((chat) => phoneFromJid(chat.jid)))
-  const contactByPhone = new Map(contacts.flatMap((contact) => contact.phones.map((phone) => [phone.replace(/\D/g, ''), contact.name])))
-  return { chats, contactByPhone }
-}
-
-async function groupCandidates(terms) {
-  const normalizedTerms = [...new Set(terms.map(normalizeText).filter(Boolean))]
-  const [groups, ...termMatches] = await Promise.all([
-    whatsappGroups(),
-    ...normalizedTerms.map((term) => request(`/search?q=${encodeURIComponent(term)}&scope=groups&normalized=1&limit=100`)
-      .then(({ messages }) => messages.map((message) => ({ ...message, matchingTerm: term })))
-      .catch(() => [])),
-  ])
-  const messagesByGroup = new Map()
-  for (const message of termMatches.flat()) {
-    const evidence = messagesByGroup.get(message.jid) || []
-    evidence.push({ text: message.text || '', timestamp: message.timestamp, matchingTerm: message.matchingTerm })
-    messagesByGroup.set(message.jid, evidence)
-  }
-  return groups.map((group) => {
-    const metadata = `${group.subject || ''} ${group.desc || ''}`
-    const metadataMatches = normalizedTerms.filter((term) => normalizeText(metadata).includes(term))
-    const evidence = messagesByGroup.get(group.jid) || []
-    return {
-      ...group,
-      score: (metadataMatches.length * 100) + Math.min(evidence.length, 5) * 20,
-      metadataMatches,
-      evidence,
-    }
-  }).filter((group) => group.score > 0).sort((left, right) => right.score - left.score)
-}
-
-function printKnownGroup(group) {
-  console.log(`conocido: ${group.subject || 'sin título'} (${group.jid})${group.reason ? ` — ${group.reason}` : ''}`)
-}
-
-function discoveryTerms(list, listName, extras = []) {
-  const stopWords = new Set(['maspeak', 'con', 'para', 'las', 'los', 'del', 'una', 'uno', 'ops'])
-  const inferred = (list.groups || []).flatMap((group) => (group.subject || '')
-    .split(/[^\p{L}\p{N}]+/u)
-    .map(normalizeText)
-    .filter((term) => term.length >= 4 && !stopWords.has(term)))
-  return [...new Set([...(list.terms || []), listName, ...extras, ...inferred])]
 }
 
 async function main() {
@@ -1089,10 +453,7 @@ async function main() {
     const text = args.join(' ').trim()
     if (!target || !selector || !text) return usage()
     const contact = await resolve(target)
-    const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    const quoted = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages.find((message) => message.id === selector)
-    if (!quoted) throw new Error(`No matching message found for reply selector: ${selector}`)
-    if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
+    const quoted = await resolveMessageSelector(contact, selector)
     const result = await sendMessage(contact.jid, text, quoted.id)
     return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}.`)
   }
@@ -1190,7 +551,7 @@ async function main() {
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    const snapshot = ['polls', 'poll', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readIdentities() : null
+    const identities = ['polls', 'poll', 'receipts', 'unread-by', 'reactions'].includes(command) ? await readIdentities() : null
     if (command === 'coverage') {
       const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
       console.log(JSON.stringify({ chat: contact.name || target, ...coverage }, null, 2))
@@ -1308,17 +669,17 @@ async function main() {
       const field = command === 'locations' ? 'location' : command === 'contacts' ? 'contacts' : 'poll'
       const selected = messages.filter((message) => field === 'contacts' ? message.contacts?.length : Boolean(message[field])).slice(0, Number.parseInt(args[0] || '20', 10))
       if (!selected.length) return console.log(`No hay ${command} cacheados para este chat.`)
-      return console.log(JSON.stringify(selected.map((message) => command === 'polls' ? pollReport(message, snapshot.contacts) : ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, [field]: message[field] })), null, 2))
+      return console.log(JSON.stringify(selected.map((message) => command === 'polls' ? pollReport(message, identities.contacts) : ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, [field]: message[field] })), null, 2))
     }
     if (command === 'group-events') {
       if (!contact.jid.endsWith('@g.us')) throw new Error('group-events is only available for WhatsApp groups.')
       const limit = Number.parseInt(args[0] || '20', 10)
-      const [{ events }, identities] = await Promise.all([
+      const [{ events }, eventIdentities] = await Promise.all([
         request(`/events?kind=group&jid=${encodeURIComponent(contact.jid)}&limit=${limit}`),
         readIdentities(),
       ])
       if (!events.length) return console.log('No hay cambios de grupo cacheados para este grupo.')
-      return console.log(JSON.stringify(events.map((event) => ({ ...event, participant: event.participant ? contactIdentity(event.participant, identities.contacts) : null, author: event.author ? contactIdentity(event.author, identities.contacts) : null })), null, 2))
+      return console.log(JSON.stringify(events.map((event) => ({ ...event, participant: event.participant ? contactIdentity(event.participant, eventIdentities.contacts) : null, author: event.author ? contactIdentity(event.author, eventIdentities.contacts) : null })), null, 2))
     }
     if (command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'poll') {
       const messageId = args.shift()
@@ -1326,10 +687,10 @@ async function main() {
       const message = messages.find((item) => item.id === messageId)
       if (!message) throw new Error(`No matching message found: ${messageId}`)
       if (command === 'delivery') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, status: message.status, statusAt: message.statusAt }, null, 2))
-      if (command === 'reactions') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, reactions: (message.reactions || []).map((reaction) => ({ ...reaction, participant: contactIdentity(reaction.participant, snapshot.contacts) })) }, null, 2))
+      if (command === 'reactions') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, reactions: (message.reactions || []).map((reaction) => ({ ...reaction, participant: contactIdentity(reaction.participant, identities.contacts) })) }, null, 2))
       if (command === 'poll') {
         if (!message.poll) throw new Error('This message is not a poll.')
-        return console.log(JSON.stringify(pollReport(message, snapshot.contacts), null, 2))
+        return console.log(JSON.stringify(pollReport(message, identities.contacts), null, 2))
       }
       if (command === 'receipts' || command === 'unread-by') {
         if (!contact.jid.endsWith('@g.us')) {
@@ -1337,7 +698,7 @@ async function main() {
           return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, status: message.status, statusAt: message.statusAt, note: 'Los chats directos sólo exponen el estado agregado que reporta WhatsApp.' }, null, 2))
         }
         if (!message.fromMe) throw new Error(`${command} is only available for a message sent by this account.`)
-        const report = groupReceiptReport(message, await whatsappGroup(contact.jid), snapshot.contacts)
+        const report = groupReceiptReport(message, await whatsappGroup(contact.jid), identities.contacts)
         if (command === 'unread-by') return console.log(JSON.stringify({ message: report.message, participantCount: report.participantCount, withoutReportedReadReceipt: report.withoutReportedReadReceipt, note: report.note }, null, 2))
         return console.log(JSON.stringify(report, null, 2))
       }
@@ -1346,9 +707,7 @@ async function main() {
     if (command === 'react') {
       const selector = args.shift(); const emoji = args.shift()
       if (!selector || !emoji) return usage()
-      const message = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((item) => !item.fromMe) : messages.find((item) => item.id === selector)
-      if (!message) throw new Error(`No matching message found for reaction selector: ${selector}`)
-      if (selector === 'latest' || selector === 'latest-incoming') await requireFreshCoverage(contact)
+      const message = await resolveMessageSelector(contact, selector)
       await reactToMessage(contact.jid, message.id, emoji)
       return console.log('Reaction sent.')
     }
