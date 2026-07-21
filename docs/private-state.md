@@ -27,7 +27,7 @@ pull requests.
 | `data/audio/` | Audio files downloaded only for requested transcriptions. |
 | `data/image-envelopes/`, `data/images/` | Private image metadata and selected downloaded images. |
 | `data/document-envelopes/`, `data/documents/` | Private document metadata and selected downloaded files. |
-| `data/link-qr.png` | Temporary QR used during intentional onboarding/re-linking. |
+| `data/link-qr.png`, `data/link-qr.txt` | Temporary QR image and terminal representation used during intentional onboarding/re-linking. |
 | `data/*.log` | Local runtime diagnostics. |
 
 The repository `.gitignore` excludes `auth/` and `data/`. Directories are

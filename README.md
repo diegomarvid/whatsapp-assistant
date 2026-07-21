@@ -97,7 +97,7 @@ supervisor propio del entorno.
 - Node.js **22 o superior**.
 - Una cuenta de WhatsApp para vincular una sola vez por QR.
 - macOS o Linux con systemd si se quiere un servicio administrado. La búsqueda
-  opcional en Contactos y el OCR con Vision son funciones de macOS.
+  opcional en Contactos es una mejora exclusiva de macOS.
 
 ```bash
 git clone https://github.com/diegomarvid/whatsapp-assistant.git
@@ -206,12 +206,17 @@ siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
 | `wa transcribe contacto latest` | Descarga el audio más reciente y lo transcribe con `ct`/Whisper. |
 | `wa transcribe contacto <message-id>` | Transcribe un audio concreto; el ID sale de `wa audios` o `wa history --ids`. |
 | `wa images contacto` / `wa image contacto <message-id>` | Lista o descarga una imagen seleccionada. |
-| `wa image-text contacto <message-id>` | Hace OCR local con Vision de macOS (no disponible en Linux). |
 | `wa files contacto` / `wa file contacto <message-id>` | Lista o descarga un documento entrante seleccionado. |
 
 El comando de transcripción correcto es `wa transcribe contacto latest` o
 `wa transcribe contacto <message-id>`: no recibe un selector genérico
 `<id|latest>` en la tabla porque el ID tiene que corresponder a un audio.
+
+`wa image`, `wa file` y `wa audio` descargan sólo el adjunto seleccionado y
+devuelven su **path absoluto privado**. La CLI no interpreta imágenes, PDFs ni
+documentos: el agente que la invoca abre ese path con la capacidad visual o de
+documentos que tenga disponible. Así no se asume que una imagen es texto ni se
+acopla el bridge a un runtime concreto de IA.
 
 ### ✉️ Acciones explícitas
 

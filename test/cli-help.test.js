@@ -14,6 +14,8 @@ test('help gives a new user and an AI an actionable onboarding path', () => {
   assert.match(result.stdout, /wa setup/)
   assert.match(result.stdout, /wa doctor/)
   assert.match(result.stdout, /latest-incoming/)
+  assert.match(result.stdout, /wa image <alias or phone> <message-id>/)
+  assert.doesNotMatch(result.stdout, /image-text/)
 })
 
 test('setup help explains the QR flow without needing a running bridge', () => {

@@ -65,7 +65,6 @@ Comandos:
   wa audio <alias or phone> <message-id>
   wa images <alias or phone> [limit]
   wa image <alias or phone> <message-id>
-  wa image-text <alias or phone> <message-id>
   wa files <alias or phone> [limit]
   wa file <alias or phone> <message-id>
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
@@ -806,7 +805,7 @@ async function main() {
     for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
     return
   }
-  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'files' || command === 'file' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -858,14 +857,6 @@ async function main() {
       if (!messageId) return usage()
       const { image } = await downloadImage(contact.jid, messageId)
       return console.log(image.path)
-    }
-    if (command === 'image-text') {
-      const messageId = args.shift()
-      if (!messageId) return usage()
-      const { image } = await downloadImage(contact.jid, messageId)
-      const result = spawnSync('swift', [path.join(root, 'bin', 'ocr-image.swift'), image.path], { encoding: 'utf8', timeout: 120000 })
-      if (result.error || result.status !== 0) throw new Error(result.stderr || result.error?.message || 'OCR failed')
-      return console.log(result.stdout.trim())
     }
     if (command === 'files' || command === 'file') {
       const files = messages.filter((message) => message.type === 'documentMessage')
