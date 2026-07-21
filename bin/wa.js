@@ -95,12 +95,6 @@ function normalizeText(value) {
   return value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
 }
 
-function looksActionableGroupMessage(text) {
-  const value = String(text || '').trim()
-  if (!value) return false
-  return value.length >= 40 || /[?¿]|\b(porfavor|porfa|necesito|pod(e|es|és)|revis|avisa|confirm|mand|pendiente|cuando|fecha|hoy|mañana|urgente)\b/i.test(value)
-}
-
 function macContacts(args) {
   const result = spawnSync('swift', [contactsSearchScript, ...args], { encoding: 'utf8', timeout: 30000 })
   if (result.error || result.status !== 0) return []
@@ -504,8 +498,8 @@ async function main() {
       if (!list?.groups?.length) return console.log(`No hay grupos guardados para ${groupList}.`)
       const reviews = list.groups
         .map((group) => ({ group, messages: cache.messages.filter((message) => message.jid === group.jid).sort((a, b) => b.timestamp - a.timestamp) }))
-        .filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff && looksActionableGroupMessage(messages[0].text))
-      if (!reviews.length) return console.log(`No hay pedidos o preguntas recientes sin respuesta tuya en grupos de ${groupList}.`)
+        .filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff)
+      if (!reviews.length) return console.log(`No hay mensajes entrantes recientes como último intercambio en grupos de ${groupList}.`)
       for (const { group, messages } of reviews) {
         const message = messages[0]
         console.log(`${formatTime(message.timestamp)} — ${group.subject || group.jid}: ${message.text.slice(0, 500)} [id: ${message.id}]`)

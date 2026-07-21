@@ -15,3 +15,8 @@ check` and `npm test`. Static syntax checks are not enough: message
 normalization for every newly supported WhatsApp payload must have a regression
 test. Event handlers that ingest WhatsApp updates must catch/log failures so a
 bad payload cannot crash the bridge or force a re-link.
+
+The CLI may filter by structural metadata only (chat, sender, timestamp, media
+type, reply order). Do not encode semantic judgments with keywords, regexes or
+language-specific heuristics: intent, urgency and follow-up decisions belong to
+the AI layer consuming the retrieved messages.
