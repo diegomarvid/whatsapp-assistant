@@ -19,9 +19,26 @@ const baseUrl = 'http://127.0.0.1:3847'
 const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
 
 function usage() {
-  console.log(`Usage:
+  console.log(`WhatsApp Assistant — bridge local de contexto reciente
+
+Inicio en una Mac nueva:
+  brew tap diegomarvid/tap && brew install whatsapp-assistant
+  wa setup                         # instala el daemon y muestra el QR si hace falta
+  wa status                        # esperar: connection = open
+
+Para agentes de IA:
+  - Usar wa latest-incoming <contacto> para “el último mensaje que me mandó X”.
+  - Usar wa coverage <contacto> antes de concluir que un chat está actualizado.
+  - send, reply y react sólo ante instrucción explícita; el CLI no interpreta intención.
+  - Estado privado: auth, SQLite y aliases quedan fuera de Homebrew.
+
+Ayuda detallada: wa help [setup|messages|media|daemon|privacy]
+
+Comandos:
   wa status
+  wa doctor                         # estado, daemon, QR y rutas; no expone secretos
   wa setup
+  wa qr                             # abre/imprime el QR pendiente, si existe
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
   wa aliases
@@ -52,6 +69,19 @@ function usage() {
   wa send <alias or phone> <message>
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
   wa send-file <alias or phone> <file> [caption]`)
+}
+
+function help(topic) {
+  const topics = {
+    setup: `Instalación nueva:\n  1. brew tap diegomarvid/tap && brew install whatsapp-assistant\n  2. wa setup\n  3. Escanear el QR que el comando abre en WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  4. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
+    media: `Adjuntos:\n  wa audios contacto\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nTranscribir es opcional: requiere ct y un backend local de Whisper. El bridge base no depende de Whisper.`,
+    daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. Mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.`,
+    privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
+  }
+  if (!topic) return usage()
+  if (!topics[topic]) throw new Error(`Unknown help topic: ${topic}. Use: wa help setup|messages|media|daemon|privacy`)
+  console.log(topics[topic])
 }
 
 function run(command, args, options = {}) {
@@ -117,25 +147,54 @@ async function fileExists(filename) {
   try { await fs.access(filename); return true } catch { return false }
 }
 
-async function waitForBridge(timeoutMs = 10000) {
+async function waitForSetup(timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs
+  const qrPath = path.join(dataDir, 'link-qr.png')
   while (Date.now() < deadline) {
-    try { return await request('/health') } catch { await new Promise((resolve) => setTimeout(resolve, 500)) }
+    if (await fileExists(qrPath)) return { qrPath, health: null }
+    try {
+      const health = await request('/health')
+      if (health.connection === 'open') return { qrPath: null, health }
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 500))
   }
-  return null
+  return { qrPath: await fileExists(qrPath) ? qrPath : null, health: null }
+}
+
+async function showQr() {
+  const qrPath = path.join(dataDir, 'link-qr.png')
+  if (!await fileExists(qrPath)) {
+    console.log('No QR is pending. Run `wa status`; if the bridge is not open, run `wa doctor`.')
+    return
+  }
+  console.log(`Scan this QR in WhatsApp: Settings → Linked devices → Link a device\n${qrPath}`)
+  if (process.platform === 'darwin') tryRun('open', [qrPath])
+}
+
+async function doctor() {
+  let health = null
+  try { health = await request('/health') } catch {}
+  console.log(JSON.stringify({
+    stateRoot,
+    daemonLabel: launchAgentLabel,
+    daemonPlistExists: await fileExists(launchAgentPath),
+    authExists: await fileExists(paths.authDir),
+    sqliteExists: await fileExists(path.join(dataDir, 'mirror.sqlite')),
+    qrPending: await fileExists(path.join(dataDir, 'link-qr.png')),
+    health,
+    nextStep: health?.connection === 'open' ? 'ready' : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.',
+  }, null, 2))
 }
 
 async function setup() {
   await installDaemon()
-  const health = await waitForBridge()
-  const qrPath = path.join(dataDir, 'link-qr.png')
-  if (await fileExists(qrPath)) {
-    console.log(`Scan the QR image at: ${qrPath}`)
-    if (process.platform === 'darwin') tryRun('open', [qrPath])
+  const { qrPath, health } = await waitForSetup()
+  if (qrPath) {
+    await showQr()
   } else if (health?.connection === 'open') {
-    console.log('WhatsApp Assistant is already linked and running.')
+    console.log('WhatsApp Assistant is linked and ready. Try: wa status')
   } else {
-    console.log(`Bridge started. Check ${path.join(logsDir, 'bridge.log')} for the pairing QR.`)
+    console.log(`The bridge is still starting. Run: wa qr\nIf no QR appears, run: wa doctor`)
   }
 }
 
@@ -459,7 +518,10 @@ function discoveryTerms(list, listName, extras = []) {
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
+  if (command === 'help') return help(args[0])
   if (command === '__daemon') return import('../src/server.js')
+  if (command === 'doctor') return doctor()
+  if (command === 'qr') return showQr()
   if (command === 'setup') return setup()
   if (command === 'migrate-state') return migrateState(args[0])
   if (command === 'daemon') {

@@ -46,6 +46,19 @@ El estado instalado queda en `~/Library/Application Support/WhatsApp Assistant/`
 ahí viven `auth/`, SQLite, aliases, token y logs. Homebrew puede actualizar o
 desinstalar el código sin borrar conversaciones recientes ni credenciales.
 
+Si una persona o un agente necesita orientación dentro del propio CLI:
+
+```bash
+wa --help
+wa help setup
+wa doctor
+```
+
+`wa setup` espera el arranque del bridge, abre el QR en macOS cuando WhatsApp
+necesita vincular un dispositivo y deja como verificación final `wa status`.
+`wa doctor` muestra rutas, estado del daemon, presencia de SQLite/auth y si hay
+un QR pendiente; nunca muestra credenciales ni contenido de chats.
+
 ### Requisitos base
 
 - Node.js **22 o superior**.
@@ -122,6 +135,8 @@ Contactos como complemento. No copia la agenda al mirror.
 | Comando | Para qué sirve |
 | --- | --- |
 | `wa status` | Estado del bridge y cantidad de mensajes cacheados. |
+| `wa doctor` | Diagnóstico sin secretos: daemon, rutas privadas, SQLite, QR y health. |
+| `wa qr` | Abre o imprime la ubicación de un QR pendiente de escaneo. |
 | `wa find "Nombre"` | Busca aliases, identidad WhatsApp, mensajes recientes y Contactos de macOS opcionales. |
 | `wa recent 20` | Chats individuales recientes con identidad WhatsApp. |
 | `wa latest contacto` | Último evento del chat, entrante o saliente. |

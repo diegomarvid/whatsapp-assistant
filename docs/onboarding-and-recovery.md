@@ -45,8 +45,10 @@ local user, and is excluded from Git.
    wa setup
    ```
 
-   `wa setup` creates a user LaunchAgent and opens `link-qr.png` only when a
-   new link is required. The packaged installation keeps all private state at
+   `wa setup` creates a user LaunchAgent, waits for the bridge to initialize
+   and opens `link-qr.png` only when a new link is required. If initialization
+   takes longer, use `wa qr` to open a pending QR and `wa doctor` for a
+   secrets-free diagnosis. The packaged installation keeps all private state at
    `~/Library/Application Support/WhatsApp Assistant/`, outside Homebrew.
 
    If migrating from a prior checkout, run this before setup to preserve the
