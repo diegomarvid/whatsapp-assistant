@@ -950,6 +950,26 @@ async function handleHistorySet({ messages, chats, contacts }) {
   await saveCache()
 }
 
+// Baileys switches the companion connection to "active" right after login.
+// WhatsApp treats the active client as the one showing notifications, so an
+// always-on daemon in active mode silently stops push notifications on the
+// user's phone. An observer must stay a passive companion; passive
+// connections still receive every event and can send explicit messages.
+async function reassertPassiveCompanionMode() {
+  try {
+    await socket.query({
+      tag: 'iq',
+      attrs: { to: 's.whatsapp.net', xmlns: 'passive', type: 'set' },
+      content: [{ tag: 'passive', attrs: {} }],
+    })
+    cache.sync.passiveModeAssertedAt = nowSeconds()
+    logger.info('Reasserted passive companion mode so phone notifications keep arriving')
+  } catch (error) {
+    cache.sync.passiveModeAssertedAt = null
+    logger.warn({ err: error }, 'Could not reassert passive companion mode')
+  }
+}
+
 async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, receivedPendingNotifications }) {
   if (receivedPendingNotifications) {
     // WhatsApp finished replaying this connection's offline queue: from here a
@@ -969,6 +989,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     connection = 'open'
     lastError = null
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
+    await reassertPassiveCompanionMode()
     cache.sync.connectedAt = nowSeconds()
     cache.sync.lastConnectedAt = cache.sync.connectedAt
     cache.sync.ingestionHealthy = true
