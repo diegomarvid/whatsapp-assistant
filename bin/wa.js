@@ -76,7 +76,7 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS: brew tap diegomarvid/tap && brew install whatsapp-assistant\n  Linux: instalar Node 22+, luego npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz\n\n  1. wa setup\n  2. Escanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  3. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS: brew tap diegomarvid/tap && brew install whatsapp-assistant\n  Linux: instalar Node 22+ y seguir la sección Linux/VPS del README de esta release.\n\n  1. wa setup\n  2. Escanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  3. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
     media: `Adjuntos:\n  wa audios contacto\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nTranscribir es opcional: requiere ct y un backend local de Whisper. El bridge base no depende de Whisper.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez si querés que sobreviva al logout: sudo loginctl enable-linger $USER`,
@@ -109,6 +109,18 @@ async function ensureRuntimeDirectories() {
 
 function launchctlDomain() {
   return `gui/${process.getuid()}`
+}
+
+function linuxServiceDiagnostics() {
+  const manager = tryRun('systemctl', ['--user', 'show-environment'])
+  const linger = tryRun('loginctl', ['show-user', String(process.getuid()), '-p', 'Linger', '--value'])
+  return {
+    type: 'systemd-user',
+    name: systemdServiceName,
+    unitExists: null,
+    userManager: manager.status === 0 ? 'available' : null,
+    linger: linger.status === 0 ? linger.stdout.trim() === 'yes' : null,
+  }
 }
 
 async function installDaemon() {
@@ -223,16 +235,24 @@ async function showQr() {
 async function doctor() {
   let health = null
   try { health = await request('/health') } catch {}
+  const daemon = process.platform === 'linux'
+    ? { ...linuxServiceDiagnostics(), unitExists: await fileExists(systemdUnitPath) }
+    : { type: 'launch-agent', label: launchAgentLabel, plistExists: await fileExists(launchAgentPath) }
+  const nextStep = health?.connection === 'open'
+    ? 'ready'
+    : process.platform === 'linux' && daemon.userManager === null
+      ? 'A systemd user manager is unavailable. Log in through systemd or run the bridge under the VPS supervisor.'
+      : process.platform === 'linux' && daemon.linger === false
+        ? 'Run `sudo loginctl enable-linger $USER` once so the bridge survives VPS logout and reboot, then run `wa setup`.'
+        : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.'
   console.log(JSON.stringify({
     stateRoot,
-    daemon: process.platform === 'linux'
-      ? { type: 'systemd-user', name: systemdServiceName, unitExists: await fileExists(systemdUnitPath) }
-      : { type: 'launch-agent', label: launchAgentLabel, plistExists: await fileExists(launchAgentPath) },
+    daemon,
     authExists: await fileExists(paths.authDir),
     sqliteExists: await fileExists(path.join(dataDir, 'mirror.sqlite')),
     qrPending: await fileExists(path.join(dataDir, 'link-qr.png')) || await fileExists(path.join(dataDir, 'link-qr.txt')),
     health,
-    nextStep: health?.connection === 'open' ? 'ready' : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.',
+    nextStep,
   }, null, 2))
 }
 

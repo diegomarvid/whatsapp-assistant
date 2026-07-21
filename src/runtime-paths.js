@@ -8,6 +8,13 @@ function isPackagedInstall(root) {
   return root.split(path.sep).includes('node_modules')
 }
 
+function xdgDirectory(env, variable, fallback) {
+  const value = env[variable]?.trim()
+  // XDG values must be absolute: a relative value must not make private state
+  // depend on the current working directory of the caller.
+  return value && path.isAbsolute(value) ? value : fallback
+}
+
 export function runtimePaths({ root = projectRoot, env = process.env, platform = process.platform, home = os.homedir() } = {}) {
   const configuredStateDir = env.WA_STATE_DIR?.trim()
   const stateRoot = configuredStateDir
@@ -15,7 +22,7 @@ export function runtimePaths({ root = projectRoot, env = process.env, platform =
     : isPackagedInstall(root)
       ? platform === 'darwin'
         ? path.join(home, 'Library', 'Application Support', 'WhatsApp Assistant')
-        : path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'whatsapp-assistant')
+        : path.join(xdgDirectory(env, 'XDG_STATE_HOME', path.join(home, '.local', 'state')), 'whatsapp-assistant')
       : root
 
   return {

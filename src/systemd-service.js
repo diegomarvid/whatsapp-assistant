@@ -22,7 +22,9 @@ function directivePath(value) {
 }
 
 export function systemdUserUnitPath({ home, env = process.env }) {
-  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'systemd', 'user', systemdServiceName)
+  const configured = env.XDG_CONFIG_HOME?.trim()
+  const configHome = configured && path.isAbsolute(configured) ? configured : path.join(home, '.config')
+  return path.join(configHome, 'systemd', 'user', systemdServiceName)
 }
 
 export function systemdUserUnit({ nodePath, entryPath, entryArguments = [], stateRoot, logsDir, workingDirectory = path.dirname(entryPath) }) {

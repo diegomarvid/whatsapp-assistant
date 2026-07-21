@@ -65,7 +65,7 @@ Instalá Node.js 22+ y el paquete desde un release. No requiere navegador ni
 interfaz gráfica:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.1.tar.gz
 wa setup
 ```
 

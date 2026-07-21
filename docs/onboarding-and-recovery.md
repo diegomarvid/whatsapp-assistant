@@ -61,7 +61,7 @@ local user, and is excluded from Git.
    On Linux/VPS with systemd, install Node.js 22+ and then use:
 
    ```bash
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.0.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.3.1.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```

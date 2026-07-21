@@ -1,8 +1,16 @@
 {
   "name": "whatsapp-assistant",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Local, read-only WhatsApp Web bridge powered by Baileys",
+  "homepage": "https://github.com/diegomarvid/whatsapp-assistant#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diegomarvid/whatsapp-assistant.git"
+  },
+  "bugs": {
+    "url": "https://github.com/diegomarvid/whatsapp-assistant/issues"
+  },
   "type": "module",
   "scripts": {
     "start": "node src/server.js",

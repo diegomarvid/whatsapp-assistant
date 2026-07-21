@@ -31,6 +31,11 @@ test('uses XDG private state for a packaged Linux install', () => {
   assert.equal(result.authDir, '/home/example/.local/state/whatsapp-assistant/auth')
 })
 
+test('ignores relative XDG state paths', () => {
+  const result = runtimePaths({ root: '/usr/lib/node_modules/whatsapp-assistant', home: '/home/example', platform: 'linux', env: { XDG_STATE_HOME: 'relative-state' } })
+  assert.equal(result.stateRoot, '/home/example/.local/state/whatsapp-assistant')
+})
+
 test('renders a private launch agent that pins state outside the package', () => {
   const plist = launchAgentPlist({
     nodePath: '/opt/homebrew/bin/node',
@@ -78,4 +83,9 @@ test('renders a user-level systemd unit with private state outside the package',
   assert.match(unit, /Restart=always/)
   assert.match(unit, /WantedBy=default.target/)
   assert.doesNotMatch(unit, /auth\//)
+})
+
+test('ignores relative XDG config paths for a systemd user unit', () => {
+  const unitPath = systemdUserUnitPath({ home: '/home/example', env: { XDG_CONFIG_HOME: 'relative-config' } })
+  assert.equal(unitPath, `/home/example/.config/systemd/user/${systemdServiceName}`)
 })
