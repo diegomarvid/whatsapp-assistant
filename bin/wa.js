@@ -27,6 +27,7 @@ function usage() {
   wa groups inspect <group-jid> [limit]
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
+  wa freshness <alias or phone>
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>]
@@ -222,7 +223,8 @@ function printMessages(messages, { ids = false } = {}) {
     const author = message.fromMe ? 'Vos' : 'Contacto'
     const text = message.text || `[${message.type}]`
     const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null].filter(Boolean).join(' · ')
-    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}`)
+    const source = message.source === 'live' ? '' : ' [cache histórico]'
+    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
   }
 }
 
@@ -452,6 +454,7 @@ async function main() {
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
     const quoted = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages.find((message) => message.id === selector)
     if (!quoted) throw new Error(`No matching message found for reply selector: ${selector}`)
+    if ((selector === 'latest' || selector === 'latest-incoming') && quoted.source !== 'live') throw new Error('Latest selector is cache-only and may be stale. Wait for a live bridge update or use an explicit message ID after verifying it.')
     const result = await sendMessage(contact.jid, text, quoted.id)
     return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}.`)
   }
@@ -524,11 +527,18 @@ async function main() {
     for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
     return
   }
-  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
+  if (command === 'latest' || command === 'freshness' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
+    if (command === 'freshness') {
+      const health = await request('/health')
+      const latest = messages[0]
+      if (!latest) return console.log('No hay mensajes cacheados para este chat.')
+      console.log(JSON.stringify({ chat: contact.name || target, latestMessageAt: latest.timestamp, latestSource: latest.source || 'history', bridgeConnectedAt: health.connectedAt, lastLiveMessageAt: health.lastLiveMessageAt, safeForLatestAction: latest.source === 'live' }, null, 2))
+      return
+    }
     if (command === 'latest') return printMessages(messages.slice(0, 1), { ids: args.includes('--ids') })
     if (command === 'history') {
       const limit = Number.parseInt(args.find((argument) => argument !== '--ids') || '20', 10)
@@ -592,6 +602,7 @@ async function main() {
       if (!selector || !emoji) return usage()
       const message = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((item) => !item.fromMe) : messages.find((item) => item.id === selector)
       if (!message) throw new Error(`No matching message found for reaction selector: ${selector}`)
+      if ((selector === 'latest' || selector === 'latest-incoming') && message.source !== 'live') throw new Error('Latest selector is cache-only and may be stale. Wait for a live bridge update or use an explicit message ID after verifying it.')
       await reactToMessage(contact.jid, message.id, emoji)
       return console.log('Reaction sent.')
     }

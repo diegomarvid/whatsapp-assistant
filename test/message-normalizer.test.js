@@ -28,6 +28,12 @@ test('returns null for messages with no chat identity', () => {
   assert.equal(safeMessage({ message: { conversation: 'ignored' } }), null)
 })
 
+test('marks whether a message arrived live or through history', () => {
+  const message = safeMessage({ key: { id: 'live-1', remoteJid: 'chat@lid' }, message: { conversation: 'hola' } }, { source: 'live', capturedAt: 123 })
+  assert.equal(message.source, 'live')
+  assert.equal(message.capturedAt, 123)
+})
+
 test('detects common outgoing document MIME types', () => {
   assert.equal(mimeTypeForFile('/tmp/reporte.xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   assert.equal(mimeTypeForFile('/tmp/nota.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')

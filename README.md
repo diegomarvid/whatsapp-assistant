@@ -42,6 +42,7 @@ npm link
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada de Maspeak |
 | `wa latest contacto` | Último mensaje de ese chat |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para operar sobre ellos |
+| `wa freshness contacto` | Muestra si el último mensaje llegó en vivo o sólo desde cache histórico |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
 | `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
@@ -68,6 +69,12 @@ El CLI no clasifica intención, urgencia, saludos ni pendientes según el texto:
 sólo presenta hechos estructurales (autor, fecha, tipo, orden y si hubo una
 respuesta posterior). La interpretación semántica corresponde a la IA que use
 estos datos, para conservar compatibilidad entre idiomas y contextos.
+
+Después de una reconexión, el cache histórico puede no incluir mensajes que
+llegaron mientras el bridge estuvo desconectado. Por seguridad, `wa react` y
+`wa reply` rechazan `latest` y `latest-incoming` si ese mensaje no llegó en
+vivo al bridge. Usá `wa freshness contacto` antes de actuar; un ID explícito
+queda disponible sólo tras una verificación humana deliberada.
 
 `wa find` funciona sin agenda local: prioriza aliases privados, nombres que
 WhatsApp sincroniza (`pushName` / contactos / chats) y coincidencias en

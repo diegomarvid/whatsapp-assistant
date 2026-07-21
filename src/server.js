@@ -41,6 +41,8 @@ let socket = null
 let reconnectTimer = null
 let cache = { messages: [], chats: {}, contacts: {} }
 let cacheSaveQueue = Promise.resolve()
+let connectedAt = null
+let lastLiveMessageAt = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -150,10 +152,10 @@ async function cacheDocumentEnvelope(rawMessage, message) {
   message.documentRef = filename
 }
 
-async function ingestMessages(messages) {
+async function ingestMessages(messages, source = 'history') {
   let changed = false
   for (const raw of messages) {
-    const message = safeMessage(raw)
+    const message = safeMessage(raw, { source })
     if (!message) continue
     const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
     if (existing) {
@@ -161,6 +163,11 @@ async function ingestMessages(messages) {
         existing.pushName = message.pushName
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
         if (!previousChat.name) cache.chats[message.jid] = { ...previousChat, name: message.pushName }
+        changed = true
+      }
+      if (source === 'live' && existing.source !== 'live') {
+        existing.source = 'live'
+        existing.capturedAt = message.capturedAt
         changed = true
       }
       if (message.type === 'audioMessage' && !existing.audioRef) {
@@ -308,7 +315,8 @@ async function connect() {
 
   socket.ev.on('creds.update', saveCreds)
   socket.ev.on('messages.upsert', ({ messages }) => {
-    ingestMessages(messages)
+    lastLiveMessageAt = Math.floor(Date.now() / 1000)
+    ingestMessages(messages, 'live')
       .then((changed) => changed && saveCache())
       .catch((error) => logger.error({ err: error }, 'Could not ingest incoming WhatsApp messages; bridge remains connected'))
   })
@@ -323,7 +331,7 @@ async function connect() {
           name: contact.name || contact.notify || contact.verifiedName || null,
         }
       }
-      if (await ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
+      if (await ingestMessages(messages || [], 'history') || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
     })().catch((error) => logger.error({ err: error }, 'Could not ingest WhatsApp history; bridge remains connected'))
   })
   socket.ev.on('connection.update', ({ connection: next, lastDisconnect, qr }) => {
@@ -338,6 +346,7 @@ async function connect() {
     if (next === 'open') {
       connection = 'open'
       lastError = null
+      connectedAt = Math.floor(Date.now() / 1000)
       fs.rm(qrPath, { force: true }).catch(() => {})
       console.log('WhatsApp bridge connected (read-only).')
     }
@@ -376,7 +385,7 @@ async function main() {
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isMessageReaction && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
-    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length })
+    if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, connectedAt, lastLiveMessageAt })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (isGroupsList) {
       if (!socket?.groupFetchAllParticipating) return json(response, 503, { error: 'whatsapp_not_connected' })

@@ -9,7 +9,7 @@ function contextInfoOf(content) {
   return content.extendedTextMessage?.contextInfo || content.imageMessage?.contextInfo || content.videoMessage?.contextInfo || content.documentMessage?.contextInfo || content.audioMessage?.contextInfo || null
 }
 
-export function safeMessage(message) {
+export function safeMessage(message, { source = 'history', capturedAt = Math.floor(Date.now() / 1000) } = {}) {
   const jid = message.key?.remoteJid
   if (!jid) return null
   const content = message.message || {}
@@ -34,5 +34,7 @@ export function safeMessage(message) {
     quotedMessageId: contextInfo?.stanzaId || null,
     reactionToMessageId: reaction?.key?.id || null,
     reactionText: reaction?.text || null,
+    source,
+    capturedAt,
   }
 }
