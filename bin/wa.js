@@ -114,6 +114,11 @@ async function resolve(target) {
   const key = target.toLocaleLowerCase()
   if (aliases[key]) return { ...aliases[key], alias: key }
   if (/^[+\d][\d\s()-]*$/.test(target)) return { phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null }
+  const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  const normalizedTarget = normalizeText(target)
+  const whatsappMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizedTarget)
+  if (whatsappMatches.length === 1) return { phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || cache.contacts[whatsappMatches[0].jid]?.name || null }
+  if (whatsappMatches.length > 1) throw new Error(`More than one WhatsApp chat matches “${target}”. Use a phone number or save an alias.`)
   const exactMatches = macContactsForQuery(target)
     .filter((match) => normalizeText(match.name) === normalizeText(target))
   const phones = [...new Set(exactMatches.flatMap((match) => match.phones.map((phone) => phone.replace(/\D/g, '')).filter(Boolean)))]

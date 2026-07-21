@@ -120,8 +120,9 @@ function contextInfoOf(content) {
 function safeMessage(message) {
   const jid = message.key?.remoteJid
   if (!jid) return null
+  const content = message.message || {}
   const text = textOf(message)
-  const contextInfo = contextInfoOf(message.message || {})
+  const contextInfo = contextInfoOf(content)
   const document = content.documentMessage
   const reaction = content.reactionMessage
   return {
