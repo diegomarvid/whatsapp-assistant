@@ -30,3 +30,14 @@ test('setup help explains the QR flow without needing a running bridge', () => {
   assert.match(result.stdout, /nvm install 22/)
   assert.match(result.stdout, /No ejecutar wa con sudo/)
 })
+
+test('transcription doctor identifies an incomplete private runtime instead of calling it ready', () => {
+  const result = spawnSync(process.execPath, [cli, 'transcribe', 'doctor'], {
+    encoding: 'utf8',
+    env: { ...process.env, WA_STATE_DIR: path.join('/tmp', `wa-transcribe-doctor-${process.pid}`) },
+  })
+  assert.equal(result.status, 0)
+  const doctor = JSON.parse(result.stdout)
+  assert.equal(doctor.runtimeInstalled, false)
+  assert.match(doctor.nextStep, /Run `wa transcribe`/)
+})

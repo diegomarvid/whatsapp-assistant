@@ -526,10 +526,25 @@ function pythonForSetup() {
   return null
 }
 
+function backendImportName(backend) {
+  return backend === 'mlx' ? 'mlx_whisper' : 'faster_whisper'
+}
+
+function privateRuntimeReady(backend) {
+  if (!existsSync(transcriptionPythonPath)) return false
+  return tryRun(transcriptionPythonPath, ['-c', `import ${backendImportName(backend)}`]).status === 0
+}
+
 function activeTranscriptionRuntime(config) {
   const backend = transcriptionBackend()
   const selected = selectLocalModel({ backend, configuredModel: config.model, home: os.homedir() })
-  return { backend, selected, defaultModel: defaultModelFor(backend), runtimeInstalled: existsSync(transcriptionPythonPath) }
+  return {
+    backend,
+    selected,
+    defaultModel: defaultModelFor(backend),
+    runtimePathExists: existsSync(transcriptionPythonPath),
+    runtimeInstalled: privateRuntimeReady(backend),
+  }
 }
 
 async function transcriptionDoctor() {
@@ -544,7 +559,9 @@ async function transcriptionDoctor() {
     cachedCompatibleModels: cachedCompatibleModels(runtime.backend, { home: os.homedir() }),
     downloadsModelsAutomatically: false,
     nextStep: !runtime.runtimeInstalled
-      ? 'Run `wa transcribe setup` to create a private Python runtime. This does not download a model.'
+      ? runtime.runtimePathExists
+        ? `The private runtime is incomplete (missing ${backendImportName(runtime.backend)}). The next \`wa transcribe\` repairs it automatically without downloading a model.`
+        : 'Run `wa transcribe` to create a private Python runtime automatically. This does not download a model.'
       : runtime.backend === 'mlx' && !ffmpegAvailable
         ? 'Install ffmpeg (for example, `brew install ffmpeg`) before transcribing audio on Apple Silicon.'
       : !runtime.selected
@@ -603,9 +620,11 @@ async function transcribe(audioPath) {
   const config = await loadTranscriptionConfig()
   let runtime = activeTranscriptionRuntime(config)
   if (!runtime.runtimeInstalled) {
+    process.stderr.write(`Preparing the private ${runtime.backend} transcription runtime (one time; no model download)…\n`)
     await setupTranscription({ verbose: false })
     runtime = activeTranscriptionRuntime(config)
   }
+  if (!runtime.runtimeInstalled) throw new Error(`Could not initialize the private ${runtime.backend} transcription runtime. Run \`wa transcribe setup\` for the detailed installer output.`)
   if (!runtime.selected) throw new Error(`No compatible Whisper model is installed locally. Ask the user before downloading ${runtime.defaultModel}; then run: wa transcribe pull ${runtime.defaultModel}`)
   const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, 'es', audioPath], { timeout: 10 * 60 * 1000 })
   return result.trim()
