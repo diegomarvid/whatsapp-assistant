@@ -238,6 +238,18 @@ async function getMessageFromMirror(key) {
   }
 }
 
+async function resolveCurrentJid(jid) {
+  if (!jid || !jid.endsWith('@s.whatsapp.net')) return jid
+  const mapping = socket?.signalRepository?.lidMapping
+  if (!mapping?.getLIDForPN) return jid
+  try {
+    return (await mapping.getLIDForPN(jid)) || jid
+  } catch (error) {
+    logger.warn({ err: error, jid }, 'Could not resolve current WhatsApp LID for phone JID')
+    return jid
+  }
+}
+
 function mergeIncomingMessage(existing, incoming) {
   const refs = {
     audioRef: existing.audioRef,
@@ -626,6 +638,14 @@ async function main() {
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
+    if (request.method === 'GET' && url.pathname === '/resolve') {
+      const jid = url.searchParams.get('jid')
+      if (!jid) return json(response, 400, { error: 'jid_required' })
+      resolveCurrentJid(jid)
+        .then((resolvedJid) => json(response, 200, { requestedJid: jid, jid: resolvedJid, remapped: resolvedJid !== jid }))
+        .catch((error) => json(response, 422, { error: 'jid_resolution_failed', message: error.message }))
+      return
+    }
     if (isGroupsList) {
       if (!socket?.groupFetchAllParticipating) return json(response, 503, { error: 'whatsapp_not_connected' })
       socket.groupFetchAllParticipating()
