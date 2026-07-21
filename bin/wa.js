@@ -115,7 +115,15 @@ async function installDaemon() {
   const serverPath = path.join(root, 'src', 'server.js')
   const entryPath = process.env.WA_DAEMON_ENTRY || serverPath
   const entryArguments = process.env.WA_DAEMON_ENTRY ? ['__daemon'] : []
-  const plist = launchAgentPlist({ nodePath: process.env.WA_DAEMON_NODE || process.execPath, serverPath, stateRoot, logsDir, entryPath, entryArguments })
+  const plist = launchAgentPlist({
+    nodePath: process.env.WA_DAEMON_NODE || process.execPath,
+    serverPath,
+    stateRoot,
+    logsDir,
+    entryPath,
+    entryArguments,
+    workingDirectory: process.env.WA_DAEMON_CWD || path.dirname(serverPath),
+  })
   await fs.writeFile(launchAgentPath, plist, { mode: 0o600 })
   tryRun('launchctl', ['bootout', launchctlDomain(), launchAgentPath])
   run('launchctl', ['bootstrap', launchctlDomain(), launchAgentPath])

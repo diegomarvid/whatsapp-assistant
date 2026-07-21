@@ -44,9 +44,11 @@ test('supports a stable CLI entry point for package-manager upgrades', () => {
     serverPath: '/opt/homebrew/Cellar/whatsapp-assistant/0.2.2/libexec/lib/node_modules/whatsapp-assistant/src/server.js',
     entryPath: '/opt/homebrew/opt/whatsapp-assistant/libexec/lib/node_modules/whatsapp-assistant/bin/wa.js',
     entryArguments: ['__daemon'],
+    workingDirectory: '/opt/homebrew/opt/whatsapp-assistant/libexec/lib/node_modules/whatsapp-assistant/src',
     stateRoot: '/Users/example/Library/Application Support/WhatsApp Assistant',
     logsDir: '/Users/example/Library/Application Support/WhatsApp Assistant/logs',
   })
   assert.match(plist, /opt\/whatsapp-assistant\/libexec\/lib\/node_modules\/whatsapp-assistant\/bin\/wa\.js/)
   assert.match(plist, /<string>__daemon<\/string>/)
+  assert.match(plist, /<key>WorkingDirectory<\/key><string>\/opt\/homebrew\/opt\/whatsapp-assistant\/libexec\/lib\/node_modules\/whatsapp-assistant\/src<\/string>/)
 })
