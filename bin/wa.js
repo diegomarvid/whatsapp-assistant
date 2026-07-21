@@ -29,9 +29,17 @@ function usage() {
   wa latest <alias or phone>
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
+  wa search-all <text> [--since 7d] [--direct|--groups <list>]
+  wa pending [--since 24h]
   wa transcribe <alias or phone> latest
+  wa audios <alias or phone> [limit]
+  wa audio <alias or phone> <message-id>
   wa images <alias or phone> [limit]
   wa image <alias or phone> <message-id>
+  wa image-text <alias or phone> <message-id>
+  wa files <alias or phone> [limit]
+  wa file <alias or phone> <message-id>
+  wa react <alias or phone> <message-id> <emoji>
   wa send <alias or phone> <message>
   wa send-file <alias or phone> <file> [caption]`)
 }
@@ -146,6 +154,20 @@ async function downloadImage(jid, messageId) {
   return response.json()
 }
 
+async function downloadDocument(jid, messageId) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/documents/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+  if (!response.ok) throw new Error(`Could not download document: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function reactToMessage(jid, messageId, emoji) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/messages/react`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ jid, messageId, emoji }) })
+  if (!response.ok) throw new Error(`Could not react: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
 async function sendMessage(jid, text) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   const response = await fetch(`${baseUrl}/messages/send`, {
@@ -187,7 +209,8 @@ function printMessages(messages) {
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
     const author = message.fromMe ? 'Vos' : 'Contacto'
     const text = message.text || `[${message.type}]`
-    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}`)
+    const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null].filter(Boolean).join(' · ')
+    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}`)
   }
 }
 
@@ -420,19 +443,63 @@ async function main() {
     const result = await sendFile(contact.jid, file, caption)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
-  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'images' || command === 'image') {
+  if (command === 'search-all') {
+    const query = args.shift()?.trim()
+    if (!query) return usage()
+    let sinceSeconds = 0
+    let scope = 'all'
+    let groupList = null
+    while (args.length) {
+      const option = args.shift()
+      if (option === '--since') {
+        const value = args.shift() || ''
+        const match = value.match(/^(\d+)(h|d)$/)
+        if (!match) throw new Error('Use --since <n>h or <n>d')
+        sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
+      } else if (option === '--direct') scope = 'direct'
+      else if (option === '--groups') { scope = 'groups'; groupList = args.shift() || null }
+      else throw new Error(`Unknown option: ${option}`)
+    }
+    const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+    const allowedGroups = groupList ? new Set((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
+    const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
+    const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
+    return printMessages(matches)
+  }
+  if (command === 'pending') {
+    let sinceSeconds = 86400
+    if (args[0] === '--since') {
+      const match = (args[1] || '').match(/^(\d+)(h|d)$/)
+      if (!match) throw new Error('Use --since <n>h or <n>d')
+      sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
+    }
+    const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+    const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
+    const open = Object.values(cache.chats).filter((chat) => isDirectChat(chat.jid)).map((chat) => ({ chat, messages: cache.messages.filter((message) => message.jid === chat.jid).sort((a, b) => b.timestamp - a.timestamp) })).filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff)
+    if (!open.length) return console.log('No hay chats directos recientes pendientes de respuesta.')
+    for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
+    return
+  }
+  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'image-text' || command === 'files' || command === 'file' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
     if (command === 'latest') return printMessages(messages.slice(0, 1))
     if (command === 'history') return printMessages(messages.slice(0, Number.parseInt(args[0] || '20', 10)))
-    if (command === 'transcribe') {
-      if (args[0] !== 'latest') return usage()
-      const audio = messages.find((message) => message.type === 'audioMessage')
+    if (command === 'transcribe' || command === 'audio') {
+      const audioId = args[0] || 'latest'
+      const audio = audioId === 'latest' ? messages.find((message) => message.type === 'audioMessage') : messages.find((message) => message.type === 'audioMessage' && message.id === audioId)
       if (!audio) return console.log('No hay un audio cacheado para este chat.')
       const { audio: downloaded } = await downloadAudio(contact.jid, audio.id)
+      if (command === 'audio') return console.log(downloaded.path)
       console.log(await transcribe(downloaded.path))
+      return
+    }
+    if (command === 'audios') {
+      const audios = messages.filter((message) => message.type === 'audioMessage').slice(0, Number.parseInt(args[0] || '20', 10))
+      if (!audios.length) return console.log('No hay audios cacheados para este chat.')
+      for (const audio of audios) console.log(`${formatTime(audio.timestamp)} — ${audio.id} (${audio.audioRef ? 'disponible' : 'sin captura local'})`)
       return
     }
     if (command === 'images') {
@@ -451,6 +518,33 @@ async function main() {
       if (!messageId) return usage()
       const { image } = await downloadImage(contact.jid, messageId)
       return console.log(image.path)
+    }
+    if (command === 'image-text') {
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const { image } = await downloadImage(contact.jid, messageId)
+      const result = spawnSync('swift', [path.join(root, 'bin', 'ocr-image.swift'), image.path], { encoding: 'utf8', timeout: 120000 })
+      if (result.error || result.status !== 0) throw new Error(result.stderr || result.error?.message || 'OCR failed')
+      return console.log(result.stdout.trim())
+    }
+    if (command === 'files' || command === 'file') {
+      const files = messages.filter((message) => message.type === 'documentMessage')
+      if (command === 'files') {
+        const shown = files.slice(0, Number.parseInt(args[0] || '20', 10))
+        if (!shown.length) return console.log('No hay archivos cacheados para este chat.')
+        for (const file of shown) console.log(`${formatTime(file.timestamp)} — ${file.id} (${file.documentRef ? 'disponible' : 'sin captura local'}) — ${file.documentName || file.documentMimetype || 'archivo'}`)
+        return
+      }
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const { document } = await downloadDocument(contact.jid, messageId)
+      return console.log(document.path)
+    }
+    if (command === 'react') {
+      const messageId = args.shift(); const emoji = args.shift()
+      if (!messageId || !emoji) return usage()
+      await reactToMessage(contact.jid, messageId, emoji)
+      return console.log('Reaction sent.')
     }
     const query = args.join(' ').trim().toLocaleLowerCase()
     if (!query) return usage()

@@ -43,7 +43,14 @@ npm link
 | `wa latest contacto` | Último mensaje de ese chat |
 | `wa history contacto 20` | Últimos 20 mensajes del chat |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
-| `wa transcribe contacto latest` | Descarga y transcribe el audio más reciente del chat |
+| `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
+| `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
+| `wa audios contacto` / `wa audio contacto <id>` | Lista o descarga un audio seleccionado |
+| `wa transcribe contacto <id|latest>` | Descarga y transcribe un audio seleccionado |
+| `wa images contacto` / `wa image contacto <id>` | Lista o descarga una imagen seleccionada |
+| `wa image-text contacto <id>` | Hace OCR local de una imagen seleccionada |
+| `wa files contacto` / `wa file contacto <id>` | Lista o descarga un documento entrante seleccionado |
+| `wa react contacto <id> 👍` | Reacciona explícitamente a un mensaje |
 | `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un PDF con un mensaje al contacto resuelto |
 
@@ -69,9 +76,9 @@ una palabra compartida en el nombre.
 La separación exacta entre el código público y el estado privado está en
 [`docs/private-state.md`](docs/private-state.md).
 
-Los audios recientes se conservan como envelopes privados durante la misma
-ventana de 30 días. El archivo de audio se descarga y transcribe únicamente al
-pedirlo con el comando anterior.
+Los audios, imágenes y documentos recientes se conservan como envelopes privados
+durante la misma ventana de 30 días. Cada archivo se descarga únicamente al
+pedirlo con un comando explícito. El OCR de imágenes usa Vision local de macOS.
 
 ## API local
 

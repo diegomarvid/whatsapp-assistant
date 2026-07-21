@@ -26,6 +26,8 @@ const audioEnvelopeDir = path.join(dataDir, 'audio-envelopes')
 const downloadedAudioDir = path.join(dataDir, 'audio')
 const imageEnvelopeDir = path.join(dataDir, 'image-envelopes')
 const downloadedImageDir = path.join(dataDir, 'images')
+const documentEnvelopeDir = path.join(dataDir, 'document-envelopes')
+const downloadedDocumentDir = path.join(dataDir, 'documents')
 // Keep the assistant useful for current conversations without retaining a full
 // archive of the account. WhatsApp decides the exact recent-sync window.
 const MAX_MESSAGES = 10000
@@ -111,10 +113,17 @@ function textOf(message) {
   return content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || ''
 }
 
+function contextInfoOf(content) {
+  return content.extendedTextMessage?.contextInfo || content.imageMessage?.contextInfo || content.videoMessage?.contextInfo || content.documentMessage?.contextInfo || content.audioMessage?.contextInfo || null
+}
+
 function safeMessage(message) {
   const jid = message.key?.remoteJid
   if (!jid) return null
   const text = textOf(message)
+  const contextInfo = contextInfoOf(message.message || {})
+  const document = content.documentMessage
+  const reaction = content.reactionMessage
   return {
     id: message.key?.id || crypto.randomUUID(),
     jid,
@@ -127,6 +136,12 @@ function safeMessage(message) {
     audioRef: null,
     imageRef: null,
     imageMimetype: content.imageMessage?.mimetype || null,
+    documentRef: null,
+    documentMimetype: document?.mimetype || null,
+    documentName: document?.fileName || null,
+    quotedMessageId: contextInfo?.stanzaId || null,
+    reactionToMessageId: reaction?.key?.id || null,
+    reactionText: reaction?.text || null,
   }
 }
 
@@ -158,6 +173,18 @@ async function cacheImageEnvelope(rawMessage, message) {
   message.imageRef = filename
 }
 
+async function cacheDocumentEnvelope(rawMessage, message) {
+  if (message.type !== 'documentMessage') return
+  const filename = `${message.id}.bin`
+  const target = path.join(documentEnvelopeDir, filename)
+  try { await fs.access(target) } catch {
+    const temp = `${target}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temp, serialize(rawMessage), { mode: 0o600 })
+    await fs.rename(temp, target)
+  }
+  message.documentRef = filename
+}
+
 async function ingestMessages(messages) {
   let changed = false
   for (const raw of messages) {
@@ -187,6 +214,9 @@ async function ingestMessages(messages) {
           logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed image envelope')
         }
       }
+      if (message.type === 'documentMessage' && !existing.documentRef) {
+        try { await cacheDocumentEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed document envelope') }
+      }
       continue
     }
     try {
@@ -199,6 +229,7 @@ async function ingestMessages(messages) {
     } catch (error) {
       logger.warn({ err: error, messageId: message.id }, 'Could not retain image envelope')
     }
+    try { await cacheDocumentEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain document envelope') }
     cache.messages.push(message)
     const previousChat = cache.chats[message.jid] || {}
     cache.chats[message.jid] = {
@@ -217,7 +248,7 @@ async function ingestMessages(messages) {
 
 async function prunePrivateMedia() {
   const cutoff = Date.now() - (RETENTION_DAYS * 24 * 60 * 60 * 1000)
-  for (const directory of [audioEnvelopeDir, downloadedAudioDir, imageEnvelopeDir, downloadedImageDir]) {
+  for (const directory of [audioEnvelopeDir, downloadedAudioDir, imageEnvelopeDir, downloadedImageDir, documentEnvelopeDir, downloadedDocumentDir]) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       if (!entry.isFile()) continue
       const file = path.join(directory, entry.name)
@@ -252,6 +283,17 @@ async function downloadImage(message) {
   const target = path.join(downloadedImageDir, filename)
   await fs.writeFile(target, bytes, { mode: 0o600 })
   return { filename, path: target, mimetype: message.imageMimetype || 'image/jpeg' }
+}
+
+async function downloadDocument(message) {
+  if (!socket?.updateMediaMessage) throw new Error('WhatsApp is not connected.')
+  if (!message.documentRef) throw new Error('This document was received before document capture was enabled. Ask the sender to forward it again.')
+  const raw = deserialize(await fs.readFile(path.join(documentEnvelopeDir, message.documentRef)))
+  const bytes = await downloadMediaMessage(raw, 'buffer', {}, { logger, reuploadRequest: socket.updateMediaMessage })
+  const safeName = (message.documentName || `${message.id}.bin`).replace(/[^a-zA-Z0-9._-]/g, '_')
+  const target = path.join(downloadedDocumentDir, `${message.id}-${safeName}`)
+  await fs.writeFile(target, bytes, { mode: 0o600 })
+  return { filename: path.basename(target), path: target, mimetype: message.documentMimetype || 'application/octet-stream' }
 }
 
 function pruneMessages() {
@@ -347,6 +389,8 @@ async function main() {
   await ensurePrivateDir(downloadedAudioDir)
   await ensurePrivateDir(imageEnvelopeDir)
   await ensurePrivateDir(downloadedImageDir)
+  await ensurePrivateDir(documentEnvelopeDir)
+  await ensurePrivateDir(downloadedDocumentDir)
   cache = await readJson(cachePath, cache)
   pruneMessages()
   await saveCache()
@@ -357,10 +401,12 @@ async function main() {
     const url = new URL(request.url, 'http://127.0.0.1')
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
     const isImageDownload = request.method === 'POST' && url.pathname === '/images/download'
+    const isDocumentDownload = request.method === 'POST' && url.pathname === '/documents/download'
+    const isMessageReaction = request.method === 'POST' && url.pathname === '/messages/react'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isMessageReaction && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (isGroupsList) {
@@ -402,6 +448,18 @@ async function main() {
       }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
       return
     }
+    if (isMessageReaction) {
+      requestBody(request).then(async ({ jid, messageId, emoji }) => {
+        if (!jid || !messageId || typeof emoji !== 'string' || !emoji.trim() || emoji.length > 16) return json(response, 400, { error: 'invalid_reaction' })
+        const message = cache.messages.find((item) => item.jid === jid && item.id === messageId)
+        if (!message) return json(response, 404, { error: 'message_not_found' })
+        const key = { remoteJid: jid, id: message.id, fromMe: message.fromMe }
+        if (message.participant) key.participant = message.participant
+        const result = await socket.sendMessage(jid, { react: { text: emoji.trim(), key } })
+        json(response, 200, { reacted: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'reaction_failed', message: error.message }))
+      return
+    }
     if (isAudioDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
@@ -420,6 +478,14 @@ async function main() {
       downloadImage(message)
         .then((image) => json(response, 200, { image }))
         .catch((error) => json(response, 422, { error: 'image_download_failed', message: error.message }))
+      return
+    }
+    if (isDocumentDownload) {
+      const jid = url.searchParams.get('jid')
+      const messageId = url.searchParams.get('messageId')
+      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'documentMessage')
+      if (!message) return json(response, 404, { error: 'document_not_found' })
+      downloadDocument(message).then((document) => json(response, 200, { document })).catch((error) => json(response, 422, { error: 'document_download_failed', message: error.message }))
       return
     }
     const limit = normalizeLimit(url.searchParams.get('limit'))
