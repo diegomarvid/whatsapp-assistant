@@ -119,14 +119,17 @@ name/number mapping, save it with `wa alias add` so later requests like
 
 1. Finds the most recent audio in that chat.
 2. Uses Baileys to download only that selected audio.
-3. Runs `ct transcribe <audio> es`.
+3. Runs the private Python Whisper runtime with a locally available model.
 4. Prints the transcript. It does not send anything to the contact.
 
-Transcription is optional and is not installed by `npm install`: it requires
-the external `ct` command on `PATH`. `ct transcribe` uses local Whisper
-(`mlx_whisper` on Apple Silicon, or `whisper-ctranslate2`/`faster-whisper`
-elsewhere). Check it with `command -v ct && ct transcribe --help`; the bridge
-and all non-audio commands work without it.
+Transcription is optional and is not installed by `npm install`. Run `wa
+transcribe setup` to install the matching library into the private
+`transcribe-venv/` under the WhatsApp Assistant state directory. Apple Silicon
+uses `mlx-whisper`; Linux and Intel Macs use `faster-whisper`. `wa transcribe
+setup` never downloads a Whisper model: use `wa transcribe doctor` to inspect
+the compatible Hugging Face cache, then explicitly run `wa transcribe pull` if
+the user approves a download. The bridge and all non-audio commands work
+without it.
 
 `wa images <alias>` lists cached images and whether the encrypted media envelope
 is available. `wa image <alias> <message-id>` downloads only that selected image

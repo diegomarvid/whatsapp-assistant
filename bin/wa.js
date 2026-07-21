@@ -2,6 +2,7 @@
 
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +11,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
 import { paths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
+import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { dataDir, stateRoot, logsDir } = paths
@@ -20,6 +22,11 @@ const contactsSearchScript = path.join(root, 'bin', 'contacts-search.swift')
 const baseUrl = 'http://127.0.0.1:3847'
 const launchAgentPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${launchAgentLabel}.plist`)
 const systemdUnitPath = systemdUserUnitPath({ home: os.homedir() })
+const transcriptionConfigPath = path.join(dataDir, 'transcription.json')
+const transcriptionVenvPath = path.join(stateRoot, 'transcribe-venv')
+const transcriptionPythonPath = path.join(transcriptionVenvPath, 'bin', 'python')
+const transcriptionScript = path.join(root, 'src', 'transcribe-audio.py')
+const pullModelScript = path.join(root, 'src', 'pull-whisper-model.py')
 
 function usage() {
   console.log(`WhatsApp Assistant — bridge local de contexto reciente
@@ -61,6 +68,10 @@ Comandos:
   wa pending [--since 24h]
   wa pending --groups <list> [--since 24h]
   wa transcribe <alias or phone> latest
+  wa transcribe setup                # instala sólo el runtime Python privado
+  wa transcribe doctor               # runtime y modelos locales, sin descargar
+  wa transcribe pull [modelo]        # descarga un modelo explícitamente
+  wa transcribe config show|model <id>|model-path <dir>
   wa audios <alias or phone> [limit]
   wa audio <alias or phone> <message-id>
   wa images <alias or phone> [limit]
@@ -77,7 +88,7 @@ function help(topic) {
   const topics = {
     setup: `Instalación nueva:\n  macOS: brew tap diegomarvid/tap && brew install whatsapp-assistant\n  Linux: instalar Node 22+ y seguir la sección Linux/VPS del README de esta release.\n\n  1. wa setup\n  2. Escanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  3. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
-    media: `Adjuntos:\n  wa audios contacto\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nTranscribir es opcional: requiere ct y un backend local de Whisper. El bridge base no depende de Whisper.`,
+    media: `Adjuntos:\n  wa audios contacto\n  wa audio contacto <message-id>\n  wa transcribe setup\n  wa transcribe doctor\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nLa transcripción es opcional y local. setup instala el runtime Python aislado, pero nunca descarga un modelo sin wa transcribe pull explícito. image, file y audio devuelven paths para que la IA los abra con sus propias capacidades.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez si querés que sobreviva al logout: sudo loginctl enable-linger $USER`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
@@ -467,14 +478,105 @@ async function sendFile(jid, filePath, caption) {
   return response.json()
 }
 
+async function loadTranscriptionConfig() {
+  try { return JSON.parse(await fs.readFile(transcriptionConfigPath, 'utf8')) } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    throw error
+  }
+}
+
+async function saveTranscriptionConfig(config) {
+  await ensureRuntimeDirectories()
+  await fs.writeFile(transcriptionConfigPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 })
+}
+
+function pythonForSetup() {
+  const candidates = [process.env.WA_PYTHON, 'python3'].filter(Boolean)
+  for (const candidate of candidates) {
+    const result = tryRun(candidate, ['-c', 'import sys; print(sys.executable)'])
+    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim()
+  }
+  return null
+}
+
+function activeTranscriptionRuntime(config) {
+  const backend = transcriptionBackend()
+  const selected = selectLocalModel({ backend, configuredModel: config.model, home: os.homedir() })
+  return { backend, selected, defaultModel: defaultModelFor(backend), runtimeInstalled: existsSync(transcriptionPythonPath) }
+}
+
+async function transcriptionDoctor() {
+  const config = await loadTranscriptionConfig()
+  const runtime = activeTranscriptionRuntime(config)
+  const ffmpegAvailable = tryRun('ffmpeg', ['-version']).status === 0
+  console.log(JSON.stringify({
+    ...runtime,
+    configuredModel: config.model || null,
+    runtimePath: transcriptionPythonPath,
+    ffmpegAvailable,
+    cachedCompatibleModels: cachedCompatibleModels(runtime.backend, { home: os.homedir() }),
+    downloadsModelsAutomatically: false,
+    nextStep: !runtime.runtimeInstalled
+      ? 'Run `wa transcribe setup` to create a private Python runtime. This does not download a model.'
+      : runtime.backend === 'mlx' && !ffmpegAvailable
+        ? 'Install ffmpeg (for example, `brew install ffmpeg`) before transcribing audio on Apple Silicon.'
+      : !runtime.selected
+        ? `Ask the user before downloading ${runtime.defaultModel}, then run \`wa transcribe pull ${runtime.defaultModel}\`, or configure an existing directory with \`wa transcribe config model-path <dir>\`.`
+        : 'ready',
+  }, null, 2))
+}
+
+async function setupTranscription() {
+  await ensureRuntimeDirectories()
+  const backend = transcriptionBackend()
+  if (!existsSync(transcriptionPythonPath)) {
+    const python = pythonForSetup()
+    if (!python) throw new Error('Python 3 is required for local transcription. Install Python 3, then run `wa transcribe setup`.')
+    run(python, ['-m', 'venv', transcriptionVenvPath])
+  }
+  run(transcriptionPythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'])
+  const dependencies = backend === 'mlx' ? ['mlx-whisper', 'huggingface-hub'] : ['faster-whisper', 'huggingface-hub']
+  run(transcriptionPythonPath, ['-m', 'pip', 'install', ...dependencies])
+  console.log(`Installed ${backend} in ${transcriptionVenvPath}. No Whisper model was downloaded.`)
+  await transcriptionDoctor()
+}
+
+async function pullTranscriptionModel(requestedModel) {
+  const config = await loadTranscriptionConfig()
+  const runtime = activeTranscriptionRuntime(config)
+  if (!runtime.runtimeInstalled) throw new Error('Run `wa transcribe setup` before downloading a model.')
+  const model = requestedModel || config.model || runtime.defaultModel
+  if (path.isAbsolute(model)) throw new Error('A local model path cannot be downloaded. Configure a Hugging Face model ID instead.')
+  console.log(`Downloading Whisper model ${model}...`)
+  const result = run(transcriptionPythonPath, [pullModelScript, model], { timeout: 30 * 60 * 1000 })
+  await saveTranscriptionConfig({ ...config, model })
+  console.log(result)
+}
+
+async function configureTranscription(args) {
+  const action = args.shift()
+  if (action === 'show') return transcriptionDoctor()
+  const value = args.join(' ').trim()
+  if (!value || !['model', 'model-path'].includes(action)) throw new Error('Use: wa transcribe config show|model <huggingface-id>|model-path <directory>')
+  if (action === 'model-path') {
+    const absolutePath = path.resolve(value)
+    const stat = await fs.stat(absolutePath).catch(() => null)
+    if (!stat?.isDirectory()) throw new Error(`Model directory not found: ${absolutePath}`)
+    await saveTranscriptionConfig({ model: absolutePath })
+    return console.log(`Configured local Whisper model: ${absolutePath}`)
+  }
+  if (!/^[^\s/]+\/[^\s/]+$/.test(value)) throw new Error('Use a Hugging Face model ID such as mlx-community/whisper-large-v3-turbo.')
+  await saveTranscriptionConfig({ model: value })
+  console.log(`Configured Whisper model: ${value}. It will not download until you run wa transcribe pull.`)
+}
+
 async function transcribe(audioPath) {
-  const result = spawnSync('ct', ['transcribe', audioPath, 'es'], { encoding: 'utf8', timeout: 120000 })
-  if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(result.stderr || result.stdout || 'ct transcribe failed')
-  const output = `${result.stdout}\n${result.stderr}`.trim()
-  const transcriptPath = output.match(/(\/[^\n]+\.txt)/)?.[1]
-  if (!transcriptPath) return output
-  return fs.readFile(transcriptPath, 'utf8')
+  const config = await loadTranscriptionConfig()
+  const runtime = activeTranscriptionRuntime(config)
+  if (!runtime.runtimeInstalled) throw new Error('Local transcription is not installed. Run `wa transcribe setup` first; it does not download a model.')
+  if (!runtime.selected) throw new Error(`No compatible Whisper model is installed locally. Ask the user before downloading ${runtime.defaultModel}; then run: wa transcribe pull ${runtime.defaultModel}`)
+  const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, 'es', audioPath], { timeout: 10 * 60 * 1000 })
+  return result.trim()
 }
 
 function formatTime(timestamp) {
@@ -596,6 +698,10 @@ async function main() {
   if (command === 'doctor') return doctor()
   if (command === 'qr') return showQr()
   if (command === 'setup') return setup()
+  if (command === 'transcribe' && args[0] === 'setup') return setupTranscription()
+  if (command === 'transcribe' && args[0] === 'doctor') return transcriptionDoctor()
+  if (command === 'transcribe' && args[0] === 'pull') return pullTranscriptionModel(args[1])
+  if (command === 'transcribe' && args[0] === 'config') return configureTranscription(args.slice(1))
   if (command === 'migrate-state') return migrateState(args[0])
   if (command === 'daemon') {
     const action = args[0]

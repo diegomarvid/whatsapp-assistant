@@ -25,6 +25,7 @@ pull requests.
 | `data/messages.json` | Legacy cache used only for one-time migration into the SQLite mirror. |
 | `data/audio-envelopes/` | Private metadata needed to download selected recent audios. |
 | `data/audio/` | Audio files downloaded only for requested transcriptions. |
+| `data/transcription.json`, `transcribe-venv/` | Optional local Whisper model preference and isolated Python runtime. |
 | `data/image-envelopes/`, `data/images/` | Private image metadata and selected downloaded images. |
 | `data/document-envelopes/`, `data/documents/` | Private document metadata and selected downloaded files. |
 | `data/link-qr.png`, `data/link-qr.txt` | Temporary QR image and terminal representation used during intentional onboarding/re-linking. |

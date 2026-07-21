@@ -122,25 +122,38 @@ excluidos de Git.
 > [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md). El modo
 > normal es **sync reciente**, no un archivo histórico completo.
 
-### 🎧 Transcripción de audios (opcional)
+### 🎧 Transcripción local (opcional)
 
-El bridge funciona sin Whisper. Sólo `wa transcribe` requiere una instalación
-adicional: delega en [`ct transcribe`](https://github.com/diegomarvid/claude-tools).
+El bridge funciona sin Whisper. La transcripción se instala aparte, pero queda
+encapsulada en un venv privado del CLI: no modifica el Python global ni depende
+de `ct`.
 
-- En Apple Silicon, `ct` usa `mlx_whisper` con `whisper-large-v3-turbo`.
-- En otros entornos puede usar `whisper-ctranslate2` o el fallback Python con
-  `faster-whisper`.
-- Verificá la dependencia antes de usar la transcripción:
+```bash
+wa transcribe doctor       # inspecciona runtime y modelos locales; no descarga
+wa transcribe setup        # instala sólo la librería Python adecuada
+wa transcribe pull         # descarga un modelo, explícitamente
+wa transcribe flor latest
+```
 
-  ```bash
-  command -v ct
-  ct transcribe --help
-  ```
+En Apple Silicon usa `mlx-whisper`; en Linux y Macs Intel usa
+`faster-whisper`. Ambos backends usan el cache estándar de Hugging Face. Antes
+de descargar, el CLI busca un snapshot compatible ya presente allí —por ejemplo
+un `mlx-community/whisper-large-v3-turbo` existente— y le pasa su path local al
+backend, sin pedir ni bajar el modelo de nuevo.
 
-Por ahora `ct` es una dependencia externa: no se instala automáticamente con
-`npm install`. Si el proyecto se publica como paquete, conviene decidir si la
-transcripción sigue siendo un _optional peer dependency_ o se ofrece como un
-adaptador instalable aparte.
+Si no hay modelo, `wa transcribe doctor` devuelve el modelo sugerido y el
+comando exacto, pero **no descarga nada por sí mismo**. La IA debe consultar al
+usuario si prefiere descargarlo o indicar una carpeta local existente:
+
+```bash
+wa transcribe config model-path /ruta/al/modelo
+wa transcribe config model mlx-community/whisper-large-v3-turbo
+wa transcribe pull mlx-community/whisper-large-v3-turbo
+```
+
+En macOS, `mlx-whisper` necesita `ffmpeg` disponible; instalalo con `brew
+install ffmpeg` si hiciera falta. `faster-whisper` en Linux usa su runtime
+Python aislado.
 
 ## 🧭 Uso diario
 
@@ -203,7 +216,10 @@ siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
 | --- | --- |
 | `wa audios contacto` | Lista audios recientes y si su envelope está disponible. |
 | `wa audio contacto <message-id>` | Descarga un audio seleccionado. |
-| `wa transcribe contacto latest` | Descarga el audio más reciente y lo transcribe con `ct`/Whisper. |
+| `wa transcribe setup` | Instala el backend Python aislado, sin descargar modelo. |
+| `wa transcribe doctor` | Muestra backend, runtime y modelos locales compatibles. |
+| `wa transcribe pull [modelo]` | Descarga explícitamente un modelo compatible. |
+| `wa transcribe contacto latest` | Descarga el audio más reciente y lo transcribe localmente. |
 | `wa transcribe contacto <message-id>` | Transcribe un audio concreto; el ID sale de `wa audios` o `wa history --ids`. |
 | `wa images contacto` / `wa image contacto <message-id>` | Lista o descarga una imagen seleccionada. |
 | `wa files contacto` / `wa file contacto <message-id>` | Lista o descarga un documento entrante seleccionado. |

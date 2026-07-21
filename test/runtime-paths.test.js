@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
 import { runtimePaths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
+import { DEFAULT_FASTER_MODEL, DEFAULT_MLX_MODEL, cachedModelSnapshot, defaultModelFor, huggingFaceHubPath, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
 
 test('keeps development state beside the checked-out project', () => {
   const root = '/work/whatsapp-assistant'
@@ -88,4 +90,22 @@ test('renders a user-level systemd unit with private state outside the package',
 test('ignores relative XDG config paths for a systemd user unit', () => {
   const unitPath = systemdUserUnitPath({ home: '/home/example', env: { XDG_CONFIG_HOME: 'relative-config' } })
   assert.equal(unitPath, `/home/example/.config/systemd/user/${systemdServiceName}`)
+})
+
+test('selects a platform-compatible local transcription backend and model cache', () => {
+  assert.equal(transcriptionBackend({ platform: 'darwin', arch: 'arm64' }), 'mlx')
+  assert.equal(transcriptionBackend({ platform: 'linux', arch: 'x64' }), 'faster-whisper')
+  assert.equal(defaultModelFor('mlx'), DEFAULT_MLX_MODEL)
+  assert.equal(defaultModelFor('faster-whisper'), DEFAULT_FASTER_MODEL)
+  const root = path.join('/tmp', `whatsapp-assistant-test-${process.pid}`)
+  const model = DEFAULT_MLX_MODEL
+  const snapshot = path.join(root, 'hub', `models--${model.replace('/', '--')}`, 'snapshots', 'revision')
+  fs.mkdirSync(snapshot, { recursive: true })
+  fs.mkdirSync(path.join(root, 'hub', `models--${model.replace('/', '--')}`, 'refs'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'hub', `models--${model.replace('/', '--')}`, 'refs', 'main'), 'revision\n')
+  const env = { HF_HOME: root }
+  assert.equal(huggingFaceHubPath({ env, home: '/home/example' }), path.join(root, 'hub'))
+  assert.equal(cachedModelSnapshot(model, { env, home: '/home/example' }), snapshot)
+  assert.deepEqual(selectLocalModel({ backend: 'mlx', env, home: '/home/example' }), { model, path: snapshot, source: 'default-cache' })
+  fs.rmSync(root, { recursive: true, force: true })
 })
