@@ -36,6 +36,12 @@ Inicio en una instalación nueva:
   wa setup                         # instala el daemon y muestra el QR si hace falta
   wa status                        # esperar: connection = open
 
+Linux / VPS (Node 22+ y systemd):
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
+  wa setup                         # imprime el QR en una sesión SSH
+  sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
+  wa doctor
+
 Para agentes de IA:
   - Usar wa latest-incoming <contacto> para “el último mensaje que me mandó X”.
   - Usar wa coverage <contacto> antes de concluir que un chat está actualizado.
@@ -86,10 +92,10 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS: brew tap diegomarvid/tap && brew install whatsapp-assistant\n  Linux: instalar Node 22+ y seguir la sección Linux/VPS del README de esta release.\n\n  1. wa setup\n  2. Escanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo.\n  3. wa status hasta ver connection = open.\n\nNo hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere Node 22+ y systemd):\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
     media: `Adjuntos:\n  wa audios contacto\n  wa audio contacto <message-id>\n  wa transcribe setup\n  wa transcribe doctor\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nLa transcripción es opcional y local. setup instala el runtime Python aislado, pero nunca descarga un modelo sin wa transcribe pull explícito. image, file y audio devuelven paths para que la IA los abra con sus propias capacidades.`,
-    daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez si querés que sobreviva al logout: sudo loginctl enable-linger $USER`,
+    daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
   if (!topic) return usage()
@@ -133,7 +139,22 @@ function linuxServiceDiagnostics() {
   }
 }
 
+function assertSetupPrerequisites() {
+  const nodeMajor = Number(process.versions.node.split('.')[0])
+  if (nodeMajor < 22) throw new Error(`WhatsApp Assistant requires Node.js 22 or newer; found ${process.version}. Install Node 22+, open a new shell, then rerun \`wa setup\`.`)
+  if (process.platform !== 'linux') return
+  const manager = tryRun('systemctl', ['--user', 'show-environment'])
+  if (manager.status !== 0) {
+    throw new Error('A systemd user manager is required for VPS persistence. Log in as the final non-root user (do not run `wa` with sudo), then run `systemctl --user status` and retry `wa setup`. On a system without systemd, run the bridge with your own supervisor.')
+  }
+}
+
+function lingerInstruction() {
+  return `sudo loginctl enable-linger "${os.userInfo().username}"`
+}
+
 async function installDaemon() {
+  assertSetupPrerequisites()
   await ensureRuntimeDirectories()
   const serverPath = path.join(root, 'src', 'server.js')
   const entryPath = process.env.WA_DAEMON_ENTRY || serverPath
@@ -248,12 +269,12 @@ async function doctor() {
   const daemon = process.platform === 'linux'
     ? { ...linuxServiceDiagnostics(), unitExists: await fileExists(systemdUnitPath) }
     : { type: 'launch-agent', label: launchAgentLabel, plistExists: await fileExists(launchAgentPath) }
-  const nextStep = health?.connection === 'open'
-    ? 'ready'
-    : process.platform === 'linux' && daemon.userManager === null
+  const nextStep = process.platform === 'linux' && daemon.userManager === null
       ? 'A systemd user manager is unavailable. Log in through systemd or run the bridge under the VPS supervisor.'
       : process.platform === 'linux' && daemon.linger === false
-        ? 'Run `sudo loginctl enable-linger $USER` once so the bridge survives VPS logout and reboot, then run `wa setup`.'
+        ? `Run \`${lingerInstruction()}\` once so the bridge survives VPS logout and reboot, then run \`wa daemon restart\`.`
+        : health?.connection === 'open'
+          ? 'ready'
         : 'Run `wa setup` for first link, or `wa daemon restart` for an existing session.'
   console.log(JSON.stringify({
     stateRoot,
@@ -275,6 +296,9 @@ async function setup() {
     console.log('WhatsApp Assistant is linked and ready. Try: wa status')
   } else {
     console.log(`The bridge is still starting. Run: wa qr\nIf no QR appears, run: wa doctor`)
+  }
+  if (process.platform === 'linux' && linuxServiceDiagnostics().linger === false) {
+    console.log(`\nFor a VPS, make this persistent once:\n  ${lingerInstruction()}\nThen verify with: wa doctor`)
   }
 }
 

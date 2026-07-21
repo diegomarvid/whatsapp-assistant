@@ -58,10 +58,13 @@ local user, and is excluded from Git.
    wa setup
    ```
 
-   On Linux/VPS with systemd, install Node.js 22+ and then use:
+   On Linux/VPS, use the final non-root account that will own the WhatsApp
+   session. It needs Node.js 22+ and systemd; do not run `wa` with sudo.
+   Confirm Node first, then use:
 
    ```bash
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.2.tar.gz
+   node --version # v22 or newer
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -69,7 +72,9 @@ local user, and is excluded from Git.
    `wa setup` installs `whatsapp-assistant.service` as a systemd user service,
    writes private runtime state to `~/.local/state/whatsapp-assistant/` by
    default and prints the temporary QR in the SSH terminal. `enable-linger` is
-   needed once on a VPS so the user service survives logout and reboot.
+   needed once on a VPS so the user service survives logout and reboot. `wa
+   doctor` names this exact missing step rather than reporting the installation
+   ready prematurely.
 
 2. For development from a checkout, install dependencies and the local CLI:
 

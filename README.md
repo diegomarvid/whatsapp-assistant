@@ -61,11 +61,20 @@ un QR pendiente; nunca muestra credenciales ni contenido de chats.
 
 ### 🐧 Linux / VPS con systemd
 
-Instalá Node.js 22+ y el paquete desde un release. No requiere navegador ni
-interfaz gráfica:
+Requiere Node.js 22+ y una distribución con systemd. No requiere navegador ni
+interfaz gráfica. Usá un usuario normal del VPS —no `root` ni `sudo wa`— para
+que el servicio, QR y sesión privada pertenezcan al mismo usuario. Si todavía
+no tenés Node, instalá el LTS 22+ con el gestor recomendado para tu distribución
+(o `nvm`) y confirmá antes de seguir:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.2.tar.gz
+node --version # v22 o superior
+```
+
+Después instalá el paquete desde un release:
+
+```bash
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.3.tar.gz
 wa setup
 ```
 
@@ -79,6 +88,10 @@ linger una sola vez con permisos de administrador:
 ```bash
 sudo loginctl enable-linger "$USER"
 ```
+
+`wa setup` detecta si no hay un `systemd --user` utilizable o si Node es
+demasiado viejo y devuelve una instrucción accionable antes de crear estado
+parcial. Al finalizar, `wa doctor` no dice `ready` mientras falte `linger`.
 
 Verificá el servicio sin exponer la cuenta:
 
