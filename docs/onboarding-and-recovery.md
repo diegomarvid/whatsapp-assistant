@@ -87,6 +87,12 @@ name/number mapping, save it with `wa alias add` so later requests like
 3. Runs `ct transcribe <audio> es`.
 4. Prints the transcript. It does not send anything to the contact.
 
+Transcription is optional and is not installed by `npm install`: it requires
+the external `ct` command on `PATH`. `ct transcribe` uses local Whisper
+(`mlx_whisper` on Apple Silicon, or `whisper-ctranslate2`/`faster-whisper`
+elsewhere). Check it with `command -v ct && ct transcribe --help`; the bridge
+and all non-audio commands work without it.
+
 `wa images <alias>` lists cached images and whether the encrypted media envelope
 is available. `wa image <alias> <message-id>` downloads only that selected image
 to the private `data/images/` directory. Images that arrived before image capture
