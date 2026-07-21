@@ -135,6 +135,11 @@ wa transcribe pull         # descarga un modelo, explícitamente
 wa transcribe flor latest
 ```
 
+Al pedir una transcripción por primera vez, el CLI también puede crear ese
+runtime privado automáticamente. Nunca baja un modelo de forma implícita: si
+no encuentra uno local, termina con una instrucción para que la IA pida
+aprobación antes de ejecutar `wa transcribe pull`.
+
 En Apple Silicon usa `mlx-whisper`; en Linux y Macs Intel usa
 `faster-whisper`. Ambos backends usan el cache estándar de Hugging Face. Antes
 de descargar, el CLI busca un snapshot compatible ya presente allí —por ejemplo

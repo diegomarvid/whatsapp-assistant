@@ -526,7 +526,7 @@ async function transcriptionDoctor() {
   }, null, 2))
 }
 
-async function setupTranscription() {
+async function setupTranscription({ verbose = true } = {}) {
   await ensureRuntimeDirectories()
   const backend = transcriptionBackend()
   if (!existsSync(transcriptionPythonPath)) {
@@ -537,8 +537,10 @@ async function setupTranscription() {
   run(transcriptionPythonPath, ['-m', 'pip', 'install', '--upgrade', 'pip'])
   const dependencies = backend === 'mlx' ? ['mlx-whisper', 'huggingface-hub'] : ['faster-whisper', 'huggingface-hub']
   run(transcriptionPythonPath, ['-m', 'pip', 'install', ...dependencies])
-  console.log(`Installed ${backend} in ${transcriptionVenvPath}. No Whisper model was downloaded.`)
-  await transcriptionDoctor()
+  if (verbose) {
+    console.log(`Installed ${backend} in ${transcriptionVenvPath}. No Whisper model was downloaded.`)
+    await transcriptionDoctor()
+  }
 }
 
 async function pullTranscriptionModel(requestedModel) {
@@ -572,8 +574,11 @@ async function configureTranscription(args) {
 
 async function transcribe(audioPath) {
   const config = await loadTranscriptionConfig()
-  const runtime = activeTranscriptionRuntime(config)
-  if (!runtime.runtimeInstalled) throw new Error('Local transcription is not installed. Run `wa transcribe setup` first; it does not download a model.')
+  let runtime = activeTranscriptionRuntime(config)
+  if (!runtime.runtimeInstalled) {
+    await setupTranscription({ verbose: false })
+    runtime = activeTranscriptionRuntime(config)
+  }
   if (!runtime.selected) throw new Error(`No compatible Whisper model is installed locally. Ask the user before downloading ${runtime.defaultModel}; then run: wa transcribe pull ${runtime.defaultModel}`)
   const result = run(transcriptionPythonPath, [transcriptionScript, runtime.backend, runtime.selected.path, 'es', audioPath], { timeout: 10 * 60 * 1000 })
   return result.trim()
