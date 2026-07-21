@@ -54,8 +54,9 @@ npm link
 | `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un PDF con un mensaje al contacto resuelto |
 
-Los aliases viven en `data/aliases.json`, que nunca entra a Git. El comando no
-incluye ninguna capacidad de envío.
+Los aliases viven en `data/aliases.json`, que nunca entra a Git. Las acciones
+de escritura (`send`, `send-file`, `react`) requieren un comando explícito; el
+bridge nunca responde, reacciona ni envía archivos por su cuenta.
 
 `wa find` funciona sin agenda local: prioriza aliases privados, nombres que
 WhatsApp sincroniza (`pushName` / contactos / chats) y coincidencias en
