@@ -75,6 +75,19 @@ export function applyReaction(message, reaction) {
   return true
 }
 
+export function applyDirectStatus(message, status, statusAt, fallbackAt) {
+  const nextStatus = Number(status)
+  if (!message || !Number.isFinite(nextStatus)) return false
+  const previousStatus = Number(message.status)
+  // WhatsApp can replay an older SERVER_ACK after reconnecting. Delivery states
+  // only move forward for a concrete message; do not let a replay erase a
+  // previously observed delivery/read/played confirmation.
+  if (Number.isFinite(previousStatus) && nextStatus <= previousStatus) return false
+  message.status = nextStatus
+  message.statusAt = unixSeconds(statusAt) || fallbackAt
+  return true
+}
+
 export function receiptReport({ message, participants = [] }) {
   const receipts = Object.entries(message?.receipts || {}).map(([participant, receipt]) => ({ participant, ...receipt }))
   const reported = new Set(receipts.filter((receipt) => receipt.readAt).map((receipt) => receipt.participant))

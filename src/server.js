@@ -16,7 +16,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
-import { applyReaction, applyReceipt } from './message-engagement.js'
+import { applyDirectStatus, applyReaction, applyReceipt } from './message-engagement.js'
 import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
 import { MirrorStore } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
@@ -588,11 +588,9 @@ async function applyMessageUpdates(updates) {
       })
       const existing = cache.messages.find((message) => message.jid === jid && message.id === id)
       if (existing && update?.status !== undefined) {
-        existing.status = Number(update.status)
         // Baileys forwards WhatsApp's receipt timestamp in messageTimestamp for
         // direct chats. Fall back only for updates that genuinely omit it.
-        existing.statusAt = Number(update.messageTimestamp) || nowSeconds()
-        changed = true
+        changed = applyDirectStatus(existing, update.status, update.messageTimestamp, nowSeconds()) || changed
       }
       if (!update?.message || Object.keys(update.message).length === 0) continue
       const raw = {

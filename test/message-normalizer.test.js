@@ -3,7 +3,7 @@ import test from 'node:test'
 import { mimeTypeForFile } from '../src/file-mime.js'
 import { safeMessage } from '../src/message-normalizer.js'
 import { coverageForChat } from '../src/chat-coverage.js'
-import { applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
+import { applyDirectStatus, applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
 
 test('normalizes document metadata and reply context without crashing', () => {
   const message = safeMessage({
@@ -84,6 +84,14 @@ test('stores individual receipt timestamps and reports lack of a receipt without
   assert.deepEqual(report.readBy, ['ana@lid'])
   assert.deepEqual(report.notReportedReadBy, ['bea@lid'])
   assert.match(report.note, /no prueba/i)
+})
+
+test('does not downgrade a direct delivery status when WhatsApp replays an older acknowledgement', () => {
+  const message = { status: 3, statusAt: 120 }
+  assert.equal(applyDirectStatus(message, 2, 130, 999), false)
+  assert.deepEqual(message, { status: 3, statusAt: 120 })
+  assert.equal(applyDirectStatus(message, 4, 140, 999), true)
+  assert.deepEqual(message, { status: 4, statusAt: 140 })
 })
 
 test('marks a chat stale when WhatsApp reports a newer chat cursor than the local cache', () => {
