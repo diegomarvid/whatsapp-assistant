@@ -343,20 +343,24 @@ async function connect() {
   })
 
   socket.ev.on('creds.update', saveCreds)
-  socket.ev.on('messages.upsert', async ({ messages }) => {
-    if (await ingestMessages(messages)) await saveCache()
+  socket.ev.on('messages.upsert', ({ messages }) => {
+    ingestMessages(messages)
+      .then((changed) => changed && saveCache())
+      .catch((error) => logger.error({ err: error }, 'Could not ingest incoming WhatsApp messages; bridge remains connected'))
   })
-  socket.ev.on('messaging-history.set', async ({ messages, chats, contacts }) => {
-    for (const chat of chats || []) {
-      if (chat.id) cache.chats[chat.id] = { ...cache.chats[chat.id], jid: chat.id, name: chat.name || null, lastTimestamp: Number(chat.conversationTimestamp || 0) }
-    }
-    for (const contact of contacts || []) {
-      if (contact.id) cache.contacts[contact.id] = {
-        id: contact.id,
-        name: contact.name || contact.notify || contact.verifiedName || null,
+  socket.ev.on('messaging-history.set', ({ messages, chats, contacts }) => {
+    ;(async () => {
+      for (const chat of chats || []) {
+        if (chat.id) cache.chats[chat.id] = { ...cache.chats[chat.id], jid: chat.id, name: chat.name || null, lastTimestamp: Number(chat.conversationTimestamp || 0) }
       }
-    }
-    if (await ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
+      for (const contact of contacts || []) {
+        if (contact.id) cache.contacts[contact.id] = {
+          id: contact.id,
+          name: contact.name || contact.notify || contact.verifiedName || null,
+        }
+      }
+      if (await ingestMessages(messages || []) || (chats?.length || 0) > 0 || (contacts?.length || 0) > 0) await saveCache()
+    })().catch((error) => logger.error({ err: error }, 'Could not ingest WhatsApp history; bridge remains connected'))
   })
   socket.ev.on('connection.update', ({ connection: next, lastDisconnect, qr }) => {
     if (qr) {
