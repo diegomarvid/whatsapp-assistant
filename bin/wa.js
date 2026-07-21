@@ -40,7 +40,7 @@ Linux / VPS (Node 22+ y systemd):
   # Si falta Node 22+, instalarlo como usuario normal:
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
   . "$HOME/.nvm/nvm.sh" && nvm install 22
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.0.tar.gz
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -67,6 +67,7 @@ Comandos:
   wa groups list <list>
   wa groups find <list> [term...]
   wa groups inspect <group-jid> [limit]
+  wa groups participants <group-jid>
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
   wa latest-incoming <alias or phone>
@@ -74,8 +75,6 @@ Comandos:
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>]
-  wa pending [--since 24h]
-  wa pending --groups <list> [--since 24h]
   wa transcribe <alias or phone> latest
   wa transcribe setup                # instala sólo el runtime Python privado
   wa transcribe doctor               # runtime y modelos locales, sin descargar
@@ -85,19 +84,27 @@ Comandos:
   wa audio <alias or phone> <message-id>
   wa images <alias or phone> [limit]
   wa image <alias or phone> <message-id>
+  wa videos <alias or phone> [limit]
+  wa video <alias or phone> <message-id>
+  wa stickers <alias or phone> [limit]
+  wa sticker <alias or phone> <message-id>
   wa files <alias or phone> [limit]
   wa file <alias or phone> <message-id>
+  wa locations|contacts|polls <alias or phone> [limit]
+  wa message|delivery <alias or phone> <message-id>
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
-  wa send <alias or phone> <message>
+  wa send <alias or phone> <message> [--mention <contacto> ...]
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
-  wa send-file <alias or phone> <file> [caption]`)
+  wa send-file <alias or phone> <file> [caption]
+  wa send-image|send-video <alias or phone> <file> [caption] [--mention <contacto> ...]
+  wa send-audio <alias or phone> <file> [--voice]`)
 }
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.0.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
-    media: `Adjuntos:\n  wa audios contacto\n  wa audio contacto <message-id>\n  wa transcribe setup\n  wa transcribe doctor\n  wa transcribe contacto latest\n  wa images contacto\n  wa image contacto <message-id>\n  wa files contacto\n\nLa transcripción es opcional y local. setup instala el runtime Python aislado, pero nunca descarga un modelo sin wa transcribe pull explícito. image, file y audio devuelven paths para que la IA los abra con sus propias capacidades.`,
+    media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
@@ -449,6 +456,11 @@ async function whatsappGroups() {
   return groups || []
 }
 
+async function whatsappGroup(jid) {
+  const { group } = await request(`/groups?jid=${encodeURIComponent(jid)}`)
+  return group
+}
+
 async function downloadAudio(jid, messageId) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   const response = await fetch(`${baseUrl}/audio/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, {
@@ -476,6 +488,20 @@ async function downloadDocument(jid, messageId) {
   return response.json()
 }
 
+async function downloadVideo(jid, messageId) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/videos/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+  if (!response.ok) throw new Error(`Could not download video: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function downloadSticker(jid, messageId) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/stickers/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } })
+  if (!response.ok) throw new Error(`Could not download sticker: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
 async function reactToMessage(jid, messageId, emoji) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   const response = await fetch(`${baseUrl}/messages/react`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ jid, messageId, emoji }) })
@@ -483,15 +509,45 @@ async function reactToMessage(jid, messageId, emoji) {
   return response.json()
 }
 
-async function sendMessage(jid, text, replyToMessageId = null) {
+async function sendMessage(jid, text, replyToMessageId = null, mentions = []) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   const response = await fetch(`${baseUrl}/messages/send`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jid, text, replyToMessageId }),
+    body: JSON.stringify({ jid, text, replyToMessageId, mentions }),
   })
   if (!response.ok) throw new Error(`Could not send message: ${(await response.json()).message || response.status}`)
   return response.json()
+}
+
+async function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/media/send`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ jid, kind, filePath, caption, mentions, voice }),
+  })
+  if (!response.ok) throw new Error(`Could not send ${kind}: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function splitMentions(args) {
+  const values = []
+  const mentionTargets = []
+  while (args.length) {
+    const value = args.shift()
+    if (value !== '--mention') { values.push(value); continue }
+    const mention = args.shift()
+    if (!mention) throw new Error('Use --mention <contacto>')
+    mentionTargets.push(mention)
+  }
+  const mentions = []
+  for (const target of mentionTargets) mentions.push((await resolve(target)).jid)
+  return { values, mentions }
+}
+
+function ensureMentionsAreForGroup(jid, mentions) {
+  if (mentions.length && !jid.endsWith('@g.us')) throw new Error('Mentions are only supported when sending to a WhatsApp group.')
 }
 
 async function sendFile(jid, filePath, caption) {
@@ -639,7 +695,13 @@ function printMessages(messages, { ids = false } = {}) {
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
     const author = message.fromMe ? 'Vos' : 'Contacto'
     const text = message.text || `[${message.type}]`
-    const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null].filter(Boolean).join(' · ')
+    const structured = message.location ? `ubicación: ${message.location.latitude ?? '?'} , ${message.location.longitude ?? '?'}`
+      : message.contacts?.length ? `${message.contacts.length} contacto(s)`
+        : message.poll ? `encuesta: ${message.poll.question || 'sin pregunta'}`
+          : message.pollUpdate ? `voto de encuesta: ${message.pollUpdate.pollCreationMessageKey || 'sin referencia'}`
+            : null
+    const status = message.fromMe && message.status !== null && message.status !== undefined ? `estado ${['error', 'pendiente', 'enviado', 'entregado', 'leído', 'reproducido'][message.status] || message.status}` : null
+    const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null, structured, status].filter(Boolean).join(' · ')
     const source = message.source === 'live' ? '' : ' [cache histórico]'
     console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
   }
@@ -812,6 +874,14 @@ async function main() {
   }
   if (command === 'groups') {
     const action = args.shift()
+    if (action === 'participants') {
+      const jid = args.shift()
+      if (!jid || !jid.endsWith('@g.us')) throw new Error('Use: wa groups participants <group-jid>')
+      const group = await whatsappGroup(jid)
+      console.log(`Grupo: ${group.subject || jid}`)
+      for (const participant of group.participants || []) console.log(`${participant.jid}${participant.admin ? ` — ${participant.admin}` : ''}`)
+      return
+    }
     if (!action || !['list', 'find', 'inspect', 'add'].includes(action)) return usage()
     if (action === 'inspect') {
       const jid = args.shift()
@@ -874,10 +944,12 @@ async function main() {
   }
   if (command === 'send') {
     const target = args.shift()
-    const text = args.join(' ').trim()
+    const { values, mentions } = await splitMentions(args)
+    const text = values.join(' ').trim()
     if (!target || !text) return usage()
     const contact = await resolve(target)
-    const result = await sendMessage(contact.jid, text)
+    ensureMentionsAreForGroup(contact.jid, mentions)
+    const result = await sendMessage(contact.jid, text, null, mentions)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
   if (command === 'reply') {
@@ -905,6 +977,24 @@ async function main() {
     const result = await sendFile(contact.jid, file, caption)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
+  if (command === 'send-image' || command === 'send-video' || command === 'send-audio') {
+    const target = args.shift()
+    const filePath = args.shift()
+    if (!target || !filePath) return usage()
+    const { values, mentions } = await splitMentions(args)
+    const voiceIndex = values.indexOf('--voice')
+    const voice = voiceIndex >= 0
+    if (voiceIndex >= 0) values.splice(voiceIndex, 1)
+    if (voice && command !== 'send-audio') throw new Error('--voice is only valid with wa send-audio')
+    const file = path.resolve(filePath)
+    const stat = await fs.stat(file)
+    if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
+    const contact = await resolve(target)
+    ensureMentionsAreForGroup(contact.jid, mentions)
+    const kind = command.replace('send-', '')
+    const result = await sendMedia(contact.jid, kind, file, values.join(' ').trim(), mentions, voice)
+    return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}.`)
+  }
   if (command === 'search-all') {
     const query = args.shift()?.trim()
     if (!query) return usage()
@@ -928,41 +1018,7 @@ async function main() {
     const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
     return printMessages(matches)
   }
-  if (command === 'pending') {
-    let sinceSeconds = 86400
-    let groupList = null
-    while (args.length) {
-      const option = args.shift()
-      if (option === '--since') {
-        const match = (args.shift() || '').match(/^(\d+)(h|d)$/)
-        if (!match) throw new Error('Use --since <n>h or <n>d')
-        sinceSeconds = Number(match[1]) * (match[2] === 'd' ? 86400 : 3600)
-      } else if (option === '--groups') {
-        groupList = args.shift()?.toLocaleLowerCase()
-        if (!groupList) throw new Error('Use --groups <list>')
-      } else throw new Error(`Unknown option: ${option}`)
-    }
-    const cache = await readSnapshot()
-    const cutoff = Math.floor(Date.now() / 1000) - sinceSeconds
-    if (groupList) {
-      const list = (await loadGroupLists()).lists[groupList]
-      if (!list?.groups?.length) return console.log(`No hay grupos guardados para ${groupList}.`)
-      const reviews = list.groups
-        .map((group) => ({ group, messages: cache.messages.filter((message) => message.jid === group.jid).sort((a, b) => b.timestamp - a.timestamp) }))
-        .filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff)
-      if (!reviews.length) return console.log(`No hay mensajes entrantes recientes como último intercambio en grupos de ${groupList}.`)
-      for (const { group, messages } of reviews) {
-        const message = messages[0]
-        console.log(`${formatTime(message.timestamp)} — ${group.subject || group.jid}: ${message.text.slice(0, 500)} [id: ${message.id}]`)
-      }
-      return
-    }
-    const open = Object.values(cache.chats).filter((chat) => isDirectChat(chat.jid)).map((chat) => ({ chat, messages: cache.messages.filter((message) => message.jid === chat.jid).sort((a, b) => b.timestamp - a.timestamp) })).filter(({ messages }) => messages[0] && !messages[0].fromMe && messages[0].timestamp >= cutoff)
-    if (!open.length) return console.log('No hay chats directos recientes pendientes de respuesta.')
-    for (const { chat, messages } of open) { const message = messages[0]; console.log(`${formatTime(message.timestamp)} — ${cache.contacts[chat.jid]?.name || chat.name || phoneFromJid(chat.jid) || 'sin nombre'}: ${(message.text || `[${message.type}]`).slice(0, 500)}`) }
-    return
-  }
-  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'files' || command === 'file' || command === 'react') {
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'message' || command === 'delivery' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -1015,6 +1071,32 @@ async function main() {
       const { image } = await downloadImage(contact.jid, messageId)
       return console.log(image.path)
     }
+    if (command === 'videos' || command === 'video') {
+      const videos = messages.filter((message) => message.type === 'videoMessage')
+      if (command === 'videos') {
+        const shown = videos.slice(0, Number.parseInt(args[0] || '20', 10))
+        if (!shown.length) return console.log('No hay videos cacheados para este chat.')
+        for (const video of shown) console.log(`${formatTime(video.timestamp)} — ${video.id} (${video.videoRef ? 'disponible' : 'sin captura local'})${video.text ? ` — ${video.text.slice(0, 500)}` : ''}`)
+        return
+      }
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const { video } = await downloadVideo(contact.jid, messageId)
+      return console.log(video.path)
+    }
+    if (command === 'stickers' || command === 'sticker') {
+      const stickers = messages.filter((message) => message.type === 'stickerMessage')
+      if (command === 'stickers') {
+        const shown = stickers.slice(0, Number.parseInt(args[0] || '20', 10))
+        if (!shown.length) return console.log('No hay stickers cacheados para este chat.')
+        for (const sticker of shown) console.log(`${formatTime(sticker.timestamp)} — ${sticker.id} (${sticker.stickerRef ? 'disponible' : 'sin captura local'})`)
+        return
+      }
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const { sticker } = await downloadSticker(contact.jid, messageId)
+      return console.log(sticker.path)
+    }
     if (command === 'files' || command === 'file') {
       const files = messages.filter((message) => message.type === 'documentMessage')
       if (command === 'files') {
@@ -1027,6 +1109,20 @@ async function main() {
       if (!messageId) return usage()
       const { document } = await downloadDocument(contact.jid, messageId)
       return console.log(document.path)
+    }
+    if (command === 'locations' || command === 'contacts' || command === 'polls') {
+      const field = command === 'locations' ? 'location' : command === 'contacts' ? 'contacts' : 'poll'
+      const selected = messages.filter((message) => field === 'contacts' ? message.contacts?.length : Boolean(message[field])).slice(0, Number.parseInt(args[0] || '20', 10))
+      if (!selected.length) return console.log(`No hay ${command} cacheados para este chat.`)
+      return console.log(JSON.stringify(selected.map((message) => ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, [field]: message[field] })), null, 2))
+    }
+    if (command === 'message' || command === 'delivery') {
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const message = messages.find((item) => item.id === messageId)
+      if (!message) throw new Error(`No matching message found: ${messageId}`)
+      if (command === 'delivery') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, status: message.status, statusAt: message.statusAt }, null, 2))
+      return console.log(JSON.stringify(message, null, 2))
     }
     if (command === 'react') {
       const selector = args.shift(); const emoji = args.shift()

@@ -82,7 +82,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.4.4.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.0.tar.gz
 wa setup
 ```
 
@@ -218,10 +218,11 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa coverage contacto` | Indica si el chat está sincronizado (`fresh`) o si hay un hueco verificable. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |
-| `wa pending --since 24h` | Hecho estructural: chats directos cuyo último evento fue entrante. |
 
 > `latest` incluye tus propios mensajes; para “¿qué me mandó X?”, usar siempre
 > `latest-incoming`. Ambos exigen cobertura reciente antes de responder.
+> El CLI no clasifica saludos, urgencia ni “pendientes”: expone eventos y la IA
+> decide su significado, en cualquier idioma.
 
 ### 👥 Grupos de trabajo
 
@@ -230,13 +231,13 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa groups find maspeak` | Muestra grupos ya confirmados y propone candidatos recientes. |
 | `wa groups inspect <jid>` | Lee título, descripción y mensajes recientes antes de clasificar. |
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada. |
-| `wa pending --groups maspeak --since 24h` | Actividad cuyo último intercambio fue entrante en esos grupos. |
+| `wa groups participants <jid>` | Lista participantes y rol de un grupo para poder mencionarlos explícitamente. |
 | `wa coverage <grupo-jid>` | Verifica cobertura de un grupo usando su JID `…@g.us`. |
 
 La lista está en `data/group-lists.json`, no en el código ni en Git. `find`
 siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
 
-### 📎 Audio, imágenes y archivos
+### 📎 Media y mensajes estructurados
 
 | Comando | Para qué sirve |
 | --- | --- |
@@ -248,13 +249,19 @@ siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
 | `wa transcribe contacto latest` | Descarga el audio más reciente y lo transcribe localmente. |
 | `wa transcribe contacto <message-id>` | Transcribe un audio concreto; el ID sale de `wa audios` o `wa history --ids`. |
 | `wa images contacto` / `wa image contacto <message-id>` | Lista o descarga una imagen seleccionada. |
+| `wa videos contacto` / `wa video contacto <message-id>` | Lista o descarga un video o GIF seleccionado. |
+| `wa stickers contacto` / `wa sticker contacto <message-id>` | Lista o descarga un sticker seleccionado. |
 | `wa files contacto` / `wa file contacto <message-id>` | Lista o descarga un documento entrante seleccionado. |
+| `wa locations contacto` | Devuelve coordenadas y datos de ubicación como JSON factual. |
+| `wa contacts contacto` | Devuelve tarjetas de contacto/vCard como JSON factual. |
+| `wa polls contacto` | Devuelve pregunta y opciones de encuestas, sin inferir intención ni votos. |
+| `wa message contacto <message-id>` | Devuelve el evento normalizado completo, incluidos los datos estructurados. |
 
 El comando de transcripción correcto es `wa transcribe contacto latest` o
 `wa transcribe contacto <message-id>`: no recibe un selector genérico
 `<id|latest>` en la tabla porque el ID tiene que corresponder a un audio.
 
-`wa image`, `wa file` y `wa audio` descargan sólo el adjunto seleccionado y
+`wa image`, `wa video`, `wa sticker`, `wa file` y `wa audio` descargan sólo el adjunto seleccionado y
 devuelven su **path absoluto privado**. La CLI no interpreta imágenes, PDFs ni
 documentos: el agente que la invoca abre ese path con la capacidad visual o de
 documentos que tenga disponible. Así no se asume que una imagen es texto ni se
@@ -268,8 +275,13 @@ acopla el bridge a un runtime concreto de IA.
 | `wa reply contacto latest-incoming "Entendido"` | Responde citando un mensaje concreto. |
 | `wa send contacto "mensaje"` | Envía un texto. |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un archivo como documento. |
+| `wa send-image contacto /ruta/foto.jpg "caption"` | Envía una imagen nativa. |
+| `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |
+| `wa send-audio contacto /ruta/audio.ogg --voice` | Envía audio; `--voice` lo marca como nota de voz. |
+| `wa send grupo@g.us "Hola" --mention flor` | Envía texto y menciona contactos explícitos en un grupo. |
+| `wa delivery contacto <message-id>` | Muestra el último estado factual de un mensaje propio: enviado, entregado, leído o reproducido. |
 
-El bridge nunca envía, reacciona ni responde por su cuenta. `send`, `send-file`,
+El bridge nunca envía, reacciona ni responde por su cuenta. `send`, `send-file`, `send-image`, `send-video`, `send-audio`,
 `react` y `reply` requieren un comando explícito; las operaciones que usan
 `latest` sólo se ejecutan si el mismo chat tiene cobertura `fresh`.
 

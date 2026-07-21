@@ -32,6 +32,10 @@ const imageEnvelopeDir = path.join(dataDir, 'image-envelopes')
 const downloadedImageDir = path.join(dataDir, 'images')
 const documentEnvelopeDir = path.join(dataDir, 'document-envelopes')
 const downloadedDocumentDir = path.join(dataDir, 'documents')
+const videoEnvelopeDir = path.join(dataDir, 'video-envelopes')
+const downloadedVideoDir = path.join(dataDir, 'videos')
+const stickerEnvelopeDir = path.join(dataDir, 'sticker-envelopes')
+const downloadedStickerDir = path.join(dataDir, 'stickers')
 // Keep only recent operational context. The bridge must never become a private
 // archive of the whole account.
 const MAX_MESSAGES = 10000
@@ -195,6 +199,30 @@ async function cacheDocumentEnvelope(rawMessage, message) {
   message.documentRef = filename
 }
 
+async function cacheVideoEnvelope(rawMessage, message) {
+  if (message.type !== 'videoMessage') return
+  const filename = `${message.id}.bin`
+  const target = path.join(videoEnvelopeDir, filename)
+  try { await fs.access(target) } catch {
+    const temp = `${target}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temp, serialize(rawMessage), { mode: 0o600 })
+    await fs.rename(temp, target)
+  }
+  message.videoRef = filename
+}
+
+async function cacheStickerEnvelope(rawMessage, message) {
+  if (message.type !== 'stickerMessage') return
+  const filename = `${message.id}.bin`
+  const target = path.join(stickerEnvelopeDir, filename)
+  try { await fs.access(target) } catch {
+    const temp = `${target}.${crypto.randomUUID()}.tmp`
+    await fs.writeFile(temp, serialize(rawMessage), { mode: 0o600 })
+    await fs.rename(temp, target)
+  }
+  message.stickerRef = filename
+}
+
 function auditMessageEvent(raw, event, detail = null) {
   try {
     mirrorStore?.recordEvent({
@@ -269,6 +297,8 @@ function mergeIncomingMessage(existing, incoming) {
     audioRef: existing.audioRef,
     imageRef: existing.imageRef,
     documentRef: existing.documentRef,
+    videoRef: existing.videoRef,
+    stickerRef: existing.stickerRef,
   }
   const hasUsableContent = incoming.type !== 'unknown' || incoming.text || incoming.reactionText
   if (hasUsableContent) Object.assign(existing, incoming)
@@ -326,6 +356,12 @@ async function ingestMessages(messages, source = 'history') {
       if (message.type === 'documentMessage' && !existing.documentRef) {
         try { await cacheDocumentEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed document envelope') }
       }
+      if (message.type === 'videoMessage' && !existing.videoRef) {
+        try { await cacheVideoEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed video envelope') }
+      }
+      if (message.type === 'stickerMessage' && !existing.stickerRef) {
+        try { await cacheStickerEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed sticker envelope') }
+      }
         continue
       }
       try {
@@ -339,6 +375,8 @@ async function ingestMessages(messages, source = 'history') {
         logger.warn({ err: error, messageId: message.id }, 'Could not retain image envelope')
       }
       try { await cacheDocumentEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain document envelope') }
+      try { await cacheVideoEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain video envelope') }
+      try { await cacheStickerEnvelope(raw, message) } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain sticker envelope') }
       cache.messages.push(message)
       const previousChat = cache.chats[message.jid] || {}
       cache.chats[message.jid] = {
@@ -366,7 +404,7 @@ async function ingestMessages(messages, source = 'history') {
 
 async function prunePrivateMedia() {
   const cutoff = Date.now() - (RETENTION_DAYS * 24 * 60 * 60 * 1000)
-  for (const directory of [audioEnvelopeDir, downloadedAudioDir, imageEnvelopeDir, downloadedImageDir, documentEnvelopeDir, downloadedDocumentDir]) {
+  for (const directory of [audioEnvelopeDir, downloadedAudioDir, imageEnvelopeDir, downloadedImageDir, documentEnvelopeDir, downloadedDocumentDir, videoEnvelopeDir, downloadedVideoDir, stickerEnvelopeDir, downloadedStickerDir]) {
     for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
       if (!entry.isFile()) continue
       const file = path.join(directory, entry.name)
@@ -412,6 +450,36 @@ async function downloadDocument(message) {
   const target = path.join(downloadedDocumentDir, `${message.id}-${safeName}`)
   await fs.writeFile(target, bytes, { mode: 0o600 })
   return { filename: path.basename(target), path: target, mimetype: message.documentMimetype || 'application/octet-stream' }
+}
+
+function mediaExtension(mimetype, fallback) {
+  if (mimetype === 'video/mp4') return 'mp4'
+  if (mimetype === 'video/3gpp') return '3gp'
+  if (mimetype === 'image/webp') return 'webp'
+  if (mimetype === 'image/gif') return 'gif'
+  return fallback
+}
+
+async function downloadVideo(message) {
+  if (!socket?.updateMediaMessage) throw new Error('WhatsApp is not connected.')
+  if (!message.videoRef) throw new Error('This video was received before video capture was enabled. Ask the sender to forward it again.')
+  const raw = deserialize(await fs.readFile(path.join(videoEnvelopeDir, message.videoRef)))
+  const bytes = await downloadMediaMessage(raw, 'buffer', {}, { logger, reuploadRequest: socket.updateMediaMessage })
+  const filename = `${message.id}.${mediaExtension(message.videoMimetype, 'mp4')}`
+  const target = path.join(downloadedVideoDir, filename)
+  await fs.writeFile(target, bytes, { mode: 0o600 })
+  return { filename, path: target, mimetype: message.videoMimetype || 'video/mp4' }
+}
+
+async function downloadSticker(message) {
+  if (!socket?.updateMediaMessage) throw new Error('WhatsApp is not connected.')
+  if (!message.stickerRef) throw new Error('This sticker was received before sticker capture was enabled. Ask the sender to forward it again.')
+  const raw = deserialize(await fs.readFile(path.join(stickerEnvelopeDir, message.stickerRef)))
+  const bytes = await downloadMediaMessage(raw, 'buffer', {}, { logger, reuploadRequest: socket.updateMediaMessage })
+  const filename = `${message.id}.${mediaExtension(message.stickerMimetype, 'webp')}`
+  const target = path.join(downloadedStickerDir, filename)
+  await fs.writeFile(target, bytes, { mode: 0o600 })
+  return { filename, path: target, mimetype: message.stickerMimetype || 'image/webp' }
 }
 
 function pruneMessages() {
@@ -507,8 +575,13 @@ async function applyMessageUpdates(updates) {
           status: update?.status ?? null,
         },
       })
-      if (!update?.message || Object.keys(update.message).length === 0) continue
       const existing = cache.messages.find((message) => message.jid === jid && message.id === id)
+      if (existing && update?.status !== undefined) {
+        existing.status = Number(update.status)
+        existing.statusAt = nowSeconds()
+        changed = true
+      }
+      if (!update?.message || Object.keys(update.message).length === 0) continue
       const raw = {
         key,
         messageTimestamp: update.messageTimestamp || existing?.timestamp || nowSeconds(),
@@ -636,6 +709,10 @@ async function main() {
   await ensurePrivateDir(downloadedImageDir)
   await ensurePrivateDir(documentEnvelopeDir)
   await ensurePrivateDir(downloadedDocumentDir)
+  await ensurePrivateDir(videoEnvelopeDir)
+  await ensurePrivateDir(downloadedVideoDir)
+  await ensurePrivateDir(stickerEnvelopeDir)
+  await ensurePrivateDir(downloadedStickerDir)
   mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
   msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
   cache = mirrorStore.load()
@@ -652,11 +729,14 @@ async function main() {
     const isAudioDownload = request.method === 'POST' && url.pathname === '/audio/download'
     const isImageDownload = request.method === 'POST' && url.pathname === '/images/download'
     const isDocumentDownload = request.method === 'POST' && url.pathname === '/documents/download'
+    const isVideoDownload = request.method === 'POST' && url.pathname === '/videos/download'
+    const isStickerDownload = request.method === 'POST' && url.pathname === '/stickers/download'
     const isMessageReaction = request.method === 'POST' && url.pathname === '/messages/react'
     const isMessageSend = request.method === 'POST' && url.pathname === '/messages/send'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
+    const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isMessageReaction && !isMessageSend && !isDocumentSend) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isDocumentSend && !isMediaSend) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, ...cache.sync, lastLiveMessageAt, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
@@ -671,14 +751,25 @@ async function main() {
     if (isGroupsList) {
       if (!socket?.groupFetchAllParticipating) return json(response, 503, { error: 'whatsapp_not_connected' })
       socket.groupFetchAllParticipating()
-        .then((groups) => json(response, 200, {
-          groups: Object.values(groups).map((group) => ({
+        .then((groups) => {
+          const requestedJid = url.searchParams.get('jid')
+          const values = Object.values(groups)
+          const group = requestedJid ? values.find((item) => item.id === requestedJid) : null
+          if (requestedJid && !group) return json(response, 404, { error: 'group_not_found' })
+          return json(response, 200, requestedJid ? {
+            group: {
+              jid: group.id,
+              subject: group.subject || null,
+              desc: group.desc || null,
+              participants: (group.participants || []).map((participant) => ({ jid: participant.id, admin: participant.admin || null })),
+            },
+          } : { groups: values.map((group) => ({
             jid: group.id,
             subject: group.subject || null,
             desc: group.desc || null,
             participantCount: group.participants?.length || 0,
-          })),
-        }))
+          })) })
+        })
         .catch((error) => json(response, 422, { error: 'groups_fetch_failed', message: error.message }))
       return
     }
@@ -688,9 +779,10 @@ async function main() {
       return json(response, 200, chatCoverage(jid))
     }
     if (isMessageSend) {
-      requestBody(request).then(async ({ jid, text, replyToMessageId }) => {
+      requestBody(request).then(async ({ jid, text, replyToMessageId, mentions }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
         if (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
+        if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
         const quoted = replyToMessageId ? cache.messages.find((message) => message.jid === jid && message.id === replyToMessageId) : null
         if (replyToMessageId && !quoted) return json(response, 404, { error: 'reply_target_not_found' })
@@ -700,7 +792,7 @@ async function main() {
           remoteJid: jid,
           quotedMessage: quoted.text ? { conversation: quoted.text } : undefined,
         } : undefined
-        const result = await socket.sendMessage(jid, { text: text.trim(), contextInfo })
+        const result = await socket.sendMessage(jid, { text: text.trim(), contextInfo, mentions: mentions?.length ? mentions : undefined })
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return
@@ -719,6 +811,26 @@ async function main() {
         })
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
+      return
+    }
+    if (isMediaSend) {
+      requestBody(request).then(async ({ jid, filePath, kind, caption, mentions, voice }) => {
+        if (!jid || typeof filePath !== 'string' || !['image', 'video', 'audio'].includes(kind)) return json(response, 400, { error: 'invalid_media' })
+        if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
+        if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
+        if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const media = await fs.readFile(filePath)
+        const mimetype = mimeTypeForFile(filePath)
+        const content = {
+          [kind]: media,
+          mimetype,
+          caption: kind === 'audio' ? undefined : caption?.trim() || undefined,
+          mentions: mentions?.length ? mentions : undefined,
+          ptt: kind === 'audio' && Boolean(voice),
+        }
+        const result = await socket.sendMessage(jid, content)
+        json(response, 200, { sent: true, id: result?.key?.id || null })
+      }).catch((error) => json(response, 422, { error: 'media_send_failed', message: error.message }))
       return
     }
     if (isMessageReaction) {
@@ -759,6 +871,22 @@ async function main() {
       const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'documentMessage')
       if (!message) return json(response, 404, { error: 'document_not_found' })
       downloadDocument(message).then((document) => json(response, 200, { document })).catch((error) => json(response, 422, { error: 'document_download_failed', message: error.message }))
+      return
+    }
+    if (isVideoDownload) {
+      const jid = url.searchParams.get('jid')
+      const messageId = url.searchParams.get('messageId')
+      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'videoMessage')
+      if (!message) return json(response, 404, { error: 'video_not_found' })
+      downloadVideo(message).then((video) => json(response, 200, { video })).catch((error) => json(response, 422, { error: 'video_download_failed', message: error.message }))
+      return
+    }
+    if (isStickerDownload) {
+      const jid = url.searchParams.get('jid')
+      const messageId = url.searchParams.get('messageId')
+      const message = cache.messages.find((item) => item.jid === jid && item.id === messageId && item.type === 'stickerMessage')
+      if (!message) return json(response, 404, { error: 'sticker_not_found' })
+      downloadSticker(message).then((sticker) => json(response, 200, { sticker })).catch((error) => json(response, 422, { error: 'sticker_download_failed', message: error.message }))
       return
     }
     const limit = normalizeLimit(url.searchParams.get('limit'))

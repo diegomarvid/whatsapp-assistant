@@ -25,6 +25,26 @@ test('normalizes images and reactions without requiring optional fields', () => 
   assert.equal(reaction.reactionText, '👍')
 })
 
+test('normalizes media and structured WhatsApp facts without interpreting them', () => {
+  const video = safeMessage({
+    key: { id: 'video-1', remoteJid: 'group@g.us' },
+    message: { videoMessage: { caption: 'tour', mimetype: 'video/mp4', seconds: 12, contextInfo: { stanzaId: 'prior' } } },
+  })
+  const location = safeMessage({
+    key: { id: 'location-1', remoteJid: 'chat@lid' },
+    message: { locationMessage: { degreesLatitude: -34.9, degreesLongitude: -56.2, name: 'Oficina', address: 'Centro' } },
+  })
+  const poll = safeMessage({
+    key: { id: 'poll-1', remoteJid: 'group@g.us' },
+    message: { pollCreationMessage: { name: '¿Vamos?', selectableOptionsCount: 1, options: [{ optionName: 'Sí' }, { optionName: 'No' }] } },
+  })
+  assert.equal(video.videoMimetype, 'video/mp4')
+  assert.equal(video.videoSeconds, 12)
+  assert.equal(video.quotedMessageId, 'prior')
+  assert.deepEqual(location.location, { live: false, latitude: -34.9, longitude: -56.2, name: 'Oficina', address: 'Centro', url: null, accuracyInMeters: null })
+  assert.deepEqual(poll.poll, { question: '¿Vamos?', selectableOptionsCount: 1, options: ['Sí', 'No'] })
+})
+
 test('returns null for messages with no chat identity', () => {
   assert.equal(safeMessage({ message: { conversation: 'ignored' } }), null)
 })
@@ -120,4 +140,6 @@ test('detects common outgoing document MIME types', () => {
   assert.equal(mimeTypeForFile('/tmp/reporte.xlsx'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
   assert.equal(mimeTypeForFile('/tmp/nota.docx'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
   assert.equal(mimeTypeForFile('/tmp/foto.JPG'), 'image/jpeg')
+  assert.equal(mimeTypeForFile('/tmp/demo.mp4'), 'video/mp4')
+  assert.equal(mimeTypeForFile('/tmp/nota.ogg'), 'audio/ogg; codecs=opus')
 })
