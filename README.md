@@ -82,7 +82,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.1.tar.gz
 wa setup
 ```
 
@@ -218,8 +218,8 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa coverage contacto` | Indica si el chat está sincronizado (`fresh`) o si hay un hueco verificable. |
 | `wa message contacto <message-id>` | Hechos completos del evento: hora, autor, adjuntos, estado, reactions y receipts que el mirror haya recibido. |
 | `wa delivery contacto <message-id>` | Estado agregado de un mensaje propio en un chat directo (`enviado`, `entregado`, `leído` o `reproducido`) y su timestamp reportado por WhatsApp. |
-| `wa receipts grupo <message-id>` | Receipts individuales reportados por WhatsApp para un mensaje de grupo: entregado, leído o reproducido por participante. |
-| `wa unread-by grupo <message-id>` | Participantes actuales sin **read receipt reportado**. No los llama “no leídos”. |
+| `wa receipts grupo <message-id>` | Receipts individuales reportados por WhatsApp para **un mensaje propio** de grupo: entregado, leído o reproducido por participante. |
+| `wa unread-by grupo <message-id>` | Para un mensaje propio, participantes actuales sin **read receipt reportado**. No los llama “no leídos”. |
 | `wa reactions contacto-o-grupo <message-id>` | Reacciones actuales al mensaje, participante, emoji y hora si WhatsApp la reportó. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |

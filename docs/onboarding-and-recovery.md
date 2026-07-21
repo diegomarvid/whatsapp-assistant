@@ -67,7 +67,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.1.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -188,9 +188,10 @@ For an outgoing direct message, `wa delivery contacto <message-id>` returns the
 aggregate WhatsApp delivery/read/played state and the timestamp reported in the
 corresponding protocol update.
 
-For a group message, use `wa receipts grupo@g.us <message-id>` to see the
-per-participant receipts that WhatsApp actually reported, or `wa unread-by` to
-list current participants that have no reported read receipt. That latter list
+For a message sent by this account to a group, use `wa receipts grupo@g.us
+<message-id>` to see the per-participant receipts that WhatsApp actually
+reported, or `wa unread-by` to list current participants that have no reported
+read receipt. That latter list
 must never be described as “people who did not read it”: privacy settings,
 connectivity and observer uptime can all suppress a receipt. `wa reactions`
 returns only the reaction state currently reported by WhatsApp; an emptied
