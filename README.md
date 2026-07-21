@@ -82,7 +82,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.1.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz
 wa setup
 ```
 
@@ -216,6 +216,11 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa latest-incoming contacto` | Último mensaje **recibido** de ese contacto. |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para descargar, responder o reaccionar. |
 | `wa coverage contacto` | Indica si el chat está sincronizado (`fresh`) o si hay un hueco verificable. |
+| `wa message contacto <message-id>` | Hechos completos del evento: hora, autor, adjuntos, estado, reactions y receipts que el mirror haya recibido. |
+| `wa delivery contacto <message-id>` | Estado agregado de un mensaje propio en un chat directo (`enviado`, `entregado`, `leído` o `reproducido`) y su timestamp reportado por WhatsApp. |
+| `wa receipts grupo <message-id>` | Receipts individuales reportados por WhatsApp para un mensaje de grupo: entregado, leído o reproducido por participante. |
+| `wa unread-by grupo <message-id>` | Participantes actuales sin **read receipt reportado**. No los llama “no leídos”. |
+| `wa reactions contacto-o-grupo <message-id>` | Reacciones actuales al mensaje, participante, emoji y hora si WhatsApp la reportó. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |
 
@@ -223,6 +228,11 @@ Contactos como complemento. No copia la agenda al mirror.
 > `latest-incoming`. Ambos exigen cobertura reciente antes de responder.
 > El CLI no clasifica saludos, urgencia ni “pendientes”: expone eventos y la IA
 > decide su significado, en cualquier idioma.
+>
+> Un participante sin read receipt no es evidencia de que no haya visto el
+> mensaje. WhatsApp puede omitirlo por privacidad, conectividad o porque el
+> bridge todavía no recibió el evento. La salida usa deliberadamente
+> `withoutReportedReadReceipt` para reflejar ese límite.
 
 ### 👥 Grupos de trabajo
 
@@ -279,7 +289,6 @@ acopla el bridge a un runtime concreto de IA.
 | `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |
 | `wa send-audio contacto /ruta/audio.ogg --voice` | Envía audio; `--voice` lo marca como nota de voz. |
 | `wa send grupo@g.us "Hola" --mention flor` | Envía texto y menciona contactos explícitos en un grupo. |
-| `wa delivery contacto <message-id>` | Muestra el último estado factual de un mensaje propio: enviado, entregado, leído o reproducido. |
 
 El bridge nunca envía, reacciona ni responde por su cuenta. `send`, `send-file`, `send-image`, `send-video`, `send-audio`,
 `react` y `reply` requieren un comando explícito; las operaciones que usan

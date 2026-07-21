@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { normalizedReactions, normalizedReceipts } from './message-engagement.js'
 
 export function textOf(message) {
   const content = message.message || {}
@@ -81,6 +82,8 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     contacts: normalizedContacts(content),
     poll: normalizedPoll(content),
     pollUpdate: pollUpdate ? { pollCreationMessageKey: pollUpdate.pollCreationMessageKey?.id || null } : null,
+    receipts: normalizedReceipts(message.userReceipt),
+    reactions: normalizedReactions(message.reactions),
     status: null,
     statusAt: null,
     source,

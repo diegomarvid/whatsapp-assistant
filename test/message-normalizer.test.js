@@ -3,6 +3,7 @@ import test from 'node:test'
 import { mimeTypeForFile } from '../src/file-mime.js'
 import { safeMessage } from '../src/message-normalizer.js'
 import { coverageForChat } from '../src/chat-coverage.js'
+import { applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
 
 test('normalizes document metadata and reply context without crashing', () => {
   const message = safeMessage({
@@ -53,6 +54,36 @@ test('marks whether a message arrived live or through history', () => {
   const message = safeMessage({ key: { id: 'live-1', remoteJid: 'chat@lid' }, message: { conversation: 'hola' } }, { source: 'live', capturedAt: 123 })
   assert.equal(message.source, 'live')
   assert.equal(message.capturedAt, 123)
+})
+
+test('normalizes WhatsApp receipt and reaction facts from history', () => {
+  const message = safeMessage({
+    key: { id: 'engagement-1', remoteJid: 'group@g.us' },
+    message: { conversation: 'estado' },
+    userReceipt: [{ userJid: 'ana@lid', receiptTimestamp: 100, readTimestamp: 110 }],
+    reactions: [{ key: { participant: 'ana@lid' }, text: '👍', senderTimestampMs: 120000 }],
+  })
+  assert.deepEqual(message.receipts, { 'ana@lid': { deliveredAt: 100, readAt: 110, playedAt: null } })
+  assert.deepEqual(message.reactions, [{ participant: 'ana@lid', emoji: '👍', timestamp: 120 }])
+})
+
+test('keeps only the current reaction from each participant and supports removal', () => {
+  const message = { reactions: [] }
+  assert.equal(applyReaction(message, { key: { participant: 'ana@lid' }, text: '❤️', senderTimestampMs: 1000 }), true)
+  assert.equal(applyReaction(message, { key: { participant: 'ana@lid' }, text: '👍', senderTimestampMs: 2000 }), true)
+  assert.deepEqual(message.reactions, [{ participant: 'ana@lid', emoji: '👍', timestamp: 2 }])
+  assert.equal(applyReaction(message, { key: { participant: 'ana@lid' }, text: '' }), true)
+  assert.deepEqual(message.reactions, [])
+})
+
+test('stores individual receipt timestamps and reports lack of a receipt without claiming unread', () => {
+  const message = { receipts: {} }
+  assert.equal(applyReceipt(message, { userJid: 'ana@lid', receiptTimestamp: 100, readTimestamp: 120, playedTimestamp: 130 }), true)
+  assert.deepEqual(message.receipts['ana@lid'], { deliveredAt: 100, readAt: 120, playedAt: 130 })
+  const report = receiptReport({ message, participants: ['ana@lid', 'bea@lid'] })
+  assert.deepEqual(report.readBy, ['ana@lid'])
+  assert.deepEqual(report.notReportedReadBy, ['bea@lid'])
+  assert.match(report.note, /no prueba/i)
 })
 
 test('marks a chat stale when WhatsApp reports a newer chat cursor than the local cache', () => {

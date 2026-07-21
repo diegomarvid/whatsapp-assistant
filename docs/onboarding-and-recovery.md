@@ -67,7 +67,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.1.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -112,6 +112,9 @@ wa find "Nombre del contacto"
 wa latest contacto
 wa latest-incoming contacto
 wa history contacto 20
+wa delivery contacto <message-id>
+wa receipts grupo@g.us <message-id>
+wa reactions contacto <message-id>
 wa search contacto "presupuesto"
 wa transcribe contacto latest
 wa images contacto
@@ -177,7 +180,21 @@ read commands; only direct contacts use LID resolution.
    contacto`, then `wa latest-incoming contacto`. The observer automatically
    reconnects with the existing linked session and the CLI resolves the current
    LID before reading it. Messages older than seven days are intentionally
-   absent. The assistant is for recent operational context, not an archive.
+absent. The assistant is for recent operational context, not an archive.
+
+## Receipts and reactions are factual, not inferred
+
+For an outgoing direct message, `wa delivery contacto <message-id>` returns the
+aggregate WhatsApp delivery/read/played state and the timestamp reported in the
+corresponding protocol update.
+
+For a group message, use `wa receipts grupo@g.us <message-id>` to see the
+per-participant receipts that WhatsApp actually reported, or `wa unread-by` to
+list current participants that have no reported read receipt. That latter list
+must never be described as “people who did not read it”: privacy settings,
+connectivity and observer uptime can all suppress a receipt. `wa reactions`
+returns only the reaction state currently reported by WhatsApp; an emptied
+reaction is removed when WhatsApp sends that update.
 
 4. If `wa transcribe` says an old audio is unavailable, it may predate the
    current recent-sync window or the audio-envelope capture. Do **not** reset

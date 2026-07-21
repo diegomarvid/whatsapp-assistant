@@ -16,6 +16,7 @@ import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
+import { applyReaction, applyReceipt } from './message-engagement.js'
 import { coverageForChat, RECENT_RETENTION_DAYS } from './chat-coverage.js'
 import { MirrorStore } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
@@ -300,9 +301,19 @@ function mergeIncomingMessage(existing, incoming) {
     videoRef: existing.videoRef,
     stickerRef: existing.stickerRef,
   }
+  const engagement = {
+    receipts: existing.receipts,
+    reactions: existing.reactions,
+    status: existing.status,
+    statusAt: existing.statusAt,
+  }
   const hasUsableContent = incoming.type !== 'unknown' || incoming.text || incoming.reactionText
   if (hasUsableContent) Object.assign(existing, incoming)
   Object.assign(existing, refs)
+  if (!Object.keys(incoming.receipts || {}).length) existing.receipts = engagement.receipts || {}
+  if (!incoming.reactions?.length) existing.reactions = engagement.reactions || []
+  existing.status = engagement.status ?? existing.status
+  existing.statusAt = engagement.statusAt ?? existing.statusAt
 }
 
 async function ingestMessages(messages, source = 'history') {
@@ -578,7 +589,9 @@ async function applyMessageUpdates(updates) {
       const existing = cache.messages.find((message) => message.jid === jid && message.id === id)
       if (existing && update?.status !== undefined) {
         existing.status = Number(update.status)
-        existing.statusAt = nowSeconds()
+        // Baileys forwards WhatsApp's receipt timestamp in messageTimestamp for
+        // direct chats. Fall back only for updates that genuinely omit it.
+        existing.statusAt = Number(update.messageTimestamp) || nowSeconds()
         changed = true
       }
       if (!update?.message || Object.keys(update.message).length === 0) continue
@@ -593,6 +606,42 @@ async function applyMessageUpdates(updates) {
     } catch (error) {
       mirrorStore?.recordEvent({ event: 'messages.update_failed', jid, messageId: id, detail: { error: error.message } })
       logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp message update; bridge remains connected')
+    }
+  }
+  return changed
+}
+
+async function applyReceiptUpdates(updates) {
+  let changed = false
+  for (const { key, receipt } of updates || []) {
+    const jid = key?.remoteJid
+    const id = key?.id
+    if (!jid || !id) continue
+    try {
+      mirrorStore?.recordEvent({ event: 'message-receipt.update', jid, messageId: id, detail: { participant: receipt?.userJid || null, receiptTimestamp: Number(receipt?.receiptTimestamp || 0) || null, readTimestamp: Number(receipt?.readTimestamp || 0) || null, playedTimestamp: Number(receipt?.playedTimestamp || 0) || null } })
+      const message = cache.messages.find((item) => item.jid === jid && item.id === id)
+      changed = applyReceipt(message, receipt) || changed
+    } catch (error) {
+      mirrorStore?.recordEvent({ event: 'message-receipt.update_failed', jid, messageId: id, detail: { error: error.message } })
+      logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp receipt update; bridge remains connected')
+    }
+  }
+  return changed
+}
+
+async function applyReactionUpdates(updates) {
+  let changed = false
+  for (const { key, reaction } of updates || []) {
+    const jid = key?.remoteJid
+    const id = key?.id
+    if (!jid || !id) continue
+    try {
+      mirrorStore?.recordEvent({ event: 'messages.reaction', jid, messageId: id, detail: { emoji: reaction?.text || null, participant: reaction?.key?.participant || (reaction?.key?.fromMe ? 'self' : reaction?.key?.remoteJid || null) } })
+      const message = cache.messages.find((item) => item.jid === jid && item.id === id)
+      changed = applyReaction(message, reaction) || changed
+    } catch (error) {
+      mirrorStore?.recordEvent({ event: 'messages.reaction_failed', jid, messageId: id, detail: { error: error.message } })
+      logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp reaction update; bridge remains connected')
     }
   }
   return changed
@@ -691,6 +740,20 @@ async function connect() {
           await saveCache()
         }
       }
+      if (events['message-receipt.update']) {
+        const changed = await applyReceiptUpdates(events['message-receipt.update'])
+        if (changed) {
+          cache.sync.lastPersistedAt = nowSeconds()
+          await saveCache()
+        }
+      }
+      if (events['messages.reaction']) {
+        const changed = await applyReactionUpdates(events['messages.reaction'])
+        if (changed) {
+          cache.sync.lastPersistedAt = nowSeconds()
+          await saveCache()
+        }
+      }
     } catch (error) {
       cache.sync.ingestionHealthy = false
       cache.sync.lastIngestError = error.message
@@ -761,6 +824,7 @@ async function main() {
               jid: group.id,
               subject: group.subject || null,
               desc: group.desc || null,
+              selfJid: socket.user?.id || null,
               participants: (group.participants || []).map((participant) => ({ jid: participant.id, admin: participant.admin || null })),
             },
           } : { groups: values.map((group) => ({

@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-assistant",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Local, read-only WhatsApp Web bridge powered by Baileys",
   "homepage": "https://github.com/diegomarvid/whatsapp-assistant#readme",
   "repository": {
@@ -15,7 +15,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/mirror-store.js && node --check src/chat-coverage.js && node --check src/runtime-paths.js && node --check src/launch-agent.js && node --check src/systemd-service.js && node --check src/transcription-runtime.js && node --check bin/wa.js",
+    "check": "node --check src/server.js && node --check src/message-engagement.js && node --check src/message-normalizer.js && node --check src/mirror-store.js && node --check src/chat-coverage.js && node --check src/runtime-paths.js && node --check src/launch-agent.js && node --check src/systemd-service.js && node --check src/transcription-runtime.js && node --check bin/wa.js",
     "test": "node --test"
   },
   "bin": {

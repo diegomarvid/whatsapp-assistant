@@ -40,7 +40,7 @@ Linux / VPS (Node 22+ y systemd):
   # Si falta Node 22+, instalarlo como usuario normal:
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
   . "$HOME/.nvm/nvm.sh" && nvm install 22
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.1.tar.gz
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -91,7 +91,8 @@ Comandos:
   wa files <alias or phone> [limit]
   wa file <alias or phone> <message-id>
   wa locations|contacts|polls <alias or phone> [limit]
-  wa message|delivery <alias or phone> <message-id>
+  wa message|delivery|receipts|reactions <alias or phone> <message-id>
+  wa unread-by <group> <message-id>    # sin read receipt = sin confirmación, no “no lo vio”
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
   wa send <alias or phone> <message> [--mention <contacto> ...]
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
@@ -102,8 +103,8 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.6.1.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
-    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.7.0.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención móvil: 7 días, no historial completo.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
@@ -690,6 +691,20 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat('es-UY', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Montevideo' }).format(new Date(timestamp * 1000))
 }
 
+function groupReceiptReport(message, group) {
+  const selfJid = group.selfJid || null
+  const participants = (group.participants || []).map((participant) => participant.jid).filter((jid) => jid && jid !== selfJid)
+  const receipts = Object.entries(message.receipts || {}).map(([participant, receipt]) => ({ participant, ...receipt }))
+  const readBy = new Set(receipts.filter((receipt) => receipt.readAt).map((receipt) => receipt.participant))
+  return {
+    message: { id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, type: message.type },
+    receipts,
+    readBy: [...readBy],
+    withoutReportedReadReceipt: participants.filter((participant) => !readBy.has(participant)),
+    note: 'withoutReportedReadReceipt no significa que la persona no lo vio: WhatsApp puede no enviar el receipt por privacidad, conectividad o porque el bridge no estaba conectado.',
+  }
+}
+
 function printMessages(messages, { ids = false } = {}) {
   if (!messages.length) return console.log('No hay mensajes cacheados para este chat.')
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
@@ -1018,7 +1033,7 @@ async function main() {
     const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
     return printMessages(matches)
   }
-  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'message' || command === 'delivery' || command === 'react') {
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -1116,12 +1131,22 @@ async function main() {
       if (!selected.length) return console.log(`No hay ${command} cacheados para este chat.`)
       return console.log(JSON.stringify(selected.map((message) => ({ id: message.id, timestamp: message.timestamp, fromMe: message.fromMe, [field]: message[field] })), null, 2))
     }
-    if (command === 'message' || command === 'delivery') {
+    if (command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions') {
       const messageId = args.shift()
       if (!messageId) return usage()
       const message = messages.find((item) => item.id === messageId)
       if (!message) throw new Error(`No matching message found: ${messageId}`)
       if (command === 'delivery') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, status: message.status, statusAt: message.statusAt }, null, 2))
+      if (command === 'reactions') return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, reactions: message.reactions || [] }, null, 2))
+      if (command === 'receipts' || command === 'unread-by') {
+        if (!contact.jid.endsWith('@g.us')) {
+          if (command === 'unread-by') throw new Error('unread-by is only available for WhatsApp groups.')
+          return console.log(JSON.stringify({ id: message.id, fromMe: message.fromMe, status: message.status, statusAt: message.statusAt, note: 'Los chats directos sólo exponen el estado agregado que reporta WhatsApp.' }, null, 2))
+        }
+        const report = groupReceiptReport(message, await whatsappGroup(contact.jid))
+        if (command === 'unread-by') return console.log(JSON.stringify({ message: report.message, withoutReportedReadReceipt: report.withoutReportedReadReceipt, note: report.note }, null, 2))
+        return console.log(JSON.stringify(report, null, 2))
+      }
       return console.log(JSON.stringify(message, null, 2))
     }
     if (command === 'react') {
