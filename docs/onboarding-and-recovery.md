@@ -100,7 +100,8 @@ summary or drafted reply.
 `wa latest` is the newest event in the chat. Use `wa latest-incoming` when the
 request is “el último mensaje que me mandó X”: it excludes the user's own later
 messages. Both commands resolve the current LID first and then require fresh
-coverage.
+coverage. Group JIDs (`…@g.us`) can be passed directly to `coverage` and other
+read commands; only direct contacts use LID resolution.
 
 ## Recovery checklist — before ever asking for a QR
 

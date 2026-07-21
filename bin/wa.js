@@ -128,6 +128,7 @@ async function resolve(target) {
     if (aliasMatches.length === 1) return withCurrentJid({ ...alias, jid: aliasMatches[0].jid, alias: key })
     return withCurrentJid({ ...alias, alias: key })
   }
+  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target)) return withCurrentJid({ phone: phoneFromJid(target), jid: target, alias: null, name: null })
   if (/^[+\d][\d\s()-]*$/.test(target)) return withCurrentJid({ phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null })
   const normalizedTarget = normalizeText(target)
   const whatsappMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizedTarget)

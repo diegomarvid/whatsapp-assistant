@@ -43,7 +43,8 @@ npm link
 | `wa latest contacto` | Último evento del chat, sea entrante o saliente |
 | `wa latest-incoming contacto` | Último mensaje recibido de ese contacto |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para operar sobre ellos |
-| `wa coverage contacto` | Indica si el chat reciente está sincronizado o si hay un hueco verificable |
+| `wa coverage contacto` | Indica si un chat directo reciente está sincronizado o si hay un hueco verificable |
+| `wa coverage <grupo-jid>` | Verifica cobertura de un grupo por su JID actual |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
 | `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
@@ -104,6 +105,9 @@ Por eso `wa latest-incoming Florencia` y `wa react Florencia latest-incoming
 vieja. La reacción sólo se ejecuta si la cobertura del chat está `fresh`; el
 message ID y el JID usados para reaccionar provienen de la misma consulta
 confirmada. No hay análisis semántico de mensajes en el CLI.
+
+Los grupos conservan su JID `…@g.us`; pueden pasarse directamente a
+`coverage`, `history` y demás consultas. No se los remapea como contactos.
 
 El mirror conserva, durante esa misma ventana de siete días:
 
