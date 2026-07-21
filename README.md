@@ -123,6 +123,29 @@ reconstruirse del pasado, ejecutar siempre `wa help data` antes de inferir algo.
 Para la instalación y recuperación completa, seguir
 [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md).
 
+## 🤔 ¿Por qué no wacli?
+
+[wacli](https://wacli.sh/) es una excelente CLI de WhatsApp (Go, whatsmeow,
+búsqueda FTS5, canales, multi-cuenta) y para muchos usos es la mejor opción.
+Este proyecto apunta a otra cosa: **que un agente de IA pueda actuar sobre tu
+WhatsApp real sin equivocarse**, y varias decisiones salen de ahí.
+
+| | WhatsApp Assistant | wacli |
+| --- | --- | --- |
+| Modelo | Observer permanente (daemon gestionado) + contrato de frescura | Sync bajo demanda (`sync --follow` opcional) |
+| ¿Actuar sobre cache viejo? | `latest`/`reply`/`react` **se niegan** si el chat no está `fresh` | Devuelve lo que haya sincronizado |
+| Identidad | PN → LID vivo antes de cada acción; ambigüedad = error, nunca adivina el chat | Por chat/contacto sincronizado |
+| Señales | Receipts/reacciones/votos con semántica explícita (“sin receipt ≠ no lo vio”) | Datos crudos |
+| Audio | Transcripción Whisper local opcional | No incluida |
+| Historial | Ventana móvil acotada (7 días default) con poda: privacidad por diseño | Acumula lo sincronizado; backfill best-effort |
+| Superficie WhatsApp | Chats directos y grupos | Más amplia: canales, presencia, multi-cuenta, archivar/fijar |
+| Búsqueda | Substring sobre la ventana | FTS5 full-text |
+
+En corto: si querés WhatsApp completo en la terminal, usá wacli. Si querés que
+Claude Code u otro agente lea y responda tu WhatsApp con un harness que le
+impida contestar al chat equivocado o sobre información vieja, este proyecto
+existe para eso.
+
 ## 🚀 Instalación rápida
 
 ### 🍺 macOS con Homebrew (recomendada)
