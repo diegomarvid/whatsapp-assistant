@@ -12,6 +12,7 @@ import { launchAgentLabel, launchAgentPlist } from '../src/launch-agent.js'
 import { paths } from '../src/runtime-paths.js'
 import { systemdServiceName, systemdUserUnit, systemdUserUnitPath } from '../src/systemd-service.js'
 import { cachedCompatibleModels, defaultModelFor, selectLocalModel, transcriptionBackend } from '../src/transcription-runtime.js'
+import { linksInText } from '../src/message-normalizer.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const { dataDir, stateRoot, logsDir } = paths
@@ -40,7 +41,7 @@ Linux / VPS (Node 22+ y systemd):
   # Si falta Node 22+, instalarlo como usuario normal:
   curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
   . "$HOME/.nvm/nvm.sh" && nvm install 22
-  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz
+  npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
   wa setup                         # imprime el QR en una sesión SSH
   sudo loginctl enable-linger "$USER"  # una vez; sobrevive logout/reboot
   wa doctor
@@ -91,7 +92,7 @@ Comandos:
   wa sticker <alias or phone> <message-id>
   wa files <alias or phone> [limit]
   wa file <alias or phone> <message-id>
-  wa locations|contacts|polls|calls <alias or phone> [limit]
+  wa locations|contacts|polls|calls|links <alias or phone> [limit]
   wa poll <alias or phone> <message-id>
   wa group-events <group> [limit]
   wa message|delivery|receipts|reactions <alias or phone> <message-id>
@@ -106,8 +107,8 @@ Comandos:
 
 function help(topic) {
   const topics = {
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
-    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlatest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz\n    wa setup                       # imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El mirror sólo conserva hasta 7 días recientes; no es un archivo completo.\n  - Al vincular o reconectar, WhatsApp puede entregar una ventana reciente, cuyo tamaño exacto decide WhatsApp.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en esa ventana reciente:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial anterior a la ventana reciente, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan.\n\nComandos útiles: wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
@@ -729,6 +730,10 @@ function pollReport(message, contacts) {
   }
 }
 
+function linksForMessage(message) {
+  return Array.isArray(message.links) && message.links.length ? message.links : linksInText(message.text)
+}
+
 function printMessages(messages, { ids = false } = {}) {
   if (!messages.length) return console.log('No hay mensajes cacheados para este chat.')
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
@@ -1059,7 +1064,7 @@ async function main() {
     const matches = cache.messages.filter((message) => message.timestamp >= cutoff && message.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()) && (scope === 'all' || (scope === 'direct' && isDirectChat(message.jid)) || (scope === 'groups' && message.jid.endsWith('@g.us') && (!allowedGroups || allowedGroups.has(message.jid))))).sort((a, b) => b.timestamp - a.timestamp).slice(0, 100)
     return printMessages(matches)
   }
-  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'links' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -1152,6 +1157,25 @@ async function main() {
       const { document } = await downloadDocument(contact.jid, messageId)
       return console.log(document.path)
     }
+    if (command === 'links') {
+      const limit = Math.min(Math.max(Number.parseInt(args[0] || '20', 10) || 20, 1), 50)
+      const coverage = await request(`/coverage?jid=${encodeURIComponent(contact.jid)}`)
+      const links = messages.flatMap((message) => linksForMessage(message).map((url) => ({
+        messageId: message.id,
+        timestamp: message.timestamp,
+        fromMe: message.fromMe,
+        participant: message.participant,
+        pushName: message.pushName,
+        url,
+      }))).slice(0, limit)
+      if (!links.length) return console.log('No hay URLs http(s) cacheadas para este chat.')
+      return console.log(JSON.stringify({
+        chat: contact.name || target,
+        coverage,
+        links,
+        note: 'URLs extraídas literalmente del contenido cacheado. El CLI no abre, resume ni clasifica destinos; usar la herramienta web de la IA para inspeccionarlos.',
+      }, null, 2))
+    }
     if (command === 'locations' || command === 'contacts' || command === 'polls' || command === 'calls') {
       if (command === 'calls') {
         const calls = messages.filter((message) => message.call).slice(0, Number.parseInt(args[0] || '20', 10))
@@ -1191,7 +1215,7 @@ async function main() {
         if (command === 'unread-by') return console.log(JSON.stringify({ message: report.message, participantCount: report.participantCount, withoutReportedReadReceipt: report.withoutReportedReadReceipt, note: report.note }, null, 2))
         return console.log(JSON.stringify(report, null, 2))
       }
-      return console.log(JSON.stringify(message, null, 2))
+      return console.log(JSON.stringify({ ...message, links: linksForMessage(message) }, null, 2))
     }
     if (command === 'react') {
       const selector = args.shift(); const emoji = args.shift()

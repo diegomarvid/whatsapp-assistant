@@ -18,6 +18,7 @@ test('help gives a new user and an AI an actionable onboarding path', () => {
   assert.match(result.stdout, /wa doctor/)
   assert.match(result.stdout, /latest-incoming/)
   assert.match(result.stdout, /wa image <alias or phone> <message-id>/)
+  assert.match(result.stdout, /wa locations\|contacts\|polls\|calls\|links/)
   assert.doesNotMatch(result.stdout, /image-text/)
 })
 
@@ -29,6 +30,14 @@ test('setup help explains the QR flow without needing a running bridge', () => {
   assert.match(result.stdout, /Node 22/)
   assert.match(result.stdout, /nvm install 22/)
   assert.match(result.stdout, /No ejecutar wa con sudo/)
+})
+
+test('messages help explains that links are structural URLs for the calling AI to inspect', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'messages'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /wa links contacto/)
+  assert.match(result.stdout, /URLs http\(s\) literales/)
+  assert.match(result.stdout, /no abre, resume ni clasifica sitios/)
 })
 
 test('data help distinguishes recent synced facts from live observed events', () => {

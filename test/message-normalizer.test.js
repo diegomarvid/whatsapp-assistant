@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mimeTypeForFile } from '../src/file-mime.js'
-import { safeMessage } from '../src/message-normalizer.js'
+import { linksInText, safeMessage } from '../src/message-normalizer.js'
 import { coverageForChat } from '../src/chat-coverage.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt, receiptReport } from '../src/message-engagement.js'
 
@@ -24,6 +24,15 @@ test('normalizes images and reactions without requiring optional fields', () => 
   assert.equal(image.imageMimetype, 'image/jpeg')
   assert.equal(reaction.reactionToMessageId, 'image-1')
   assert.equal(reaction.reactionText, '👍')
+})
+
+test('extracts literal http links without interpreting their destination', () => {
+  const message = safeMessage({
+    key: { id: 'link-1', remoteJid: 'chat@lid' },
+    message: { extendedTextMessage: { text: 'Mirá https://x.com/shl/status/123?ref=chat, y https://example.com/(demo).', canonicalUrl: 'https://x.com/shl/status/123?ref=chat' } },
+  })
+  assert.deepEqual(message.links, ['https://x.com/shl/status/123?ref=chat', 'https://example.com/(demo)'])
+  assert.deepEqual(linksInText('Sin links o ftp://example.com.'), [])
 })
 
 test('normalizes media and structured WhatsApp facts without interpreting them', () => {

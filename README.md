@@ -45,6 +45,9 @@ interpreta el significado de tus conversaciones por reglas de texto.
   mensajes propios; sin convertir la falta de un receipt en una conclusión.
 - Ver reacciones actuales, encuestas y votos observables, respuestas
   interactivas, ubicaciones, contactos, llamadas perdidas y eventos de grupo.
+- Listar URLs HTTP(S) como hechos estructurales con mensaje, autor, hora e ID;
+  la IA las abre con su propia herramienta web, sin que el bridge scrapee ni
+  clasifique destinos.
 - Conservar el estado actual de mensajes editados, efímeros o revocados dentro
   de la ventana reciente.
 
@@ -171,7 +174,7 @@ node --version # v22 o superior
 Después instalá el paquete desde un release:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz
+npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
 wa setup
 ```
 
@@ -332,6 +335,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa reactions contacto-o-grupo <message-id>` | Reacciones actuales al mensaje, participante, emoji y hora si WhatsApp la reportó. |
 | `wa polls contacto` / `wa poll contacto <message-id>` | Encuestas observadas y sus votos descifrables, agrupados por opción y participante. |
 | `wa calls contacto` | Llamadas perdidas que WhatsApp haya entregado como evento de mensaje. |
+| `wa links contacto` | URLs HTTP(S) literales del chat, con ID, autor, hora y cobertura del mirror; no abre ni resume destinos. |
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes. |

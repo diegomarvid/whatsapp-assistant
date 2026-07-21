@@ -67,7 +67,7 @@ local user, and is excluded from Git.
    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
    . "$HOME/.nvm/nvm.sh" && nvm install 22
    node --version # v22 or newer
-   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.2.tar.gz
+   npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.3.tar.gz
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
@@ -148,6 +148,7 @@ wa history contacto 20
 wa delivery contacto <message-id>
 wa receipts grupo@g.us <message-id>
 wa reactions contacto <message-id>
+wa links contacto
 wa polls contacto
 wa poll contacto <message-id>
 wa calls contacto
@@ -162,6 +163,12 @@ wa send contacto "Mensaje explícitamente pedido por el usuario"
 Aliases live in `data/aliases.json`, not in Git. When the user supplies a stable
 name/number mapping, save it with `wa alias add` so later requests like
 “buscá el último mensaje de un contacto” stay one command.
+
+`wa links contacto` lists literal HTTP(S) URLs from cached messages together
+with their message ID, timestamp, author fields and current coverage. It does
+not fetch previews, follow redirects or classify a destination: the calling AI
+opens an URL with its own browser/web capability. This keeps remote-content
+interpretation outside the bridge and makes the feature language-independent.
 
 `wa transcribe <alias> latest` does this locally:
 

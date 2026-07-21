@@ -44,6 +44,34 @@ export function textOf(message) {
   return textOfContent(unwrapSafeContent(message.message || {}).content)
 }
 
+function cleanUrlCandidate(candidate) {
+  let value = String(candidate || '').trim()
+  // Markdown-style prose commonly puts a closing punctuation mark after a URL.
+  // This is structural cleanup only; it never inspects the meaning of the text.
+  while (value && /[.,!?;:'"}\]]$/u.test(value)) value = value.slice(0, -1)
+  while (value.endsWith(')') && (value.match(/\(/g) || []).length < (value.match(/\)/g) || []).length) value = value.slice(0, -1)
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? value : null
+  } catch {
+    return null
+  }
+}
+
+export function linksInText(text) {
+  const candidates = String(text || '').match(/https?:\/\/[^\s<>"']+/gu) || []
+  return [...new Set(candidates.map(cleanUrlCandidate).filter(Boolean))]
+}
+
+function linksOfContent(content, text) {
+  const extended = content.extendedTextMessage || {}
+  return [...new Set([
+    ...linksInText(text),
+    cleanUrlCandidate(extended.canonicalUrl),
+    cleanUrlCandidate(extended.matchedText),
+  ].filter(Boolean))]
+}
+
 function contextInfoOf(content) {
   return content.extendedTextMessage?.contextInfo || content.imageMessage?.contextInfo || content.videoMessage?.contextInfo || content.documentMessage?.contextInfo || content.audioMessage?.contextInfo || content.stickerMessage?.contextInfo || null
 }
@@ -105,13 +133,15 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
   const video = content.videoMessage
   const sticker = content.stickerMessage
   const pollUpdate = content.pollUpdateMessage
+  const text = textOfContent(content)
   return {
     id: message.key?.id || crypto.randomUUID(),
     jid,
     fromMe: Boolean(message.key?.fromMe),
     participant: message.key?.participant || null,
     timestamp: Number(message.messageTimestamp || Math.floor(Date.now() / 1000)),
-    text: textOfContent(content),
+    text,
+    links: linksOfContent(content, text),
     type: Object.keys(content)[0] || 'unknown',
     pushName: message.pushName || null,
     audioRef: null,
