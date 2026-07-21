@@ -21,6 +21,7 @@ import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, histo
 import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
+import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
 import { parseSince } from '../src/search-scope.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
 import { configureTranscription, pullTranscriptionModel, setupTranscription, transcribe, transcriptionDoctor } from '../src/transcription.js'
@@ -28,6 +29,21 @@ import { configureTranscription, pullTranscriptionModel, setupTranscription, tra
 const packageInfo = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
 const npmInstallCommand = `npm install -g ${packageInfo.name}`
 const { dataDir, stateRoot } = paths
+const pendingOutboundRequests = new PendingOutboundRequests(path.join(dataDir, 'pending-outbound-requests.json'))
+
+function outboundDestination(contact) {
+  return contact.phone || contact.originalJid || contact.jid
+}
+
+async function sendOnce(operation, send) {
+  const pending = await pendingOutboundRequests.claim(operation)
+  const result = await send(pending.requestId)
+  if (result.pending) {
+    throw new Error(`The previous send is still unconfirmed (request ${pending.requestId}). It was not sent again; verify it with the recipient before requesting an explicit new send.`)
+  }
+  await pendingOutboundRequests.complete(pending.fingerprint)
+  return result
+}
 
 function usage() {
   console.log(`WhatsApp Assistant — bridge local de contexto reciente
@@ -113,7 +129,7 @@ Comandos:
 function help(topic) {
   const topics = {
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
-    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
+    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
@@ -444,8 +460,11 @@ async function main() {
     if (!target || !text) return usage()
     const contact = await resolve(target)
     ensureMentionsAreForGroup(contact.jid, mentions)
-    const result = await sendMessage(contact.jid, text, null, mentions)
-    return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
+    const result = await sendOnce(
+      { kind: 'text', to: outboundDestination(contact), text, mentions, replyToMessageId: null },
+      (requestId) => sendMessage(contact.jid, text, null, mentions, requestId),
+    )
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
   }
   if (command === 'reply') {
     const target = args.shift()
@@ -454,8 +473,11 @@ async function main() {
     if (!target || !selector || !text) return usage()
     const contact = await resolve(target)
     const quoted = await resolveMessageSelector(contact, selector)
-    const result = await sendMessage(contact.jid, text, quoted.id)
-    return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}.`)
+    const result = await sendOnce(
+      { kind: 'reply', to: outboundDestination(contact), text, mentions: [], replyToMessageId: quoted.id },
+      (requestId) => sendMessage(contact.jid, text, quoted.id, [], requestId),
+    )
+    return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
   }
   if (command === 'send-file') {
     const target = args.shift()
@@ -468,8 +490,11 @@ async function main() {
     if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
     const contact = await resolve(target)
     const replyTo = replySelector ? (await resolveMessageSelector(contact, replySelector)).id : null
-    const result = await sendFile(contact.jid, file, caption, replyTo)
-    return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
+    const result = await sendOnce(
+      { kind: 'document', to: outboundDestination(contact), file: { path: file, size: stat.size, modifiedAt: stat.mtimeMs }, caption, replyToMessageId: replyTo },
+      (requestId) => sendFile(contact.jid, file, caption, replyTo, requestId),
+    )
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
   }
   if (command === 'send-image' || command === 'send-video' || command === 'send-audio') {
     const target = args.shift()
@@ -488,8 +513,12 @@ async function main() {
     ensureMentionsAreForGroup(contact.jid, mentions)
     const replyTo = replySelector ? (await resolveMessageSelector(contact, replySelector)).id : null
     const kind = command.replace('send-', '')
-    const result = await sendMedia(contact.jid, kind, file, values.join(' ').trim(), mentions, voice, replyTo)
-    return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}.`)
+    const caption = values.join(' ').trim()
+    const result = await sendOnce(
+      { kind, to: outboundDestination(contact), file: { path: file, size: stat.size, modifiedAt: stat.mtimeMs }, caption, mentions, voice, replyToMessageId: replyTo },
+      (requestId) => sendMedia(contact.jid, kind, file, caption, mentions, voice, replyTo, requestId),
+    )
+    return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
   }
   if (command === 'edit') {
     const target = args.shift()

@@ -223,6 +223,16 @@ forward them again rather than re-linking just for one image.
 directly asked to send that exact message; never infer a send from a search,
 summary or drafted reply.
 
+All explicit outbound operations (`send`, `reply`, `send-file` and media sends)
+are idempotent for 24 hours. The CLI gives a repeated, previously unconfirmed
+operation the same private request ID. If WhatsApp accepted it and the local
+HTTP response was lost, the bridge returns the original confirmation instead of
+sending it twice. If the bridge stopped after recording the request as pending,
+the result remains deliberately uncertain and the CLI refuses to resend it
+blindly. Inspect the recipient/chat first; send a replacement only after an
+explicit request. The local pending record stores a fingerprint only, never the
+message text, caption, recipient number, or file path.
+
 `wa latest` is the newest event in the chat. Use `wa latest-incoming` when the
 request is “el último mensaje que me mandó X”: it excludes the user's own later
 messages. Both commands resolve the current LID first and then require fresh

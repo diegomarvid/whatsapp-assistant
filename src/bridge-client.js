@@ -92,16 +92,16 @@ export function reactToMessage(jid, messageId, emoji) {
   return bridgePost('/messages/react', { jid, messageId, emoji }, 'Could not react')
 }
 
-export function sendMessage(jid, text, replyToMessageId = null, mentions = []) {
-  return bridgePost('/messages/send', { jid, text, replyToMessageId, mentions }, 'Could not send message')
+export function sendMessage(jid, text, replyToMessageId = null, mentions = [], requestId = null) {
+  return bridgePost('/messages/send', { jid, text, replyToMessageId, mentions, requestId }, 'Could not send message')
 }
 
-export function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false, replyToMessageId = null) {
-  return bridgePost('/media/send', { jid, kind, filePath, caption, mentions, voice, replyToMessageId }, `Could not send ${kind}`)
+export function sendMedia(jid, kind, filePath, caption = '', mentions = [], voice = false, replyToMessageId = null, requestId = null) {
+  return bridgePost('/media/send', { jid, kind, filePath, caption, mentions, voice, replyToMessageId, requestId }, `Could not send ${kind}`)
 }
 
-export function sendFile(jid, filePath, caption, replyToMessageId = null) {
-  return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId }, 'Could not send document')
+export function sendFile(jid, filePath, caption, replyToMessageId = null, requestId = null) {
+  return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId, requestId }, 'Could not send document')
 }
 
 export function editMessage(jid, messageId, text) {

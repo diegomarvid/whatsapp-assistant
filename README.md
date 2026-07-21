@@ -495,6 +495,19 @@ El bridge nunca envía, reacciona ni responde por su cuenta. `send`, `send-file`
 `react` y `reply` requieren un comando explícito; las operaciones que usan
 `latest` sólo se ejecutan si el mismo chat tiene cobertura `fresh`.
 
+### 🛡️ Confirmación de envíos
+
+Cada envío explícito (`send`, `reply` y cualquier adjunto) lleva un identificador
+de idempotencia privado durante 24 horas. Si WhatsApp aceptó el envío pero la
+respuesta local se perdió —por una desconexión o un timeout— repetir exactamente
+el comando recupera la confirmación original; **no crea un segundo mensaje**.
+
+Si el bridge se interrumpió cuando el estado quedó incierto, el CLI responde que
+el envío anterior sigue sin confirmar y tampoco lo reintenta a ciegas. Verificá
+primero con el destinatario o con `wa history`; sólo enviá un reemplazo si se
+pidió explícitamente. El registro local conserva únicamente un fingerprint, no
+el texto, caption, número ni ruta del archivo.
+
 ## 🏗️ Cómo se mantiene actualizado
 
 WhatsApp puede representar el mismo contacto con un número telefónico (PN,

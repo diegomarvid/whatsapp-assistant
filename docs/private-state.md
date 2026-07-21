@@ -22,6 +22,7 @@ pull requests.
 | `data/bridge-token` | Loopback API bearer token. |
 | `data/aliases.json` | Personal aliases, names and phone-number mappings. |
 | `data/mirror.sqlite` (and WAL files) | Durable seven-day mirror: normalized messages, raw recovery envelopes, retry counters and redacted technical event audit. |
+| `data/pending-outbound-requests.json` | Private 24-hour fingerprints for unconfirmed outbound requests; prevents a lost response from producing a duplicate send. It contains no message text, caption, number, or file path. |
 | `data/messages.json` | Legacy cache used only for one-time migration into the SQLite mirror. |
 | `data/audio-envelopes/` | Private metadata needed to download selected recent audios. |
 | `data/audio/` | Audio files downloaded only for requested transcriptions. |

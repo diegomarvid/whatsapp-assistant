@@ -22,6 +22,7 @@ import { safeMessage } from './message-normalizer.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
+import { IdempotentSender, validOutboundRequestId } from './outbound-idempotency.js'
 import { quotedReplyEnvelope } from './quoted-reply.js'
 import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
@@ -66,6 +67,7 @@ let fullPersistPending = true
 let lastLiveMessageAt = null
 let mirrorStore = null
 let msgRetryCounterCache = null
+let outboundSender = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -660,6 +662,13 @@ function json(response, status, body) {
   response.end(JSON.stringify(body, null, 2))
 }
 
+async function sendIdempotently({ requestId, send }) {
+  if (requestId != null && !validOutboundRequestId(requestId)) throw new Error('invalid_send_request_id')
+  const outcome = await outboundSender.execute(requestId || null, send)
+  if (outcome.pending) return { pending: true, requestId: outcome.requestId }
+  return { sent: true, id: outcome.result?.key?.id || null, replayed: outcome.replayed }
+}
+
 function listenLocal(server) {
   return new Promise((resolve, reject) => {
     const onStartupError = (error) => {
@@ -1126,6 +1135,7 @@ async function main() {
   await ensurePrivateDir(downloadedStickerDir)
   mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
   msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
+  outboundSender = new IdempotentSender({ store: mirrorStore.createRetryCache('outbound-send', { ttlSeconds: 24 * 60 * 60 }) })
   cache = mirrorStore.load()
   if (mirrorStore.isEmpty()) cache = await readJson(cachePath, cache)
   ensureCacheShape()
@@ -1209,15 +1219,18 @@ async function main() {
       return json(response, 200, chatCoverage(jid))
     }
     if (isMessageSend) {
-      requestBody(request).then(async ({ jid, text, replyToMessageId, mentions }) => {
+      requestBody(request).then(async ({ jid, text, replyToMessageId, mentions, requestId }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
         if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
         const options = quotedSendOptions(jid, replyToMessageId)
         if (!options) return json(response, 404, { error: 'reply_target_not_found' })
-        const result = await socket.sendMessage(jid, { text: text.trim(), mentions: mentions?.length ? mentions : undefined }, options)
-        json(response, 200, { sent: true, id: result?.key?.id || null })
+        const result = await sendIdempotently({
+          requestId,
+          send: () => socket.sendMessage(jid, { text: text.trim(), mentions: mentions?.length ? mentions : undefined }, options),
+        })
+        json(response, result.pending ? 202 : 200, result)
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return
     }
@@ -1258,7 +1271,7 @@ async function main() {
       return
     }
     if (isDocumentSend) {
-      requestBody(request).then(async ({ jid, filePath, caption, replyToMessageId }) => {
+      requestBody(request).then(async ({ jid, filePath, caption, replyToMessageId, requestId }) => {
         if (!jid || typeof filePath !== 'string' || !filePath) return json(response, 400, { error: 'invalid_document' })
         if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
         if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
@@ -1266,18 +1279,21 @@ async function main() {
         const options = quotedSendOptions(jid, replyToMessageId)
         if (!options) return json(response, 404, { error: 'reply_target_not_found' })
         const document = await fs.readFile(filePath)
-        const result = await socket.sendMessage(jid, {
-          document,
-          fileName: path.basename(filePath),
-          mimetype: mimeTypeForFile(filePath),
-          caption: caption?.trim() || undefined,
-        }, options)
-        json(response, 200, { sent: true, id: result?.key?.id || null })
+        const result = await sendIdempotently({
+          requestId,
+          send: () => socket.sendMessage(jid, {
+            document,
+            fileName: path.basename(filePath),
+            mimetype: mimeTypeForFile(filePath),
+            caption: caption?.trim() || undefined,
+          }, options),
+        })
+        json(response, result.pending ? 202 : 200, result)
       }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
       return
     }
     if (isMediaSend) {
-      requestBody(request).then(async ({ jid, filePath, kind, caption, mentions, voice, replyToMessageId }) => {
+      requestBody(request).then(async ({ jid, filePath, kind, caption, mentions, voice, replyToMessageId, requestId }) => {
         if (!jid || typeof filePath !== 'string' || !['image', 'video', 'audio'].includes(kind)) return json(response, 400, { error: 'invalid_media' })
         if (caption !== undefined && typeof caption !== 'string') return json(response, 400, { error: 'invalid_caption' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
@@ -1294,8 +1310,8 @@ async function main() {
           mentions: mentions?.length ? mentions : undefined,
           ptt: kind === 'audio' && Boolean(voice),
         }
-        const result = await socket.sendMessage(jid, content, options)
-        json(response, 200, { sent: true, id: result?.key?.id || null })
+        const result = await sendIdempotently({ requestId, send: () => socket.sendMessage(jid, content, options) })
+        json(response, result.pending ? 202 : 200, result)
       }).catch((error) => json(response, 422, { error: 'media_send_failed', message: error.message }))
       return
     }

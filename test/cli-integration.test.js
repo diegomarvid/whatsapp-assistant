@@ -121,11 +121,14 @@ test('search-all queries the bridge with scope and group list', async () => {
 test('reply quotes the confirmed latest incoming message', async () => {
   const result = await wa('reply', 'Gisell', 'latest-incoming', 'Entendido')
   assert.equal(result.status, 0, result.stderr)
-  assert.deepEqual(lastWrite(), {
-    path: '/messages/send',
-    query: {},
-    body: { jid: '111@lid', text: 'Entendido', replyToMessageId: 'IN-2', mentions: [] },
-  })
+  const write = lastWrite()
+  assert.equal(write.path, '/messages/send')
+  assert.deepEqual(write.query, {})
+  assert.equal(write.body.jid, '111@lid')
+  assert.equal(write.body.text, 'Entendido')
+  assert.equal(write.body.replyToMessageId, 'IN-2')
+  assert.deepEqual(write.body.mentions, [])
+  assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
 })
 
 test('react targets the selected message id', async () => {
@@ -170,6 +173,18 @@ test('send-image can quote a message with --reply-to', async () => {
   assert.equal(write.body.kind, 'image')
   assert.equal(write.body.caption, 'una caption')
   assert.equal(write.body.replyToMessageId, 'IN-2')
+  assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
+})
+
+test('send-file gives the bridge a durable idempotency request id', async () => {
+  const document = path.join(bridge.stateRoot, 'recap.pdf')
+  await fs.writeFile(document, '%PDF-test')
+  const result = await wa('send-file', 'Gisell', document, 'resumen')
+  assert.equal(result.status, 0, result.stderr)
+  const write = lastWrite()
+  assert.equal(write.path, '/documents/send')
+  assert.equal(write.body.caption, 'resumen')
+  assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
 })
 
 test('calls and group-events consult the events endpoint', async () => {
