@@ -52,6 +52,7 @@ npm link
 | `wa image-text contacto <id>` | Hace OCR local de una imagen seleccionada |
 | `wa files contacto` / `wa file contacto <id>` | Lista o descarga un documento entrante seleccionado |
 | `wa react contacto latest-incoming 👍` | Reacciona explícitamente al último mensaje entrante |
+| `wa reply contacto latest-incoming "Entendido"` | Responde citando un mensaje concreto |
 | `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un PDF con un mensaje al contacto resuelto |
 

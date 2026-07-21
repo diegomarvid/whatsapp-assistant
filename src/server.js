@@ -393,10 +393,19 @@ async function main() {
       return
     }
     if (isMessageSend) {
-      requestBody(request).then(async ({ jid, text }) => {
+      requestBody(request).then(async ({ jid, text, replyToMessageId }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
+        if (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
-        const result = await socket.sendMessage(jid, { text: text.trim() })
+        const quoted = replyToMessageId ? cache.messages.find((message) => message.jid === jid && message.id === replyToMessageId) : null
+        if (replyToMessageId && !quoted) return json(response, 404, { error: 'reply_target_not_found' })
+        const contextInfo = quoted ? {
+          stanzaId: quoted.id,
+          participant: quoted.participant || undefined,
+          remoteJid: jid,
+          quotedMessage: quoted.text ? { conversation: quoted.text } : undefined,
+        } : undefined
+        const result = await socket.sendMessage(jid, { text: text.trim(), contextInfo })
         json(response, 200, { sent: true, id: result?.key?.id || null })
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return

@@ -42,6 +42,7 @@ function usage() {
   wa file <alias or phone> <message-id>
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
   wa send <alias or phone> <message>
+  wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
   wa send-file <alias or phone> <file> [caption]`)
 }
 
@@ -179,12 +180,12 @@ async function reactToMessage(jid, messageId, emoji) {
   return response.json()
 }
 
-async function sendMessage(jid, text) {
+async function sendMessage(jid, text, replyToMessageId = null) {
   const token = (await fs.readFile(tokenPath, 'utf8')).trim()
   const response = await fetch(`${baseUrl}/messages/send`, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jid, text }),
+    body: JSON.stringify({ jid, text, replyToMessageId }),
   })
   if (!response.ok) throw new Error(`Could not send message: ${(await response.json()).message || response.status}`)
   return response.json()
@@ -441,6 +442,18 @@ async function main() {
     const contact = await resolve(target)
     const result = await sendMessage(contact.jid, text)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
+  }
+  if (command === 'reply') {
+    const target = args.shift()
+    const selector = args.shift()
+    const text = args.join(' ').trim()
+    if (!target || !selector || !text) return usage()
+    const contact = await resolve(target)
+    const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
+    const quoted = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages.find((message) => message.id === selector)
+    if (!quoted) throw new Error(`No matching message found for reply selector: ${selector}`)
+    const result = await sendMessage(contact.jid, text, quoted.id)
+    return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}.`)
   }
   if (command === 'send-file') {
     const target = args.shift()
