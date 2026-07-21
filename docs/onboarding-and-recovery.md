@@ -69,7 +69,7 @@ local user, and is excluded from Git.
    existing linked-device session:
 
    ```bash
-   wa migrate-state ~/Documents/whatsapp-assistant
+   wa migrate-state /path/to/old/checkout
    wa setup
    ```
 
@@ -86,6 +86,10 @@ local user, and is excluded from Git.
    wa setup
    sudo loginctl enable-linger "$USER"
    ```
+
+   Modern npm may warn that dependency `postinstall` scripts were skipped
+   (`allow-scripts ... baileys, protobufjs`). That warning is expected and
+   harmless: the bridge runs without those scripts.
 
    `wa setup` installs `whatsapp-assistant.service` as a systemd user service,
    writes private runtime state to `~/.local/state/whatsapp-assistant/` by

@@ -14,6 +14,15 @@ persona configure conscientemente durante el onboarding.
 No es una integración oficial de WhatsApp. Nunca publica una API a Internet ni
 interpreta el significado de tus conversaciones por reglas de texto.
 
+**Instalación en dos líneas** (detalle en [Instalación rápida](#-instalación-rápida)):
+
+```bash
+# macOS
+brew tap diegomarvid/tap && brew install whatsapp-assistant && wa setup
+# Linux / VPS (Node 22+ y systemd)
+npm install -g @diegomarvid/whatsapp-assistant && wa setup
+```
+
 ![Arquitectura del bridge local](docs/assets/whatsapp-assistant-architecture.drawio.png)
 
 ## ⚡ Una conexión, mucho más contexto útil
@@ -132,11 +141,12 @@ solicitud puede tardar, consumir más disco y WhatsApp puede entregar menos —o
 fallar el sync—; no se borra la sesión para cambiarla. Después del vínculo
 inicial, el servicio se reconecta automáticamente al iniciar sesión en macOS.
 
-Si ya usabas el checkout de este repositorio, migrá primero el estado privado
-para conservar la sesión y el mirror sin escanear otro QR:
+Si venías corriendo el bridge desde un checkout de desarrollo de este
+repositorio, migrá primero el estado privado para conservar la sesión y el
+mirror sin escanear otro QR (una instalación nueva no necesita este paso):
 
 ```bash
-wa migrate-state ~/Documents/whatsapp-assistant
+wa migrate-state /ruta/al/checkout
 wa setup
 ```
 
@@ -205,6 +215,16 @@ Después instalá el paquete público desde npm:
 npm install -g @diegomarvid/whatsapp-assistant
 wa setup
 ```
+
+npm moderno puede avisar que omitió scripts `postinstall` de dependencias
+(`allow-scripts ... baileys, protobufjs`). Es esperable e inofensivo: el bridge
+funciona sin esos scripts y no hace falta habilitarlos.
+
+Si `npm install -g` falla con `EACCES` es porque el Node instalado es del
+sistema (root). La salida recomendada es instalar Node con `nvm` como el
+usuario final (arriba); alternativamente `sudo npm install -g …` funciona,
+pero el estado privado y el servicio siguen siendo del usuario que corre
+`wa setup`, nunca de root.
 
 `wa setup` crea un servicio de usuario de systemd en
 `~/.config/systemd/user/whatsapp-assistant.service`, conserva el estado privado
