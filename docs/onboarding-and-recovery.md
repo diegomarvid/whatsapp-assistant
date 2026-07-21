@@ -18,8 +18,9 @@ to scan a QR code.
   The provider chooses the precise size of that initial recent window.
 - The local cache keeps only the newest 30 days, capped at 10,000 messages.
   Older data is deliberately pruned. This is not a complete WhatsApp archive.
-- Audio envelopes for messages within that same window are stored privately so
-  their audio can be downloaded later only when a transcription is requested.
+- Audio and image envelopes for messages within that same window are stored
+  privately so selected media can be downloaded later on demand. Images are
+  retained only locally for the same 30-day window; they are never uploaded.
 
 All sensitive runtime state is under `data/` or `auth/`, is private to the
 local user, and is excluded from Git.
@@ -59,6 +60,8 @@ wa latest contacto
 wa history contacto 20
 wa search contacto "presupuesto"
 wa transcribe contacto latest
+wa images contacto
+wa image contacto <message-id>
 wa send contacto "Mensaje explícitamente pedido por el usuario"
 ```
 
@@ -72,6 +75,12 @@ name/number mapping, save it with `wa alias add` so later requests like
 2. Uses Baileys to download only that selected audio.
 3. Runs `ct transcribe <audio> es`.
 4. Prints the transcript. It does not send anything to the contact.
+
+`wa images <alias>` lists cached images and whether the encrypted media envelope
+is available. `wa image <alias> <message-id>` downloads only that selected image
+to the private `data/images/` directory. Images that arrived before image capture
+was enabled cannot be recovered from the existing cache; ask the sender to
+forward them again rather than re-linking just for one image.
 
 `wa send <alias> "texto"` sends a text message. Use it only when the user has
 directly asked to send that exact message; never infer a send from a search,

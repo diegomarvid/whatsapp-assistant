@@ -30,6 +30,8 @@ function usage() {
   wa history <alias or phone> [limit]
   wa search <alias or phone> <text>
   wa transcribe <alias or phone> latest
+  wa images <alias or phone> [limit]
+  wa image <alias or phone> <message-id>
   wa send <alias or phone> <message>
   wa send-file <alias or phone> <file> [caption]`)
 }
@@ -131,6 +133,16 @@ async function downloadAudio(jid, messageId) {
     headers: { authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Could not download audio: ${(await response.json()).message || response.status}`)
+  return response.json()
+}
+
+async function downloadImage(jid, messageId) {
+  const token = (await fs.readFile(tokenPath, 'utf8')).trim()
+  const response = await fetch(`${baseUrl}/images/download?jid=${encodeURIComponent(jid)}&messageId=${encodeURIComponent(messageId)}`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Could not download image: ${(await response.json()).message || response.status}`)
   return response.json()
 }
 
@@ -408,7 +420,7 @@ async function main() {
     const result = await sendFile(contact.jid, file, caption)
     return console.log(`Sent${result.id ? ` (${result.id})` : ''}.`)
   }
-  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe') {
+  if (command === 'latest' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'images' || command === 'image') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -422,6 +434,23 @@ async function main() {
       const { audio: downloaded } = await downloadAudio(contact.jid, audio.id)
       console.log(await transcribe(downloaded.path))
       return
+    }
+    if (command === 'images') {
+      const limit = Math.min(Math.max(Number.parseInt(args[0] || '20', 10) || 20, 1), 50)
+      const images = messages.filter((message) => message.type === 'imageMessage').slice(0, limit)
+      if (!images.length) return console.log('No hay imágenes cacheadas para este chat.')
+      for (const image of images) {
+        const availability = image.imageRef ? 'disponible' : 'sin captura local'
+        const caption = image.text ? ` — ${image.text.slice(0, 500)}` : ''
+        console.log(`${formatTime(image.timestamp)} — ${image.id} (${availability})${caption}`)
+      }
+      return
+    }
+    if (command === 'image') {
+      const messageId = args.shift()
+      if (!messageId) return usage()
+      const { image } = await downloadImage(contact.jid, messageId)
+      return console.log(image.path)
     }
     const query = args.join(' ').trim().toLocaleLowerCase()
     if (!query) return usage()
