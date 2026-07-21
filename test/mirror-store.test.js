@@ -44,3 +44,33 @@ test('updates an existing event by chat and message identity', () => {
   store.close()
   fs.rmSync(directory, { recursive: true, force: true })
 })
+
+test('keeps a recent raw message envelope available for Baileys retries', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
+  const filename = path.join(directory, 'mirror.sqlite')
+  const store = new MirrorStore(filename, { retentionDays: 7 })
+  const payload = Buffer.from('serialized-message')
+  store.saveMessageContent({ jid: 'chat@lid', id: 'one', timestamp: 100, payload })
+  assert.deepEqual(store.loadMessageContent({ jid: 'chat@lid', id: 'one' }), payload)
+  store.persist({ messages: [], chats: {}, contacts: {}, sync: {} }, 100 + (8 * 86400))
+  assert.equal(store.loadMessageContent({ jid: 'chat@lid', id: 'one' }), null)
+  store.close()
+  fs.rmSync(directory, { recursive: true, force: true })
+})
+
+test('persists retry counters across a store reopen', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
+  const filename = path.join(directory, 'mirror.sqlite')
+  const store = new MirrorStore(filename)
+  const retryCache = store.createRetryCache('message-retry', { ttlSeconds: 3600 })
+  retryCache.set('message:participant', 2)
+  store.close()
+
+  const reopened = new MirrorStore(filename)
+  const reopenedRetryCache = reopened.createRetryCache('message-retry', { ttlSeconds: 3600 })
+  assert.equal(reopenedRetryCache.get('message:participant'), 2)
+  reopenedRetryCache.del('message:participant')
+  assert.equal(reopenedRetryCache.get('message:participant'), undefined)
+  reopened.close()
+  fs.rmSync(directory, { recursive: true, force: true })
+})

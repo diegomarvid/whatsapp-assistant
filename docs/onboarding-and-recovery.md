@@ -19,9 +19,14 @@ to scan a QR code.
 - The durable local SQLite mirror keeps only the newest seven days, capped at
   10,000 messages. Older data is deliberately pruned. This is not a complete
   WhatsApp archive.
-- Audio and image envelopes for messages within that same seven-day window are stored
-  privately so selected media can be downloaded later on demand. Images are
-  retained only locally for the same 30-day window; they are never uploaded.
+- A recoverable raw-message envelope, plus audio/image/document envelopes where
+  applicable, is retained privately for that same seven-day window. This lets
+  Baileys retry or resolve an incomplete recent message without widening the
+  local retention policy. The envelopes are never uploaded.
+- The bridge records a seven-day technical event audit (event kind, chat/message
+  identifiers, timestamps and payload type; never message text) so a missing
+  message can be diagnosed as an upstream event, placeholder, update, or local
+  ingestion issue.
 
 All sensitive runtime state is under `data/` or `auth/`, is private to the
 local user, and is excluded from Git.

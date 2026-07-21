@@ -46,6 +46,7 @@ let cache = { messages: [], chats: {}, contacts: {}, sync: {} }
 let cacheSaveQueue = Promise.resolve()
 let lastLiveMessageAt = null
 let mirrorStore = null
+let msgRetryCounterCache = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -195,14 +196,70 @@ async function cacheDocumentEnvelope(rawMessage, message) {
   message.documentRef = filename
 }
 
+function auditMessageEvent(raw, event, detail = null) {
+  try {
+    mirrorStore?.recordEvent({
+      event,
+      jid: raw?.key?.remoteJid || null,
+      messageId: raw?.key?.id || null,
+      messageTimestamp: Number(raw?.messageTimestamp || 0) || null,
+      messageType: Object.keys(raw?.message || {})[0] || null,
+      detail,
+    })
+  } catch (error) {
+    // Auditing must never interfere with WhatsApp message delivery.
+    logger.warn({ err: error }, 'Could not record WhatsApp event audit')
+  }
+}
+
+function retainMessageContent(raw) {
+  const jid = raw?.key?.remoteJid
+  const id = raw?.key?.id
+  if (!jid || !id || !raw?.message || Object.keys(raw.message).length === 0) return
+  mirrorStore?.saveMessageContent({
+    jid,
+    id,
+    timestamp: Number(raw.messageTimestamp || nowSeconds()),
+    payload: serialize(raw.message),
+  })
+}
+
+async function getMessageFromMirror(key) {
+  const jid = key?.remoteJid
+  const id = key?.id
+  if (!jid || !id) return undefined
+  try {
+    const payload = mirrorStore?.loadMessageContent({ jid, id })
+    return payload ? deserialize(payload) : undefined
+  } catch (error) {
+    auditMessageEvent({ key }, 'message.content_load_failed', { error: error.message })
+    logger.warn({ err: error, jid, messageId: id }, 'Could not load message content for Baileys retry')
+    return undefined
+  }
+}
+
+function mergeIncomingMessage(existing, incoming) {
+  const refs = {
+    audioRef: existing.audioRef,
+    imageRef: existing.imageRef,
+    documentRef: existing.documentRef,
+  }
+  const hasUsableContent = incoming.type !== 'unknown' || incoming.text || incoming.reactionText
+  if (hasUsableContent) Object.assign(existing, incoming)
+  Object.assign(existing, refs)
+}
+
 async function ingestMessages(messages, source = 'history') {
   let changed = false
   for (const raw of messages) {
     try {
+      auditMessageEvent(raw, `messages.${source}`)
+      retainMessageContent(raw)
       const message = safeMessage(raw, { source })
       if (!message) continue
       const existing = cache.messages.find((item) => item.id === message.id && item.jid === message.jid)
       if (existing) {
+      mergeIncomingMessage(existing, message)
       if (message.pushName && !existing.pushName) {
         existing.pushName = message.pushName
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
@@ -265,6 +322,7 @@ async function ingestMessages(messages, source = 'history') {
       }
       changed = true
     } catch (error) {
+      auditMessageEvent(raw, 'message.ingest_failed', { error: error.message })
       logger.error({ err: error, messageId: raw?.key?.id, jid: raw?.key?.remoteJid }, 'Skipped malformed WhatsApp payload; bridge remains connected')
     }
   }
@@ -397,6 +455,99 @@ function isAuthorized(request, token) {
   return supplied.length === token.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
 }
 
+async function applyMessageUpdates(updates) {
+  let changed = false
+  for (const { key, update } of updates || []) {
+    const jid = key?.remoteJid
+    const id = key?.id
+    if (!jid || !id) continue
+    try {
+      mirrorStore?.recordEvent({
+        event: 'messages.update',
+        jid,
+        messageId: id,
+        messageTimestamp: Number(update?.messageTimestamp || 0) || null,
+        messageType: Object.keys(update?.message || {})[0] || null,
+        detail: {
+          hasContent: Boolean(update?.message && Object.keys(update.message).length),
+          stubType: update?.messageStubType ?? null,
+          status: update?.status ?? null,
+        },
+      })
+      if (!update?.message || Object.keys(update.message).length === 0) continue
+      const existing = cache.messages.find((message) => message.jid === jid && message.id === id)
+      const raw = {
+        key,
+        messageTimestamp: update.messageTimestamp || existing?.timestamp || nowSeconds(),
+        message: update.message,
+        pushName: existing?.pushName || null,
+      }
+      const ingested = await ingestMessages([raw], 'update')
+      changed = changed || ingested
+    } catch (error) {
+      mirrorStore?.recordEvent({ event: 'messages.update_failed', jid, messageId: id, detail: { error: error.message } })
+      logger.error({ err: error, jid, messageId: id }, 'Could not apply WhatsApp message update; bridge remains connected')
+    }
+  }
+  return changed
+}
+
+async function handleHistorySet({ messages, chats, contacts }) {
+  for (const chat of chats || []) {
+    if (chat.id) {
+      const previousChat = cache.chats[chat.id] || {}
+      const remoteLastTimestamp = Number(chat.conversationTimestamp || 0)
+      cache.chats[chat.id] = {
+        ...previousChat,
+        jid: chat.id,
+        name: chat.name || previousChat.name || null,
+        lastTimestamp: Math.max(Number(previousChat.lastTimestamp || 0), remoteLastTimestamp),
+        remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), remoteLastTimestamp),
+      }
+    }
+  }
+  for (const contact of contacts || []) {
+    if (contact.id) cache.contacts[contact.id] = {
+      id: contact.id,
+      name: contact.name || contact.notify || contact.verifiedName || null,
+    }
+  }
+  cache.sync.lastHistorySyncAt = nowSeconds()
+  await ingestMessages(messages || [], 'history')
+  cache.sync.lastPersistedAt = nowSeconds()
+  await saveCache()
+}
+
+async function handleConnectionUpdate({ connection: next, lastDisconnect, qr }) {
+  if (qr) {
+    console.log('\nScan this QR in WhatsApp: Settings → Linked devices → Link a device\n')
+    qrcodeTerminal.generate(qr, { small: true })
+    await QRCode.toFile(qrPath, qr, { width: 720, margin: 2, errorCorrectionLevel: 'M' })
+    await fs.chmod(qrPath, 0o600)
+    console.log(`QR image saved to ${qrPath}`)
+  }
+  if (next === 'open') {
+    connection = 'open'
+    lastError = null
+    cache.sync.connectedAt = nowSeconds()
+    cache.sync.lastConnectedAt = cache.sync.connectedAt
+    cache.sync.ingestionHealthy = true
+    await saveCache()
+    await fs.rm(qrPath, { force: true })
+    console.log('WhatsApp bridge connected (read-only).')
+  }
+  if (next === 'close') {
+    const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
+    connection = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
+    lastError = statusCode ? `WhatsApp disconnect (${statusCode})` : 'WhatsApp disconnected'
+    cache.sync.lastDisconnectedAt = nowSeconds()
+    cache.sync.ingestionHealthy = false
+    await saveCache()
+    if (statusCode !== DisconnectReason.loggedOut) reconnectTimer = setTimeout(() => connect().catch(console.error), 3000)
+    else console.error('WhatsApp logged this bridge out. Delete auth/ and restart to link it again.')
+  }
+}
+
 async function connect() {
   clearTimeout(reconnectTimer)
   connection = 'connecting'
@@ -408,80 +559,36 @@ async function connect() {
     logger,
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    getMessage: getMessageFromMirror,
+    msgRetryCounterCache,
   })
 
-  socket.ev.on('creds.update', saveCreds)
-  socket.ev.on('messages.upsert', ({ messages }) => {
-    lastLiveMessageAt = nowSeconds()
-    ingestMessages(messages, 'live')
-      .then(async (changed) => {
+  socket.ev.process(async (events) => {
+    try {
+      if (events['creds.update']) await saveCreds()
+      if (events['connection.update']) await handleConnectionUpdate(events['connection.update'])
+      if (events['messaging-history.set']) await handleHistorySet(events['messaging-history.set'])
+      if (events['messages.upsert']) {
+        const { messages } = events['messages.upsert']
+        lastLiveMessageAt = nowSeconds()
+        const changed = await ingestMessages(messages, 'live')
         cache.sync.ingestionHealthy = true
         cache.sync.lastIngestError = null
         cache.sync.lastPersistedAt = nowSeconds()
         if (changed) await saveCache()
-      })
-      .catch((error) => {
-        cache.sync.ingestionHealthy = false
-        cache.sync.lastIngestError = error.message
-        saveCache().catch(() => {})
-        logger.error({ err: error }, 'Could not ingest incoming WhatsApp messages; bridge remains connected')
-      })
-  })
-  socket.ev.on('messaging-history.set', ({ messages, chats, contacts }) => {
-    ;(async () => {
-      for (const chat of chats || []) {
-        if (chat.id) {
-          const previousChat = cache.chats[chat.id] || {}
-          const remoteLastTimestamp = Number(chat.conversationTimestamp || 0)
-          cache.chats[chat.id] = {
-            ...previousChat,
-            jid: chat.id,
-            name: chat.name || previousChat.name || null,
-            lastTimestamp: Math.max(Number(previousChat.lastTimestamp || 0), remoteLastTimestamp),
-            remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), remoteLastTimestamp),
-          }
+      }
+      if (events['messages.update']) {
+        const changed = await applyMessageUpdates(events['messages.update'])
+        if (changed) {
+          cache.sync.lastPersistedAt = nowSeconds()
+          await saveCache()
         }
       }
-      for (const contact of contacts || []) {
-        if (contact.id) cache.contacts[contact.id] = {
-          id: contact.id,
-          name: contact.name || contact.notify || contact.verifiedName || null,
-        }
-      }
-      cache.sync.lastHistorySyncAt = nowSeconds()
-      await ingestMessages(messages || [], 'history')
-      cache.sync.lastPersistedAt = nowSeconds()
-      await saveCache()
-    })().catch((error) => logger.error({ err: error }, 'Could not ingest WhatsApp history; bridge remains connected'))
-  })
-  socket.ev.on('connection.update', ({ connection: next, lastDisconnect, qr }) => {
-    if (qr) {
-      console.log('\nScan this QR in WhatsApp: Settings → Linked devices → Link a device\n')
-      qrcodeTerminal.generate(qr, { small: true })
-      QRCode.toFile(qrPath, qr, { width: 720, margin: 2, errorCorrectionLevel: 'M' })
-        .then(() => fs.chmod(qrPath, 0o600))
-        .then(() => console.log(`QR image saved to ${qrPath}`))
-        .catch((error) => console.error('Could not save QR image:', error))
-    }
-    if (next === 'open') {
-      connection = 'open'
-      lastError = null
-      cache.sync.connectedAt = nowSeconds()
-      cache.sync.lastConnectedAt = cache.sync.connectedAt
-      cache.sync.ingestionHealthy = true
-      saveCache().catch((error) => logger.warn({ err: error }, 'Could not persist bridge connection state'))
-      fs.rm(qrPath, { force: true }).catch(() => {})
-      console.log('WhatsApp bridge connected (read-only).')
-    }
-    if (next === 'close') {
-      const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
-      connection = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
-      lastError = statusCode ? `WhatsApp disconnect (${statusCode})` : 'WhatsApp disconnected'
-      cache.sync.lastDisconnectedAt = nowSeconds()
+    } catch (error) {
       cache.sync.ingestionHealthy = false
-      saveCache().catch((error) => logger.warn({ err: error }, 'Could not persist bridge disconnect state'))
-      if (statusCode !== DisconnectReason.loggedOut) reconnectTimer = setTimeout(() => connect().catch(console.error), 3000)
-      else console.error('WhatsApp logged this bridge out. Delete auth/ and restart to link it again.')
+      cache.sync.lastIngestError = error.message
+      await saveCache().catch(() => {})
+      logger.error({ err: error }, 'Could not process WhatsApp event batch; bridge remains connected')
     }
   })
 }
@@ -496,6 +603,7 @@ async function main() {
   await ensurePrivateDir(documentEnvelopeDir)
   await ensurePrivateDir(downloadedDocumentDir)
   mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
+  msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
   cache = mirrorStore.load()
   if (mirrorStore.isEmpty()) cache = await readJson(cachePath, cache)
   ensureCacheShape()
