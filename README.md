@@ -199,10 +199,10 @@ Abrí una shell nueva si el instalador lo indica y confirmá antes de seguir:
 node --version # v22 o superior
 ```
 
-Después instalá el paquete desde un release:
+Después instalá el paquete público desde npm:
 
 ```bash
-npm install -g https://github.com/diegomarvid/whatsapp-assistant/archive/refs/tags/v0.8.4.tar.gz
+npm install -g @diegomarvid/whatsapp-assistant
 wa setup
 ```
 
