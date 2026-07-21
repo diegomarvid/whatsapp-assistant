@@ -781,7 +781,7 @@ async function main() {
     if (isMessageSend) {
       requestBody(request).then(async ({ jid, text, replyToMessageId, mentions }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
-        if (replyToMessageId !== undefined && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
+        if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
         const quoted = replyToMessageId ? cache.messages.find((message) => message.jid === jid && message.id === replyToMessageId) : null
