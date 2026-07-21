@@ -27,7 +27,7 @@ function usage() {
   wa groups inspect <group-jid> [limit]
   wa groups add <list> <group-jid> [reason]
   wa latest <alias or phone>
-  wa history <alias or phone> [limit]
+  wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>]
   wa pending [--since 24h]
@@ -39,7 +39,7 @@ function usage() {
   wa image-text <alias or phone> <message-id>
   wa files <alias or phone> [limit]
   wa file <alias or phone> <message-id>
-  wa react <alias or phone> <message-id> <emoji>
+  wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
   wa send <alias or phone> <message>
   wa send-file <alias or phone> <file> [caption]`)
 }
@@ -112,9 +112,14 @@ function macContactsForPhones(phones) {
 async function resolve(target) {
   const aliases = await loadAliases()
   const key = target.toLocaleLowerCase()
-  if (aliases[key]) return { ...aliases[key], alias: key }
-  if (/^[+\d][\d\s()-]*$/.test(target)) return { phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null }
   const cache = JSON.parse(await fs.readFile(cachePath, 'utf8'))
+  if (aliases[key]) {
+    const alias = aliases[key]
+    const aliasMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizeText(alias.name || ''))
+    if (aliasMatches.length === 1) return { ...alias, jid: aliasMatches[0].jid, alias: key }
+    return { ...alias, alias: key }
+  }
+  if (/^[+\d][\d\s()-]*$/.test(target)) return { phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null }
   const normalizedTarget = normalizeText(target)
   const whatsappMatches = Object.values(cache.chats).filter((chat) => normalizeText(chat.name || cache.contacts[chat.jid]?.name || '') === normalizedTarget)
   if (whatsappMatches.length === 1) return { phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || cache.contacts[whatsappMatches[0].jid]?.name || null }
@@ -209,13 +214,13 @@ function formatTime(timestamp) {
   return new Intl.DateTimeFormat('es-UY', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'America/Montevideo' }).format(new Date(timestamp * 1000))
 }
 
-function printMessages(messages) {
+function printMessages(messages, { ids = false } = {}) {
   if (!messages.length) return console.log('No hay mensajes cacheados para este chat.')
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
     const author = message.fromMe ? 'Vos' : 'Contacto'
     const text = message.text || `[${message.type}]`
     const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null].filter(Boolean).join(' · ')
-    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}`)
+    console.log(`${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}`)
   }
 }
 
@@ -490,8 +495,11 @@ async function main() {
     if (!target) return usage()
     const contact = await resolve(target)
     const { messages } = await request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=200`)
-    if (command === 'latest') return printMessages(messages.slice(0, 1))
-    if (command === 'history') return printMessages(messages.slice(0, Number.parseInt(args[0] || '20', 10)))
+    if (command === 'latest') return printMessages(messages.slice(0, 1), { ids: args.includes('--ids') })
+    if (command === 'history') {
+      const limit = Number.parseInt(args.find((argument) => argument !== '--ids') || '20', 10)
+      return printMessages(messages.slice(0, limit), { ids: args.includes('--ids') })
+    }
     if (command === 'transcribe' || command === 'audio') {
       const audioId = args[0] || 'latest'
       const audio = audioId === 'latest' ? messages.find((message) => message.type === 'audioMessage') : messages.find((message) => message.type === 'audioMessage' && message.id === audioId)
@@ -546,9 +554,11 @@ async function main() {
       return console.log(document.path)
     }
     if (command === 'react') {
-      const messageId = args.shift(); const emoji = args.shift()
-      if (!messageId || !emoji) return usage()
-      await reactToMessage(contact.jid, messageId, emoji)
+      const selector = args.shift(); const emoji = args.shift()
+      if (!selector || !emoji) return usage()
+      const message = selector === 'latest' ? messages[0] : selector === 'latest-incoming' ? messages.find((item) => !item.fromMe) : messages.find((item) => item.id === selector)
+      if (!message) throw new Error(`No matching message found for reaction selector: ${selector}`)
+      await reactToMessage(contact.jid, message.id, emoji)
       return console.log('Reaction sent.')
     }
     const query = args.join(' ').trim().toLocaleLowerCase()

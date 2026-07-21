@@ -41,7 +41,7 @@ npm link
 | `wa groups inspect <jid>` | Lee título, descripción y mensajes recientes antes de clasificar un candidato |
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada de Maspeak |
 | `wa latest contacto` | Último mensaje de ese chat |
-| `wa history contacto 20` | Últimos 20 mensajes del chat |
+| `wa history contacto 20 --ids` | Últimos mensajes, con IDs para operar sobre ellos |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
 | `wa search-all "Oracle" --since 7d` | Busca texto en todos los chats recientes |
 | `wa pending --since 24h` | Lista chats directos recientes cuya última intervención fue entrante |
@@ -50,7 +50,7 @@ npm link
 | `wa images contacto` / `wa image contacto <id>` | Lista o descarga una imagen seleccionada |
 | `wa image-text contacto <id>` | Hace OCR local de una imagen seleccionada |
 | `wa files contacto` / `wa file contacto <id>` | Lista o descarga un documento entrante seleccionado |
-| `wa react contacto <id> 👍` | Reacciona explícitamente a un mensaje |
+| `wa react contacto latest-incoming 👍` | Reacciona explícitamente al último mensaje entrante |
 | `wa send contacto "mensaje"` | Envía un mensaje de texto al contacto resuelto |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un PDF con un mensaje al contacto resuelto |
 
