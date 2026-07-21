@@ -15,7 +15,7 @@ function xmlArray(values) {
   return `<array>${values.map((value) => `<string>${escapeXml(value)}</string>`).join('')}</array>`
 }
 
-export function launchAgentPlist({ nodePath, serverPath, stateRoot, logsDir, workingDirectory = stateRoot }) {
+export function launchAgentPlist({ nodePath, serverPath, stateRoot, logsDir, workingDirectory = path.dirname(serverPath) }) {
   const stdoutPath = path.join(logsDir, 'bridge.log')
   const stderrPath = path.join(logsDir, 'bridge-error.log')
   return `<?xml version="1.0" encoding="UTF-8"?>

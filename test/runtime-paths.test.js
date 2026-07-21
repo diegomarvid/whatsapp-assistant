@@ -34,5 +34,6 @@ test('renders a private launch agent that pins state outside the package', () =>
   assert.match(plist, new RegExp(`<string>${launchAgentLabel}</string>`))
   assert.match(plist, /<key>WA_STATE_DIR<\/key>/)
   assert.match(plist, /Application Support\/WhatsApp Assistant\/logs\/bridge\.log/)
+  assert.match(plist, /<key>WorkingDirectory<\/key><string>\/opt\/homebrew\/lib\/node_modules\/whatsapp-assistant\/src<\/string>/)
   assert.doesNotMatch(plist, /auth\//)
 })
