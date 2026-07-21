@@ -27,6 +27,10 @@ to scan a QR code.
   identifiers, timestamps and payload type; never message text) so a missing
   message can be diagnosed as an upstream event, placeholder, update, or local
   ingestion issue.
+- WhatsApp may deliver new events under a contact LID rather than its phone
+  JID. The local CLI resolves a phone JID to the current LID before asking for
+  coverage, messages, replies or reactions. Do not bypass the CLI by manually
+  reusing a JID copied from old cache output.
 
 All sensitive runtime state is under `data/` or `auth/`, is private to the
 local user, and is excluded from Git.
@@ -63,6 +67,7 @@ wa aliases
 wa alias add contacto +598XXXXXXXX "Nombre del contacto"
 wa find "Nombre del contacto"
 wa latest contacto
+wa latest-incoming contacto
 wa history contacto 20
 wa search contacto "presupuesto"
 wa transcribe contacto latest
@@ -92,6 +97,11 @@ forward them again rather than re-linking just for one image.
 directly asked to send that exact message; never infer a send from a search,
 summary or drafted reply.
 
+`wa latest` is the newest event in the chat. Use `wa latest-incoming` when the
+request is “el último mensaje que me mandó X”: it excludes the user's own later
+messages. Both commands resolve the current LID first and then require fresh
+coverage.
+
 ## Recovery checklist — before ever asking for a QR
 
 1. Check the daemon and cache:
@@ -111,9 +121,10 @@ summary or drafted reply.
    session and normally reconnects without interaction.
 
 3. If a conversation seems to be missing, inspect `wa status` and `wa coverage
-   contacto`. The observer automatically reconnects with the existing linked
-   session; messages older than seven days are intentionally absent. The
-   assistant is for recent operational context, not an archive.
+   contacto`, then `wa latest-incoming contacto`. The observer automatically
+   reconnects with the existing linked session and the CLI resolves the current
+   LID before reading it. Messages older than seven days are intentionally
+   absent. The assistant is for recent operational context, not an archive.
 
 4. If `wa transcribe` says an old audio is unavailable, it may predate the
    current recent-sync window or the audio-envelope capture. Do **not** reset

@@ -20,3 +20,9 @@ The CLI may filter by structural metadata only (chat, sender, timestamp, media
 type, reply order). Do not encode semantic judgments with keywords, regexes or
 language-specific heuristics: intent, urgency and follow-up decisions belong to
 the AI layer consuming the retrieved messages.
+
+For a direct contact, always resolve the current WhatsApp LID through the
+bridge before reading, reacting or replying. A historical PN JID can describe
+the same person but miss their current messages. Use `wa latest-incoming` for
+“el último mensaje que me mandó X”; use `wa latest` only when the newest event
+regardless of sender is intended.

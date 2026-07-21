@@ -40,7 +40,8 @@ npm link
 | `wa groups find maspeak` | Muestra grupos conocidos de Maspeak y descubre candidatos nuevos desde metadata y mensajes |
 | `wa groups inspect <jid>` | Lee título, descripción y mensajes recientes antes de clasificar un candidato |
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada de Maspeak |
-| `wa latest contacto` | Último mensaje de ese chat |
+| `wa latest contacto` | Último evento del chat, sea entrante o saliente |
+| `wa latest-incoming contacto` | Último mensaje recibido de ese contacto |
 | `wa history contacto 20 --ids` | Últimos mensajes, con IDs para operar sobre ellos |
 | `wa coverage contacto` | Indica si el chat reciente está sincronizado o si hay un hueco verificable |
 | `wa search contacto "presupuesto"` | Busca texto dentro del chat |
@@ -79,6 +80,45 @@ esté conectado, sano y que el cursor remoto no esté por delante del mirror;
 `wa react` y `wa reply` con `latest` sólo operan sobre el último evento
 confirmado.
 
+## Arquitectura de identidad y consistencia
+
+WhatsApp puede representar al mismo contacto con dos identificadores: el
+número telefónico (`…@s.whatsapp.net`, PN) y un identificador privado de la
+cuenta (`…@lid`, LID). Los eventos nuevos pueden llegar bajo el LID aunque un
+alias o Contactos de macOS hayan encontrado inicialmente el número.
+
+```text
+nombre / alias / número
+          │
+          ▼
+CLI ── consulta /resolve ──► Baileys LID mapping ──► JID actual del chat
+          │                                              │
+          └──────────── /coverage, /messages, react ─────┘
+                                                         │
+                                                         ▼
+                                         mirror SQLite de los últimos 7 días
+```
+
+Por eso `wa latest-incoming Florencia` y `wa react Florencia latest-incoming
+❤️` siempre se resuelven contra el JID vivo, no contra una conversación PN
+vieja. La reacción sólo se ejecuta si la cobertura del chat está `fresh`; el
+message ID y el JID usados para reaccionar provienen de la misma consulta
+confirmada. No hay análisis semántico de mensajes en el CLI.
+
+El mirror conserva, durante esa misma ventana de siete días:
+
+- Metadatos normalizados de chats y mensajes para consultas.
+- El envelope raw de cada mensaje reciente, para que Baileys pueda recuperar
+  contenido ante reintentos/protocol placeholders mediante `getMessage`.
+- Un cache persistente de reintentos de una hora.
+- Auditoría técnica de eventos sin texto: tipo de evento, JID, ID, timestamp y
+  tipo de payload. Sirve para separar un evento no recibido de un problema de
+  mapeo o de ingestión.
+
+El bridge procesa batches con `socket.ev.process`: persiste credenciales,
+history, `messages.upsert` y `messages.update` en orden. Si una actualización
+posterior completa un placeholder, actualiza el mismo mensaje del mirror.
+
 
 `wa find` funciona sin agenda local: prioriza aliases privados, nombres que
 WhatsApp sincroniza (`pushName` / contactos / chats) y coincidencias en
@@ -115,6 +155,7 @@ Authorization: Bearer <contenido de data/bridge-token>
 | --- | --- |
 | `GET /health` | Estado de conexión, sin token |
 | `GET /snapshot` | Vista reciente consistente del mirror SQLite |
+| `GET /resolve?jid=<jid>` | Resuelve un PN al LID vivo conocido por Baileys |
 | `GET /chats?limit=50` | Chats conocidos, más recientes primero |
 | `GET /messages?jid=<jid>&limit=50` | Mensajes sincronizados de un chat |
 | `GET /search?q=<texto>&limit=30` | Búsqueda local en mensajes recibidos/sincronizados |
