@@ -950,23 +950,21 @@ async function handleHistorySet({ messages, chats, contacts }) {
   await saveCache()
 }
 
-// Baileys switches the companion connection to "active" right after login.
-// WhatsApp treats the active client as the one showing notifications, so an
-// always-on daemon in active mode silently stops push notifications on the
-// user's phone. An observer must stay a passive companion; passive
-// connections still receive every event and can send explicit messages.
-async function reassertPassiveCompanionMode() {
+// WhatsApp suppresses phone push notifications while a companion looks like
+// the client the user is reading — that is decided by PRESENCE, not by the
+// active/passive delivery mode. Marking presence unavailable keeps phone
+// notifications flowing while the connection stays active, so messages are
+// pushed in real time. (A passive delivery mode also preserved notifications
+// but made the server batch message delivery every ~5 minutes.)
+async function markPresenceUnavailable() {
   try {
-    await socket.query({
-      tag: 'iq',
-      attrs: { to: 's.whatsapp.net', xmlns: 'passive', type: 'set' },
-      content: [{ tag: 'passive', attrs: {} }],
-    })
-    cache.sync.passiveModeAssertedAt = nowSeconds()
-    logger.info('Reasserted passive companion mode so phone notifications keep arriving')
-  } catch (error) {
+    await socket.sendPresenceUpdate('unavailable')
+    cache.sync.presenceUnavailableAssertedAt = nowSeconds()
     cache.sync.passiveModeAssertedAt = null
-    logger.warn({ err: error }, 'Could not reassert passive companion mode')
+    logger.info('Marked presence unavailable so phone notifications keep arriving')
+  } catch (error) {
+    cache.sync.presenceUnavailableAssertedAt = null
+    logger.warn({ err: error }, 'Could not mark presence unavailable')
   }
 }
 
@@ -989,7 +987,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     connection = 'open'
     lastError = null
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
-    await reassertPassiveCompanionMode()
+    await markPresenceUnavailable()
     cache.sync.connectedAt = nowSeconds()
     cache.sync.lastConnectedAt = cache.sync.connectedAt
     cache.sync.ingestionHealthy = true

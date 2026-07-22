@@ -249,18 +249,23 @@ re-run `wa coverage` instead of resetting anything.
 
 ## Phone notifications stopped arriving
 
-WhatsApp only pushes notifications to the phone while no companion claims the
-“active client” slot. Baileys switches its connection to active right after
-login, so any always-on daemon silently suppresses phone notifications — the
-user only sees new messages by opening WhatsApp. Since v0.9.4 the bridge
-reasserts **passive companion mode** on every successful connect; passive
-connections still receive every event and can send explicit messages.
+WhatsApp only pushes notifications to the phone while no companion looks like
+the client the user is actively reading — and that is decided by **presence**,
+not by the connection's active/passive delivery mode. Since v0.9.7 the bridge
+sends presence `unavailable` on every successful connect (on top of
+`markOnlineOnConnect: false`), which keeps phone notifications flowing while
+the connection stays in active delivery mode, so messages arrive in real time.
 
-Diagnosis: `wa status` must show `passiveModeAssertedAt` newer than
+(v0.9.4–v0.9.6 instead reasserted a passive companion mode. That also
+preserved notifications, but WhatsApp batches message delivery to passive
+companions in ~5-minute flushes, which added minutes of latency to every
+message the bridge observed.)
+
+Diagnosis: `wa status` must show `presenceUnavailableAssertedAt` newer than
 `lastConnectedAt`. If it is missing or null, restart the daemon and check the
-bridge log for “Reasserted passive companion mode”. If it is present and the
+bridge log for “Marked presence unavailable”. If it is present and the
 problem persists, look for another linked device (an old bot, Evolution, a
-stale bridge) holding active mode, and remove it from Linked Devices on the
+stale bridge) claiming presence, and remove it from Linked Devices on the
 phone.
 
 ## The bridge is connected but new messages stop arriving or decode empty
