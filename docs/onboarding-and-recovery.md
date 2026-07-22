@@ -279,6 +279,17 @@ delete `auth/` only (mirror, aliases and config are untouched), run
 unreadable in the mirror (they were encrypted for the dead session) but are
 intact on the phone; everything after the re-link decodes normally.
 
+## The phone paused syncing to this device
+
+The phone can silently pause its sync to a linked device (battery saver, the
+app being backgrounded during a large transfer, or a freshly re-linked device
+still settling). The bridge looks perfectly healthy — `open`, passive, no
+errors — but new messages simply stop arriving, or arrive minutes late. Check
+**Linked devices** on the phone: if the device shows a paused sync, open
+WhatsApp in the foreground with the screen unlocked and good connectivity
+until it resumes; the backlog then arrives in one burst. A local bridge also
+cannot receive while the computer sleeps — messages queue and land on wake.
+
 ## Recovery checklist — before ever asking for a QR
 
 1. Check the daemon and cache:
