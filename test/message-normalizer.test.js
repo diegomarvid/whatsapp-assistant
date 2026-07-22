@@ -26,6 +26,28 @@ test('normalizes images and reactions without requiring optional fields', () => 
   assert.equal(reaction.reactionText, '👍')
 })
 
+test('classifies real content even when a protocol wrapper key comes first', () => {
+  const voiceNote = safeMessage({
+    key: { id: 'audio-1', remoteJid: '120363000000000000@g.us', participant: 'ana@lid' },
+    messageTimestamp: 1,
+    message: {
+      senderKeyDistributionMessage: { groupId: '120363000000000000@g.us' },
+      messageContextInfo: { messageSecret: new Uint8Array(32) },
+      audioMessage: { mimetype: 'audio/ogg; codecs=opus', seconds: 122, ptt: true, fileLength: 274383 },
+    },
+  })
+  assert.equal(voiceNote.type, 'audioMessage')
+  assert.equal(voiceNote.media?.voiceNote, true)
+  assert.equal(voiceNote.media?.seconds, 122)
+
+  const pureProtocol = safeMessage({
+    key: { id: 'skdm-1', remoteJid: '120363000000000000@g.us', participant: 'ana@lid' },
+    messageTimestamp: 1,
+    message: { senderKeyDistributionMessage: { groupId: '120363000000000000@g.us' } },
+  })
+  assert.equal(pureProtocol.type, 'senderKeyDistributionMessage')
+})
+
 test('extracts literal http links without interpreting their destination', () => {
   const message = safeMessage({
     key: { id: 'link-1', remoteJid: 'chat@lid' },

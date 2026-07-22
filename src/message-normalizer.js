@@ -1,6 +1,13 @@
 import crypto from 'node:crypto'
-import { proto } from 'baileys'
+import { getContentType, proto } from 'baileys'
 import { normalizedReactions, normalizedReceipts } from './message-engagement.js'
+
+// A message whose first key is a protocol wrapper (e.g. senderKeyDistributionMessage,
+// messageContextInfo) can still carry real content next to it. getContentType skips
+// those wrappers; fall back to the first key so pure protocol messages keep a label.
+function contentTypeOf(content) {
+  return getContentType(content) || Object.keys(content)[0] || null
+}
 
 function unwrapSafeContent(message) {
   let content = message || {}
@@ -100,7 +107,7 @@ function quotedMessageOf(contextInfo) {
     id: contextInfo.stanzaId || null,
     participant: contextInfo.participant || null,
     remoteJid: contextInfo.remoteJid || null,
-    type: Object.keys(content)[0] || null,
+    type: contentTypeOf(content),
     text: wrapper.viewOnce ? null : textOfContent(content),
     viewOnce: wrapper.viewOnce,
   }
@@ -199,7 +206,7 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     text,
     links,
     linkPreview: linkPreviewOf(content, links),
-    type: Object.keys(content)[0] || 'unknown',
+    type: contentTypeOf(content) || 'unknown',
     pushName: message.pushName || null,
     audioRef: null,
     imageRef: null,
