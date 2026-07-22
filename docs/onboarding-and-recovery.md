@@ -263,6 +263,22 @@ problem persists, look for another linked device (an old bot, Evolution, a
 stale bridge) holding active mode, and remove it from Linked Devices on the
 phone.
 
+## The bridge is connected but new messages stop arriving or decode empty
+
+Removing **another** linked device from the phone (Linked Devices → remove)
+rotates encryption sessions and can silently break the bridge's Signal
+session: the connection stays `open`, but new messages either arrive as
+`type: unknown` with empty text (decryption failures — the bridge log shows
+`SessionCipher.decryptWithSessions` errors) or stop arriving entirely.
+
+Diagnosis: `unknownTypeMessages` in `wa status` climbing while the sender's
+messages are visible on the phone. The retry protocol usually cannot heal
+this. This is one of the few legitimate reasons to re-link: stop the daemon,
+delete `auth/` only (mirror, aliases and config are untouched), run
+`wa setup` and scan the new QR. Messages sent during the broken window stay
+unreadable in the mirror (they were encrypted for the dead session) but are
+intact on the phone; everything after the re-link decodes normally.
+
 ## Recovery checklist — before ever asking for a QR
 
 1. Check the daemon and cache:
