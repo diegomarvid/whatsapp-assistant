@@ -32,7 +32,10 @@ export function launchAgentPlist({ nodePath, serverPath, stateRoot, logsDir, ent
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
+  <key>ProcessType</key><string>Interactive</string>
+  <!-- Interactive exempts the bridge from App Nap: as Background, macOS
+       coalesced its timers and the socket only drained every ~5 minutes,
+       delivering WhatsApp events in late bursts. -->
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>${escapeXml(stdoutPath)}</string>
   <key>StandardErrorPath</key><string>${escapeXml(stderrPath)}</string>
