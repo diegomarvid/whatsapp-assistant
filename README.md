@@ -77,8 +77,42 @@ npm install -g @diegomarvid/whatsapp-assistant && wa setup
 - Responder citando exactamente un mensaje o reaccionar al último entrante
   **confirmado**.
 - Mencionar participantes explícitos en grupos.
-- Nada se envía por iniciativa del bridge: cada `send`, `reply` o `react`
-  requiere una instrucción explícita.
+- Nada se envía por iniciativa del bridge, salvo una automatización que hayas
+  creado explícitamente y que figure como activa.
+
+### 🧠 Automatizar con un prompt que usa `wa`
+
+El bridge puede agrupar mensajes nuevos por chat sin gastar IA cuando no hay
+novedades. Al vencer el debounce, ejecuta un agente en un directorio efímero:
+el prompt es quien lee el chat con `wa` y corre `wa send`. El bridge no clasifica
+texto, no devuelve JSON de acciones y jamás convierte la salida del modelo en
+un envío.
+
+```bash
+wa agents providers
+wa agents profile set diego-a-florencia-luna \
+  --provider codex --model gpt-5.6-luna --reasoning-effort max \
+  --prompt-file /ruta/absoluta/diego-a-florencia.md
+wa agents doctor diego-a-florencia-luna    # binario, versión y flags; no consume tokens
+wa automation prompt add diego-a-florencia \
+  --from diego --to florencia --from-me \
+  --profile diego-a-florencia-luna --debounce 300 --yes
+wa automation prompt list
+wa automation prompt show diego-a-florencia
+wa automation prompt pause diego-a-florencia
+```
+
+El agente recibe sólo IDs de evento, no texto; trata todo contenido de WhatsApp
+como datos no confiables. Puede consultar únicamente el chat fuente y enviar al
+único destino configurado. Si el proveedor se interrumpe, la ejecución queda
+`uncertain` y no se repite automáticamente, porque podría haber alcanzado a
+enviar. Los perfiles aceptan IDs nuevos de modelos: Claude usa `--effort` y
+Codex usa `--reasoning-effort`; “Luna Max” es
+`--model gpt-5.6-luna --reasoning-effort max`. El prompt se fija con una huella
+privada y debe readoptarse explícitamente si cambia.
+
+`wa automation forward` fue retirado: no queda ningún reenvío determinista
+activo ni una capa que “arregle” texto antes del prompt.
 
 ### 🧱 Dejarlo funcionando una vez
 
@@ -482,6 +516,9 @@ acopla el bridge a un runtime concreto de IA.
 | `wa react contacto latest-incoming 👍` | Reacciona al último mensaje entrante confirmado. |
 | `wa reply contacto latest-incoming "Entendido"` | Responde citando un mensaje concreto. |
 | `wa send contacto "mensaje"` | Envía un texto. |
+| `wa schedule add --at 2026-08-03T21:00:00-03:00 contacto "mensaje"` | Programa un texto explícitamente pedido; la hora lleva timezone. |
+| `wa schedule list` / `wa schedule list --all` | Muestra la cola activa en hora local, o también el historial. |
+| `wa schedule show <id>` / `wa schedule cancel <id>` | Abre un mensaje programado o lo cancela antes de que empiece el envío. |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un archivo como documento. |
 | `wa send-image contacto /ruta/foto.jpg "caption" --reply-to latest-incoming` | Envía una imagen nativa, opcionalmente citando un mensaje. |
 | `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |

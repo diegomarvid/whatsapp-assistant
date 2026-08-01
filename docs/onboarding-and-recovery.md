@@ -185,7 +185,61 @@ wa transcribe contacto latest
 wa images contacto
 wa image contacto <message-id>
 wa send contacto "Mensaje explícitamente pedido por el usuario"
+wa schedule add --at 2026-08-03T21:00:00-03:00 contacto "Mensaje explícitamente pedido por el usuario"
+wa schedule list                  # cola activa: pendientes, uncertain o failed
+wa schedule list --all            # suma enviados, cancelados y vencidos
+wa schedule show <id>
+wa schedule cancel <id>
+
+# Preparar un proveedor de IA; esto todavía no instala una regla ni procesa chats.
+wa agents providers
+wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md
+wa agents profile set seguimiento-codex --provider codex --model gpt-5 --reasoning-effort high --prompt-file /ruta/absoluta/prompt.md
+wa agents profile list
+wa agents doctor seguimiento       # inspección local sin llamar al modelo
+wa agents validate seguimiento     # prueba mínima neutra; puede consumir el proveedor
+wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt configurado
 ```
+
+`doctor` nunca llama a un modelo. La validación estándar comprueba binario,
+autenticación, modelo y flags con un prompt neutro, así no factura el prompt
+operativo ni falla porque éste pidió otro formato. `--with-prompt` es una
+segunda comprobación explícita que carga el prompt real. Los dos modos siguen
+sin crear una regla, leer chats o enviar un WhatsApp.
+
+El prompt debe ser un archivo absoluto, regular, propiedad del usuario actual y
+no escribible por grupo u otros. El perfil guarda el destino resuelto y una
+huella, no el contenido. Si cambiás el prompt, `wa agents doctor <perfil>` lo
+indica como `changed`; para adoptar la nueva versión de forma deliberada,
+repetí `wa agents profile set <perfil> --prompt-file <ruta-absoluta>`.
+
+## Automatizaciones de prompt
+
+Una automatización puede observar un chat fuente y agrupar mensajes nuevos por
+un debounce sin llamar a una IA si no llegaron novedades. Al vencerlo, el
+proveedor configurado recibe los IDs observados y el prompt ejecuta el CLI
+`wa` por sí mismo: lee con `wa history`/`wa message` y, si la tarea lo pide,
+envía con `wa send`. El bridge no analiza texto con reglas, no espera un JSON
+de acción y no transforma la respuesta del modelo en un mensaje.
+
+```bash
+wa automation prompt add nombre \
+  --from contacto-fuente --to destino \
+  --profile perfil-ia --debounce 300 --yes
+wa automation prompt list
+wa automation prompt show nombre
+wa automation prompt pause nombre
+```
+
+La regla registra sólo identidad de chat, dirección, hora e IDs para disparar
+la ejecución; el contenido y media quedan para el prompt. El agente corre en
+un directorio efímero y su único canal de efectos externos es `wa`, acotado al
+chat fuente y destino configurados. Todo texto de WhatsApp, incluso citas y
+links, se marca como dato no confiable, nunca como instrucción. Si el proveedor
+falla o el bridge se reinicia mientras está en marcha, el batch queda
+`uncertain` y no se reintenta automáticamente, ya que podría haber enviado.
+`wa automation forward` fue retirado: no existe un reenvío determinista ni una
+capa semántica alternativa al prompt.
 
 Aliases live in `data/aliases.json`, not in Git. When the user supplies a stable
 name/number mapping, save it with `wa alias add` so later requests like
@@ -222,6 +276,26 @@ forward them again rather than re-linking just for one image.
 `wa send <alias> "texto"` sends a text message. Use it only when the user has
 directly asked to send that exact message; never infer a send from a search,
 summary or drafted reply.
+
+`wa schedule add --at <ISO-con-zona-horaria> <alias> "texto"` stores an
+explicitly requested future text in the private local state and the running
+bridge delivers it at or after that time. The timestamp must include its
+timezone to avoid an ambiguous local clock and cannot be more than one year in
+the future. `wa schedule list` is the normal answer to “qué mensajes tengo
+programados?”: shows only the active queue and formats each time with both the
+IANA timezone and active UTC offset (for example, `America/Montevideo,
+UTC-03:00`). Use `wa schedule list --all` for the audit trail, or `wa schedule
+show <id>` for one entry. `wa schedule cancel <id>` cancels entries that have
+not started handoff; it refuses to claim success while an entry is actually
+being delivered.
+
+The queue has an exclusive local lock between the CLI and bridge. On delivery,
+the bridge resolves the phone JID to the current WhatsApp LID again. It records
+a durable request ID before sending. A bridge restart during an in-flight send,
+or a timeout/disconnect returned by WhatsApp, becomes `uncertain` and is never
+retried automatically: this is deliberately safer than duplicating a private
+message. A message whose bridge remained unavailable for over one hour becomes
+`expired` rather than being delivered stale.
 
 All explicit outbound operations (`send`, `reply`, `send-file` and media sends)
 are idempotent for 24 hours. The CLI gives a repeated, previously unconfirmed

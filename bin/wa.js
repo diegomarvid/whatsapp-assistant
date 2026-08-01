@@ -16,12 +16,16 @@ import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollR
 import { cacheMatches, loadAliases, phoneFromJid, phoneToJid, recentChats, resolveContact as resolve, saveAliases } from '../src/contact-resolve.js'
 import { daemonDisplayName, daemonStatus, installDaemon, launchAgentPath, lingerInstruction, linuxServiceDiagnostics, restartDaemon, systemdUnitPath, uninstallDaemon } from '../src/daemon-control.js'
 import { tryRun } from '../src/exec.js'
+import { AgentProfiles, PROVIDER_CATALOG_VERSION, PROVIDERS, ProviderDetections, formatAgentProfile, inspectPromptFile, probeProvider, providerCatalog } from '../src/agent-providers.js'
+import { validateProviderProfile } from '../src/agent-provider-runner.js'
 import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
 import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
+import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
+import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
 import { parseSince } from '../src/search-scope.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
 import { configureTranscription, pullTranscriptionModel, setupTranscription, transcribe, transcriptionDoctor } from '../src/transcription.js'
@@ -30,6 +34,10 @@ const packageInfo = JSON.parse(await fs.readFile(path.join(projectRoot, 'package
 const npmInstallCommand = `npm install -g ${packageInfo.name}`
 const { dataDir, stateRoot } = paths
 const pendingOutboundRequests = new PendingOutboundRequests(path.join(dataDir, 'pending-outbound-requests.json'))
+const scheduledMessages = new ScheduledMessages(path.join(dataDir, 'scheduled-messages.json'))
+const promptAutomations = new PromptAutomationRules(path.join(dataDir, 'prompt-automations.json'))
+const agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
+const providerDetections = new ProviderDetections(path.join(dataDir, 'agent-provider-detections.json'))
 
 function outboundDestination(contact) {
   return contact.phone || contact.originalJid || contact.jid
@@ -68,13 +76,12 @@ Para agentes de IA:
   - send, reply y react sólo ante instrucción explícita; el CLI no interpreta intención.
   - Estado privado: auth, SQLite y aliases quedan fuera de Homebrew.
 
-Ayuda detallada: wa help [setup|messages|data|media|daemon|privacy]
+Ayuda detallada: wa help [setup|messages|schedule|automation|agents|data|media|daemon|privacy]
 
 Comandos:
   wa status
   wa doctor                         # estado, daemon, QR y rutas; no expone secretos
   wa setup
-  wa history-policy show|set <days|all>
   wa qr                             # abre (macOS) o imprime (SSH) el QR pendiente
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
@@ -117,6 +124,19 @@ Comandos:
   wa unread-by <group> <message-id>    # sin read receipt = sin confirmación, no “no lo vio”
   wa react <alias or phone> <message-id|latest|latest-incoming> <emoji>
   wa send <alias or phone> <message> [--mention <contacto> ...]
+  wa schedule add --at <ISO-with-timezone> <alias or phone> <message>
+  wa schedule list [--all]
+  wa schedule show <id>
+  wa schedule cancel <id>
+  wa automation prompt add <nombre> --from <contacto> --to <contacto> --profile <perfil> [--from-me|--any] [--debounce <segundos>] --yes
+  wa automation prompt list [--all]
+  wa automation prompt show|pause|resume|remove <nombre>
+  wa agents providers              # catálogo flexible: aliases útiles, no allow-list rígida
+  wa agents profile set <nombre> --provider claude --model <id> --effort <nivel> --prompt-file <path>
+  wa agents profile set <nombre> --provider codex --model <id> --reasoning-effort <nivel> --prompt-file <path>
+  wa agents profile list|show|remove ...
+  wa agents doctor [provider|profile]  # detecta binarios/flags; no llama modelos
+  wa agents validate <profile> [--with-prompt]  # prueba explícita; puede consumir el proveedor
   wa reply <alias or phone> <message-id|latest|latest-incoming> <message>
   wa edit <alias or phone> <message-id|latest> <new text>      # sólo mensajes propios
   wa unsend <alias or phone> <message-id|latest>               # revoca un mensaje propio
@@ -130,13 +150,16 @@ function help(topic) {
   const topics = {
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
+    schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>\n  wa schedule cancel <id>\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario antes de enviar. Ante un resultado ambiguo no reintenta: lo deja como uncertain para no duplicar mensajes. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
+    automation: `Automatizaciones guiadas por prompt:\n  wa automation prompt add diego-a-florencia --from diego --to florencia --profile diego-a-florencia-luna --from-me --debounce 300 --yes\n  wa automation prompt list\n  wa automation prompt show diego-a-florencia\n  wa automation prompt pause|resume|remove diego-a-florencia\n\nEl worker sólo detecta mensajes nuevos del chat y los agrupa por el debounce: si no hay novedades, no llama ninguna IA. No lee, clasifica, reescribe ni extrae intención del texto. Cuando vence el debounce ejecuta el proveedor configurado en un directorio efímero; el prompt es quien usa \`wa history\`/\`wa message\` para analizar y \`wa send\` para enviar. La salida del modelo queda como auditoría y jamás se parsea para generar un envío. Por seguridad, la ejecución queda limitada al chat fuente y al único destinatario autorizado; los textos de WhatsApp son datos no confiables. Si el proveedor se interrumpe, el batch queda \`uncertain\` y no se reintenta automáticamente.\n\n\`automation forward\` fue retirado: las reglas deterministas anteriores no se ejecutan.`,
+    agents: `Perfiles de proveedores de IA:\n  Claude: wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md\n  Codex:  wa agents profile set seguimiento-codex --provider codex --model gpt-5.6-luna --reasoning-effort max --prompt-file /ruta/absoluta/prompt.md\n  wa agents profile list\n  wa agents profile show seguimiento\n  wa agents doctor seguimiento       # binario, versión y flags reales; no consume tokens\n  wa agents validate seguimiento     # prueba mínima neutra; sí puede consumir el proveedor\n  wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt real\n\nEstos comandos no crean reglas ni envían WhatsApps. El catálogo trae aliases útiles pero no bloquea modelos nuevos o IDs exactos: un perfil acepta el identificador que escribas. En Codex, “Luna Max” significa \`--model gpt-5.6-luna --reasoning-effort max\`. \`doctor\` detecta cambios del binario y \`validate\` prueba el proveedor, autenticación, modelo y flags elegidos. Claude usa \`--effort\`; Codex usa \`--reasoning-effort\`, que se traduce a su configuración \`model_reasoning_effort\`. Los prompts se guardan como archivo privado referenciado por ruta, con huella y permisos seguros. Para una automatización, el prompt no devuelve una acción estructurada: usa el CLI \`wa\` directamente dentro del scope autorizado.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención default: 7 días; una ventana mayor requiere una elección explícita con wa history-policy.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
   }
   if (!topic) return usage()
-  if (!topics[topic]) throw new Error(`Unknown help topic: ${topic}. Use: wa help setup|messages|data|media|daemon|privacy`)
+  if (!topics[topic]) throw new Error(`Unknown help topic: ${topic}. Use: wa help setup|messages|schedule|automation|agents|data|media|daemon|privacy`)
   console.log(topics[topic])
 }
 
@@ -312,6 +335,220 @@ function extractOption(args, name) {
   return value
 }
 
+function assertNoArguments(args, command) {
+  if (args.length) throw new Error(`Unexpected argument for ${command}: ${args[0]}`)
+}
+
+async function promptHealth(profile) {
+  try {
+    const current = await inspectPromptFile(profile.prompt.path)
+    return {
+      status: current.sha256 === profile.prompt.sha256 ? 'unchanged' : 'changed',
+      configuredFingerprint: profile.prompt.sha256,
+      currentFingerprint: current.sha256,
+      bytes: current.bytes,
+      modifiedAt: current.modifiedAt,
+    }
+  } catch (error) {
+    return { status: 'unavailable', detail: error.message }
+  }
+}
+
+async function agentsDoctor(target = null) {
+  const profiles = await agentProfiles.list()
+  let providerIds = Object.keys(PROVIDERS)
+  let selectedProfiles = profiles
+  if (target) {
+    const provider = String(target).toLocaleLowerCase()
+    if (PROVIDERS[provider]) {
+      providerIds = [provider]
+      selectedProfiles = profiles.filter((profile) => profile.provider === provider)
+    } else {
+      const profile = await agentProfiles.get(target)
+      if (!profile) throw new Error(`Unknown provider or AI profile: ${target}`)
+      providerIds = [profile.provider]
+      selectedProfiles = [profile]
+    }
+  }
+  const previous = await providerDetections.load()
+  const inspections = await Promise.all(providerIds.map(async (id) => {
+    const inspection = await probeProvider(id)
+    const prior = previous.providers[id]
+    const binaryChangedSinceLastDoctor = Boolean(prior && (prior.executable?.fingerprint !== inspection.executable?.fingerprint || prior.version !== inspection.version))
+    return { ...inspection, binaryChangedSinceLastDoctor }
+  }))
+  await providerDetections.saveAll(inspections)
+  const providers = inspections
+  const profileReports = await Promise.all(selectedProfiles.map(async (profile) => ({
+    name: profile.name, provider: profile.provider, model: profile.model, effort: profile.effort, reasoningEffort: profile.reasoningEffort,
+    timeoutMs: profile.timeoutMs, prompt: await promptHealth(profile),
+  })))
+  console.log(JSON.stringify({
+    catalogVersion: PROVIDER_CATALOG_VERSION,
+    checkedAt: new Date().toISOString(),
+    providers,
+    profiles: profileReports,
+    nextStep: providers.some((item) => item.status !== 'available')
+      ? 'Fix the reported provider issue, then run `wa agents doctor` again.'
+      : profileReports.some((profile) => profile.prompt.status === 'changed')
+        ? 'The configured prompt changed. Review it, then re-run `wa agents profile set <profile> --prompt-file <absolute path>` to adopt its new fingerprint before validating it with the prompt.'
+      : 'Run `wa agents validate <profile>` only when you want an explicit minimal provider call. No WhatsApp rule is enabled by these commands.',
+  }, null, 2))
+}
+
+async function agentsCommand(args) {
+  const action = args.shift()
+  if (action === 'providers') {
+    assertNoArguments(args, 'wa agents providers')
+    return console.log(JSON.stringify({ catalogVersion: PROVIDER_CATALOG_VERSION, providers: providerCatalog() }, null, 2))
+  }
+  if (action === 'profile') {
+    const profileAction = args.shift()
+    if (profileAction === 'list') {
+      assertNoArguments(args, 'wa agents profile list')
+      const profiles = await agentProfiles.list()
+      if (!profiles.length) return console.log('No AI provider profiles are configured.')
+      for (const profile of profiles) console.log(`${profile.name} — ${profile.provider}/${profile.model}${profile.effort ? ` (effort ${profile.effort})` : ''}${profile.reasoningEffort ? ` (reasoning ${profile.reasoningEffort})` : ''}`)
+      return
+    }
+    if (profileAction === 'show') {
+      const name = args.shift()
+      if (!name) return usage()
+      assertNoArguments(args, 'wa agents profile show')
+      const profile = await agentProfiles.get(name)
+      if (!profile) throw new Error(`Unknown AI profile: ${name}`)
+      return console.log(formatAgentProfile(profile))
+    }
+    if (profileAction === 'remove') {
+      const name = args.shift()
+      if (!name) return usage()
+      assertNoArguments(args, 'wa agents profile remove')
+      const profile = await agentProfiles.remove(name)
+      return console.log(`Removed AI profile ${profile.name}. No WhatsApp rule was changed.`)
+    }
+    if (profileAction === 'set') {
+      const name = args.shift()
+      if (!name) return usage()
+      const provider = extractOption(args, '--provider')
+      const model = extractOption(args, '--model')
+      const effort = extractOption(args, '--effort')
+      const reasoningEffort = extractOption(args, '--reasoning-effort')
+      const promptFile = extractOption(args, '--prompt-file')
+      const timeoutMs = extractOption(args, '--timeout-ms')
+      const clearEffort = args.includes('--clear-effort')
+      if (clearEffort) args.splice(args.indexOf('--clear-effort'), 1)
+      assertNoArguments(args, 'wa agents profile set')
+      const profile = await agentProfiles.set({ name, ...(provider ? { provider } : {}), ...(model ? { model } : {}), ...(clearEffort ? { effort: null, reasoningEffort: null } : effort ? { effort } : reasoningEffort ? { reasoningEffort } : {}), ...(promptFile ? { promptFile } : {}), ...(timeoutMs ? { timeoutMs } : {}) })
+      return console.log(`${profile.name} configured — ${profile.provider}/${profile.model}${profile.effort ? ` (effort ${profile.effort})` : ''}${profile.reasoningEffort ? ` (reasoning ${profile.reasoningEffort})` : ''}. Run \`wa agents doctor ${profile.name}\` before enabling a future rule.`)
+    }
+    return usage()
+  }
+  if (action === 'doctor') {
+    const target = args.shift() || null
+    assertNoArguments(args, 'wa agents doctor')
+    return agentsDoctor(target)
+  }
+  if (action === 'validate') {
+    const name = args.shift()
+    if (!name) return usage()
+    const withPrompt = args.includes('--with-prompt')
+    if (withPrompt) args.splice(args.indexOf('--with-prompt'), 1)
+    assertNoArguments(args, 'wa agents validate')
+    const profile = await agentProfiles.get(name)
+    if (!profile) throw new Error(`Unknown AI profile: ${name}`)
+    const provider = await probeProvider(profile.provider)
+    if (provider.status !== 'available') throw new Error(`Cannot validate ${profile.name}: ${provider.detail || provider.issue}. Run \`wa agents doctor ${profile.name}\` after fixing it.`)
+    if (!provider.capabilities.model || !provider.capabilities.structuredOutput || !provider.capabilities.safeInvocation || (profile.effort && !provider.capabilities.effort)) {
+      throw new Error(`Cannot validate ${profile.name}: the installed ${profile.provider} CLI does not advertise the required flags. Run \`wa agents doctor ${profile.name}\`; the profile was not downgraded automatically.`)
+    }
+    const prompt = await promptHealth(profile)
+    if (prompt.status === 'unavailable') throw new Error(`Cannot validate ${profile.name}: prompt file is unavailable (${prompt.detail}).`)
+    if (withPrompt && prompt.status === 'changed') throw new Error(`Cannot validate ${profile.name} with its changed prompt until you explicitly adopt it: run \`wa agents profile set ${profile.name} --prompt-file ${profile.prompt.path}\` after reviewing the change.`)
+    const result = await validateProviderProfile(profile, { executable: provider.executable.path, withPrompt })
+    console.log(JSON.stringify({ profile: profile.name, provider: profile.provider, model: profile.model, effort: profile.effort, reasoningEffort: profile.reasoningEffort, prompt, validatedAt: new Date().toISOString(), ...result, nextStep: result.ok ? 'Provider profile is usable. No WhatsApp rule or automatic invocation was enabled.' : 'Fix the classified issue and explicitly validate again.' }, null, 2))
+    return
+  }
+  return usage()
+}
+
+async function automationCommand(args) {
+  const kind = args.shift()
+  const action = args.shift()
+  if (kind === 'forward') {
+    throw new Error('`wa automation forward` was retired and is not executed. Use `wa automation prompt` so the configured AI prompt itself reads and sends with `wa`.')
+  }
+  if (kind !== 'prompt') return usage()
+  if (action === 'add') {
+    const name = args.shift()
+    const sourceTarget = extractOption(args, '--from')
+    const destinationTarget = extractOption(args, '--to')
+    const profileName = extractOption(args, '--profile')
+    const debounce = extractOption(args, '--debounce')
+    const fromMe = args.includes('--from-me')
+    const any = args.includes('--any')
+    const confirmed = args.includes('--yes')
+    if (fromMe) args.splice(args.indexOf('--from-me'), 1)
+    if (any) args.splice(args.indexOf('--any'), 1)
+    if (confirmed) args.splice(args.indexOf('--yes'), 1)
+    if (!name || !sourceTarget || !destinationTarget || !profileName) throw new Error('Use: wa automation prompt add <name> --from <contact> --to <contact> --profile <perfil> [--from-me|--any] [--debounce <segundos>] --yes')
+    if (fromMe && any) throw new Error('Choose --from-me or --any, not both.')
+    if (!confirmed) throw new Error('Creating a prompt automation authorizes a future AI agent to send WhatsApp messages to the specified destination. Review the resolved contacts and prompt, then re-run with --yes.')
+    assertNoArguments(args, 'wa automation prompt add')
+    const profile = await agentProfiles.get(profileName)
+    if (!profile) throw new Error(`Unknown AI profile: ${profileName}`)
+    const prompt = await promptHealth(profile)
+    if (prompt.status !== 'unchanged') throw new Error(`Cannot activate ${profile.name}: its prompt is ${prompt.status}. Review it and adopt the exact file again with \`wa agents profile set ${profile.name} --prompt-file ${profile.prompt.path}\`.`)
+    const provider = await probeProvider(profile.provider)
+    if (provider.status !== 'available') throw new Error(`Cannot activate ${profile.name}: ${provider.detail || provider.issue}. Run \`wa agents doctor ${profile.name}\` after fixing it.`)
+    const debounceSeconds = debounce === null ? 300 : Number(debounce)
+    if (!Number.isInteger(debounceSeconds) || debounceSeconds < 5 || debounceSeconds > 3600) throw new Error('Use --debounce with an integer from 5 to 3600 seconds.')
+    const [source, destination] = await Promise.all([resolve(sourceTarget), resolve(destinationTarget)])
+    const sourceOriginalJid = source.originalJid || (source.phone ? phoneToJid(source.phone) : source.jid)
+    const destinationOriginalJid = destination.originalJid || (destination.phone ? phoneToJid(destination.phone) : destination.jid)
+    const rule = await promptAutomations.add({
+      name,
+      source: source.alias || source.name || sourceTarget,
+      sourceTarget,
+      sourceJid: source.jid,
+      sourceOriginalJid,
+      destination: destination.alias || destination.name || destinationTarget,
+      destinationTarget,
+      destinationJid: destination.jid,
+      destinationOriginalJid,
+      profile: profile.name,
+      direction: fromMe ? 'from-me' : any ? 'any' : 'incoming',
+      debounceSeconds,
+    })
+    return console.log(`Prompt automation ${rule.name} is active: ${rule.source} (${rule.sourceJid}) → ${rule.destination} (${rule.destinationJid}); profile ${rule.profile}; debounce ${rule.debounceSeconds}s. It only queues new live message IDs; the configured prompt uses wa to inspect and send.`)
+  }
+  if (action === 'list') {
+    const all = args.includes('--all')
+    if (all) args.splice(args.indexOf('--all'), 1)
+    assertNoArguments(args, 'wa automation prompt list')
+    const rules = await promptAutomations.list({ all })
+    if (!rules.length) return console.log(all ? 'No prompt automation history.' : 'No active or paused prompt automations.')
+    const batches = await Promise.all(rules.map((rule) => promptAutomations.batchesFor(rule.id)))
+    for (const [index, rule] of rules.entries()) console.log(formatPromptAutomation(rule, batches[index]))
+    return
+  }
+  if (['show', 'pause', 'resume', 'remove'].includes(action)) {
+    const name = args.shift()
+    if (!name) return usage()
+    assertNoArguments(args, `wa automation prompt ${action}`)
+    if (action === 'show') {
+      const rule = await promptAutomations.get(name)
+      if (!rule) throw new Error(`Unknown prompt automation: ${name}`)
+      const batches = await promptAutomations.batchesFor(rule.id)
+      const detail = batches.slice(-20).map((batch) => `  - ${batch.id}: ${batch.status}; ${batch.messageIds.length} mensaje(s); vencía ${batch.dueAt}${batch.lastError ? `; detalle: ${batch.lastError}` : ''}`).join('\n')
+      return console.log(`${formatPromptAutomation(rule, batches)}${detail ? `\n  Últimas ejecuciones:\n${detail}` : ''}`)
+    }
+    const status = action === 'pause' ? 'paused' : action === 'resume' ? 'active' : 'removed'
+    const rule = await promptAutomations.setStatus(name, status)
+    return console.log(`Prompt automation ${rule.name} is ${rule.status}.`)
+  }
+  return usage()
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
@@ -322,6 +559,41 @@ async function main() {
   if (command === 'qr') return showQr()
   if (command === 'setup') return setup()
   if (command === 'history-policy') return historyPolicyCommand(args)
+  if (command === 'schedule') {
+    const action = args.shift()
+    if (action === 'list') {
+      const all = args.includes('--all')
+      const messages = await scheduledMessages.list({ all })
+      if (!messages.length) return console.log(all ? 'No scheduled message history.' : 'No active scheduled messages.')
+      console.log(all ? 'Historial de mensajes programados:' : 'Cola de mensajes programados:')
+      for (const message of messages) console.log(formatScheduledMessage(message))
+      if (!all) console.log('\nUsá `wa schedule list --all` para ver enviados, cancelados y vencidos.')
+      return
+    }
+    if (action === 'show') {
+      const message = await scheduledMessages.get(args.shift())
+      if (!message) throw new Error('Unknown scheduled message.')
+      console.log(`ID: ${message.id}\nEstado: ${message.status}\nProgramado: ${formatScheduledMessage(message).split(' — ').slice(2, 3)[0]}\nDestinatario: ${message.target}\nMensaje: ${message.text}${message.lastError ? `\nDetalle: ${message.lastError}` : ''}`)
+      return
+    }
+    if (action === 'cancel') {
+      const message = await scheduledMessages.cancel(args.shift())
+      return console.log(`Canceled scheduled message ${message.id}.`)
+    }
+    if (action === 'add') {
+      const at = extractOption(args, '--at')
+      const target = args.shift()
+      const text = args.join(' ').trim()
+      if (!at || !target || !text) return usage()
+      const contact = await resolve(target)
+      const originalJid = contact.originalJid || (contact.phone ? phoneToJid(contact.phone) : contact.jid)
+      const message = await scheduledMessages.add({ target: contact.alias || contact.name || target, jid: contact.jid, phone: contact.phone || null, originalJid, text, at })
+      return console.log(`Scheduled ${message.id} for ${formatScheduledMessage(message).split(' — ').slice(2, 3)[0]} (${message.target}).`)
+    }
+    return usage()
+  }
+  if (command === 'automation') return automationCommand(args)
+  if (command === 'agents') return agentsCommand(args)
   if (command === 'transcribe' && args[0] === 'setup') return setupTranscription()
   if (command === 'transcribe' && args[0] === 'doctor') return transcriptionDoctor()
   if (command === 'transcribe' && args[0] === 'pull') return pullTranscriptionModel(args[1])

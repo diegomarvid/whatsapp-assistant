@@ -29,8 +29,13 @@ import { coverageForChat } from './chat-coverage.js'
 import { loadHistoryPolicy } from './history-policy.js'
 import { MirrorStore, messageKey } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
+import { AgentProfiles } from './agent-providers.js'
+import { runPromptAutomation } from './agent-provider-runner.js'
+import { PromptAutomationRules } from './prompt-automation-rules.js'
+import { dispatchScheduledMessages } from './scheduled-dispatch.js'
+import { ScheduledMessages } from './scheduled-messages.js'
 
-const { authDir, dataDir } = paths
+const { authDir, dataDir, stateRoot } = paths
 const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
@@ -45,6 +50,8 @@ const downloadedDocumentDir = path.join(dataDir, 'documents')
 const videoEnvelopeDir = path.join(dataDir, 'video-envelopes')
 const downloadedVideoDir = path.join(dataDir, 'videos')
 const stickerEnvelopeDir = path.join(dataDir, 'sticker-envelopes')
+const scheduledMessagesPath = path.join(dataDir, 'scheduled-messages.json')
+const promptAutomationsPath = path.join(dataDir, 'prompt-automations.json')
 const downloadedStickerDir = path.join(dataDir, 'stickers')
 // Keep a bounded local context. Seven days is the privacy-safe default; a user
 // may deliberately widen the window through the private history policy.
@@ -68,6 +75,13 @@ let lastLiveMessageAt = null
 let mirrorStore = null
 let msgRetryCounterCache = null
 let outboundSender = null
+let outboundRetryStore = null
+let scheduledMessages = null
+let scheduledDispatchRunning = false
+let promptAutomations = null
+let promptAutomationDispatchRunning = false
+let promptAutomationDisabledReason = null
+let agentProfiles = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -491,6 +505,7 @@ async function ingestMessages(messages, source = 'history') {
       if (message.type === 'stickerMessage' && !existing.stickerRef) {
         try { await cacheStickerEnvelope(raw, existing); changed = true } catch (error) { logger.warn({ err: error, messageId: message.id }, 'Could not retain replayed sticker envelope') }
       }
+        await enqueuePromptAutomation(message)
         continue
       }
       try {
@@ -523,6 +538,7 @@ async function ingestMessages(messages, source = 'history') {
         lastObservedHistoryMessageId: source === 'history' ? message.id : previousChat.lastObservedHistoryMessageId || null,
       }
       changed = true
+      await enqueuePromptAutomation(message)
     } catch (error) {
       auditMessageEvent(raw, 'message.ingest_failed', { error: error.message })
       logger.error({ err: error, messageId: raw?.key?.id, jid: raw?.key?.remoteJid }, 'Skipped malformed WhatsApp payload; bridge remains connected')
@@ -667,6 +683,83 @@ async function sendIdempotently({ requestId, send }) {
   const outcome = await outboundSender.execute(requestId || null, send)
   if (outcome.pending) return { pending: true, requestId: outcome.requestId }
   return { sent: true, id: outcome.result?.key?.id || null, replayed: outcome.replayed }
+}
+
+async function processScheduledMessages() {
+  if (!scheduledMessages || scheduledDispatchRunning) return
+  scheduledDispatchRunning = true
+  try {
+    return await dispatchScheduledMessages({
+      queue: scheduledMessages,
+      canSend: () => connection === 'open' && Boolean(socket?.sendMessage),
+      resolveJid: resolveCurrentJid,
+      send: (message, jid) => sendIdempotently({
+        requestId: message.requestId,
+        send: () => socket.sendMessage(jid, { text: message.text }),
+      }),
+      logger,
+    })
+  } finally {
+    scheduledDispatchRunning = false
+  }
+}
+
+async function enqueuePromptAutomation(message) {
+  if (!promptAutomations || message.source !== 'live') return
+  try {
+    await promptAutomations.enqueue(message, { resolveSourceJid: resolveCurrentJid })
+  } catch (error) {
+    // An automation never compromises live message ingestion. A malformed
+    // private automation state is visible through health/CLI and no model is
+    // invoked until the user repairs it.
+    logger.error({ err: error, messageId: message.id, jid: message.jid }, 'Could not queue prompt automation')
+  }
+}
+
+async function processPromptAutomations() {
+  if (!promptAutomations || !agentProfiles || promptAutomationDispatchRunning) return
+  promptAutomationDispatchRunning = true
+  try {
+    const batch = await promptAutomations.claimDue()
+    if (!batch) return
+    const rule = await promptAutomations.getById(batch.ruleId)
+    if (!rule || rule.status !== 'active') {
+      await promptAutomations.uncertain(batch.id, 'The automation rule changed while the batch was waiting. It was not run.')
+      return
+    }
+    if (connection !== 'open' || !socket?.sendMessage) {
+      // This is a transport precondition, not a model decision. Leave the
+      // batch queued and spend no tokens until the local wa CLI can send.
+      await promptAutomations.defer(batch.id)
+      return
+    }
+    const profile = await agentProfiles.get(rule.profile)
+    if (!profile) {
+      await promptAutomations.uncertain(batch.id, `The configured AI profile ${rule.profile} no longer exists. It was not invoked.`)
+      return
+    }
+    try {
+      const result = await runPromptAutomation(profile, { rule, batch, stateDir: stateRoot })
+      if (result.ok) {
+        await promptAutomations.complete(batch.id, result)
+        logger.info({ automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation agent finished')
+      } else {
+        await promptAutomations.uncertain(batch.id, result.error, result.output)
+        logger.error({ automationRule: rule.name, batchId: batch.id, profile: profile.name, exitCode: result.exitCode }, 'Prompt automation agent result is uncertain and was not retried')
+      }
+    } catch (error) {
+      // Preparation failures (for example a changed prompt fingerprint) happen
+      // before a provider process exists, but must still release the queue.
+      // Treating them as uncertain is conservative and keeps a bad profile
+      // from wedging every future batch behind a perpetual `running` record.
+      await promptAutomations.uncertain(batch.id, error.message)
+      logger.error({ err: error, automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation could not start and was not retried')
+    }
+  } catch (error) {
+    logger.error({ err: error }, 'Could not process due prompt automation')
+  } finally {
+    promptAutomationDispatchRunning = false
+  }
 }
 
 function listenLocal(server) {
@@ -1154,7 +1247,21 @@ async function main() {
   await ensurePrivateDir(downloadedStickerDir)
   mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
   msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
-  outboundSender = new IdempotentSender({ store: mirrorStore.createRetryCache('outbound-send', { ttlSeconds: 24 * 60 * 60 }) })
+  outboundRetryStore = mirrorStore.createRetryCache('outbound-send', { ttlSeconds: 24 * 60 * 60 })
+  outboundSender = new IdempotentSender({ store: outboundRetryStore })
+  scheduledMessages = new ScheduledMessages(scheduledMessagesPath)
+  const recoveredScheduledMessages = await scheduledMessages.recoverInterrupted((requestId) => outboundRetryStore.get(requestId))
+  for (const message of recoveredScheduledMessages) logger.warn({ scheduledMessageId: message.id, status: message.status }, 'Recovered scheduled message after an interrupted bridge shutdown')
+  try {
+    promptAutomations = new PromptAutomationRules(promptAutomationsPath)
+    agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
+    const recoveredPromptAutomations = await promptAutomations.recoverInterrupted()
+    for (const batch of recoveredPromptAutomations) logger.warn({ automationRule: batch.ruleName, batchId: batch.id, status: batch.status }, 'Recovered interrupted prompt automation without retrying it')
+  } catch (error) {
+    promptAutomations = null
+    promptAutomationDisabledReason = `Prompt automations are disabled because their private state needs repair: ${error.message}`
+    logger.error({ err: error }, 'Prompt automations were disabled; the WhatsApp observer will continue normally')
+  }
   cache = mirrorStore.load()
   if (mirrorStore.isEmpty()) cache = await readJson(cachePath, cache)
   ensureCacheShape()
@@ -1172,6 +1279,12 @@ async function main() {
       .then(() => saveCache({ full: true }))
       .catch((error) => logger.warn({ err: error }, 'Periodic retention sweep failed'))
   }, 6 * 60 * 60 * 1000).unref()
+  setInterval(() => {
+    processScheduledMessages().catch((error) => logger.error({ err: error }, 'Could not process scheduled WhatsApp messages'))
+  }, 15 * 1000).unref()
+  setInterval(() => {
+    processPromptAutomations().catch((error) => logger.error({ err: error }, 'Could not process prompt automations'))
+  }, 5 * 1000).unref()
   const token = await loadToken()
 
   const server = http.createServer((request, response) => {
@@ -1194,7 +1307,11 @@ async function main() {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
       const unknownTypeMessages = cache.messages.reduce((count, message) => count + (message.type === 'unknown' ? 1 : 0), 0)
-      return json(response, 200, { connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages, ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite' })
+      return json(response, 200, {
+        connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages,
+        ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite',
+        automation: { promptAutomations: promptAutomations ? 'ready' : 'disabled', detail: promptAutomationDisabledReason },
+      })
     }
     if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
