@@ -231,6 +231,7 @@ wa automation prompt add nombre \
   --from contacto-fuente --to destino \
   --profile perfil-ia --debounce 300 --yes
 wa automation prompt list
+wa automation prompt list --verbose  # regla + modelo, effort, prompt, workspace y timeout
 wa automation prompt show nombre
 wa automation prompt pause nombre
 ```

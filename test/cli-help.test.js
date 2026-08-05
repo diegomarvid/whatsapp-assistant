@@ -83,6 +83,7 @@ test('automation help makes the provider prompt the only message decision-maker'
   const result = spawnSync(process.execPath, [cli, 'help', 'automation'], { encoding: 'utf8' })
   assert.equal(result.status, 0)
   assert.match(result.stdout, /wa automation prompt add diego-a-florencia/)
+  assert.match(result.stdout, /wa automation prompt list --verbose/)
   assert.match(result.stdout, /no llama ninguna IA/)
   assert.match(result.stdout, /wa history/)
   assert.match(result.stdout, /wa send/)

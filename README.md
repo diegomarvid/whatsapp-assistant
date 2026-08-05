@@ -102,6 +102,7 @@ wa automation prompt add diego-a-florencia \
   --from diego --to florencia --from-me \
   --profile diego-a-florencia-luna --debounce 300 --yes
 wa automation prompt list
+wa automation prompt list --verbose  # regla + modelo, effort, prompt, workspace y timeout
 wa automation prompt show diego-a-florencia
 wa automation prompt pause diego-a-florencia
 ```
