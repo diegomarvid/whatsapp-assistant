@@ -65,7 +65,19 @@ async function downloadEnvelope(pathname, jid, messageId, failureMessage) {
     headers: { authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`${failureMessage}: ${(await response.json()).message || response.status}`)
-  return response.json()
+  const envelope = await response.json()
+  // A code-capable automation may be allowed to inspect media but must never
+  // be given the bridge's real private data directory just to do so. Copy the
+  // downloaded file into its ephemeral capability directory when requested.
+  const mediaDirectory = process.env.WA_AUTOMATION_MEDIA_DIR
+  if (!mediaDirectory) return envelope
+  const [kind, media] = Object.entries(envelope).find(([, value]) => value?.path) || []
+  if (!kind || !media?.path || !path.isAbsolute(media.path)) return envelope
+  await fs.mkdir(mediaDirectory, { recursive: true, mode: 0o700 })
+  const stagedPath = path.join(mediaDirectory, path.basename(media.path))
+  await fs.copyFile(media.path, stagedPath)
+  await fs.chmod(stagedPath, 0o600)
+  return { ...envelope, [kind]: { ...media, path: stagedPath } }
 }
 
 export function downloadAudio(jid, messageId) {

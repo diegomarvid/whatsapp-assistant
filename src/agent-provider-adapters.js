@@ -55,12 +55,17 @@ export function buildAutomationProviderInvocation(profile, {
 } = {}) {
   assertProfile(profile)
   if (!stateDir || !path.isAbsolute(stateDir)) throw new Error('Automation provider invocations require an absolute WhatsApp state directory.')
+  const codeWorkspace = profile.workspace?.path || null
+  if (codeWorkspace && !path.isAbsolute(codeWorkspace)) throw new Error('Automation workspaces must use an absolute path.')
   if (profile.provider === 'claude') {
+    const tools = codeWorkspace ? 'Read,Edit,Write,Bash' : 'Bash'
     return {
       command: executable || PROVIDERS.claude.binary,
       args: [
         '-p', '--output-format', 'json', '--no-session-persistence', '--safe-mode', '--strict-mcp-config',
-        '--tools', 'Bash', '--allowedTools', 'Bash(wa *)',
+        '--tools', tools,
+        ...(codeWorkspace ? ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash'] : ['--allowedTools', 'Bash(wa *)']),
+        ...(codeWorkspace ? ['--add-dir', stateDir] : []),
         `--model=${profile.model}`,
         ...(profile.effort ? [`--effort=${profile.effort}`] : []),
       ],
@@ -74,6 +79,7 @@ export function buildAutomationProviderInvocation(profile, {
       // `wa` needs to make to the local bridge. The surrounding worker still
       // gives it only an ephemeral CLI state and a target-checked `wa` shim.
       'exec', '--json', '--ephemeral', '--sandbox', 'danger-full-access', '--add-dir', stateDir,
+      ...(codeWorkspace ? ['--add-dir', codeWorkspace] : []),
       '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
       `--model=${profile.model}`,
       ...(profile.reasoningEffort ? ['--config', `model_reasoning_effort=${JSON.stringify(profile.reasoningEffort)}`] : []),

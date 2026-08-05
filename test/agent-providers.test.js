@@ -69,6 +69,14 @@ test('updating a profile preserves its prompt unless an explicit new prompt is s
   assert.deepEqual(updated.prompt, created.prompt)
 })
 
+test('a profile may explicitly scope an automation to one owned workspace', async (context) => {
+  const { directory, profiles, prompt } = await fixture(context)
+  const profile = await profiles.set({ name: 'nelcor', provider: 'claude', model: 'opus', effort: 'medium', promptFile: prompt, workspace: directory })
+  assert.deepEqual(profile.workspace, { path: await fs.realpath(directory) })
+  assert.deepEqual((await profiles.set({ name: 'nelcor', workspace: null })).workspace, null)
+  await assert.rejects(profiles.set({ name: 'bad-workspace', provider: 'claude', model: 'opus', promptFile: prompt, workspace: prompt }), /not a directory/)
+})
+
 test('concurrent profile writes retain both profiles', async (context) => {
   const { directory, prompt } = await fixture(context)
   const filename = path.join(directory, 'agent-profiles.json')
@@ -183,6 +191,14 @@ test('automation invocations give the agent its wa capability without turning ou
   assert.ok(claude.args.includes('Bash(wa *)'))
   assert.ok(claude.args.includes('--safe-mode'))
   assert.ok(!claude.args.includes('--dangerously-skip-permissions'))
+
+  const workspaceClaude = buildAutomationProviderInvocation(
+    { provider: 'claude', model: 'opus', effort: 'medium', prompt: { path: '/private/prompt.md' }, workspace: { path: '/private/nelcor' } },
+    { stateDir: '/private/wa-state' },
+  )
+  assert.ok(workspaceClaude.args.includes('Read,Edit,Write,Bash'))
+  assert.ok(workspaceClaude.args.includes('acceptEdits'))
+  assert.ok(workspaceClaude.args.includes('/private/wa-state'))
 })
 
 async function script(directory, name, contents) {
@@ -257,6 +273,7 @@ printf '%s\\n' 'Agent ran wa directly.' > "$output"
   const result = await runPromptAutomation(profile, {
     executable,
     stateDir,
+    capabilityToken: 'test-capability-token',
     rule: { sourceTarget: 'diego', destinationTarget: 'florencia' },
     batch: { messageIds: ['SOURCE-1'] },
   })
@@ -271,7 +288,7 @@ test('prompt automation refuses a modified prompt before it starts the provider'
   await fs.writeFile(prompt, 'Changed after profile approval.\n', { mode: 0o600 })
   const executable = await script(directory, 'must-not-run', '#!/bin/sh\nexit 44\n')
   await assert.rejects(
-    runPromptAutomation(profile, { executable, stateDir: path.join(directory, 'wa-state'), rule: { sourceTarget: 'diego', destinationTarget: 'florencia' }, batch: { messageIds: ['SOURCE-1'] } }),
+    runPromptAutomation(profile, { executable, stateDir: path.join(directory, 'wa-state'), capabilityToken: 'test-capability-token', rule: { sourceTarget: 'diego', destinationTarget: 'florencia' }, batch: { messageIds: ['SOURCE-1'] } }),
     /prompt changed after it was approved/,
   )
 })

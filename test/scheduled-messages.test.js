@@ -58,8 +58,9 @@ test('a confirmed send is recovered as sent after restart', async (context) => {
 
 test('concurrent CLI and daemon writers retain both queue updates', async (context) => {
   const { filename } = await queueFor(context)
-  const first = new ScheduledMessages(filename)
-  const second = new ScheduledMessages(filename)
+  const now = () => Date.parse('2026-08-01T12:00:00-03:00')
+  const first = new ScheduledMessages(filename, { now })
+  const second = new ScheduledMessages(filename, { now })
   await Promise.all([
     first.add({ target: 'A', jid: 'a@lid', text: 'Uno', at: '2026-08-03T21:00:00-03:00' }),
     second.add({ target: 'B', jid: 'b@lid', text: 'Dos', at: '2026-08-03T21:01:00-03:00' }),

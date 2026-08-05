@@ -7,6 +7,14 @@ const RULE_STATUSES = new Set(['active', 'paused', 'removed'])
 const BATCH_STATUSES = new Set(['pending', 'running', 'completed', 'uncertain'])
 const DIRECTIONS = new Set(['incoming', 'from-me', 'any'])
 const DEDUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+// Transport/control frames sometimes appear as mirrored messages. They are not
+// user-authored content and must never spend an automation provider call.
+const USER_CONTENT_TYPES = new Set([
+  'conversation', 'extendedTextMessage', 'imageMessage', 'videoMessage',
+  'audioMessage', 'documentMessage', 'stickerMessage', 'locationMessage',
+  'liveLocationMessage', 'contactMessage', 'contactsArrayMessage',
+  'pollCreationMessage', 'pollCreationMessageV2', 'pollCreationMessageV3',
+])
 
 function wait(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)) }
 function id() { return crypto.randomUUID().replaceAll('-', '') }
@@ -140,7 +148,9 @@ export class PromptAutomationRules {
         destination: destination.trim(), destinationTarget: destinationTarget.trim(), destinationJid: destinationJid.trim(), destinationOriginalJid: destinationOriginalJid?.trim() || destinationJid.trim(),
         profile: profile.trim(), direction, debounceSeconds, status: 'active', activeAfter: this.nowSeconds(), createdAt: this.nowIso(), updatedAt: this.nowIso(),
       }
-      if ([...sourceKeys(rule)].some((key) => [rule.destinationJid, rule.destinationOriginalJid].includes(key))) throw new Error('A prompt automation cannot use the same chat as source and destination.')
+      if (direction !== 'incoming' && [...sourceKeys(rule)].some((key) => [rule.destinationJid, rule.destinationOriginalJid].includes(key))) {
+        throw new Error('A prompt automation may use the same chat as source and destination only for incoming messages.')
+      }
       state.rules.push(rule)
       return { value: structuredClone(rule) }
     })
@@ -173,11 +183,12 @@ export class PromptAutomationRules {
   }
 
   // This is deliberately mechanical: source identity, direction, freshness,
-  // and IDs only. It never looks at message text, type, links, or intent.
+  // supported user-content type, and IDs only. It never examines message text,
+  // links, or intent; the configured provider decides that from the batch.
   async enqueue(message, { resolveSourceJid = async (jid) => jid } = {}) {
     return this.mutate(async (state) => {
       const timestamp = Number(message?.timestamp)
-      if (message?.source !== 'live' || !text(message?.jid) || !text(message?.id) || !Number.isFinite(timestamp)) return { value: [], save: false }
+      if (message?.source !== 'live' || !text(message?.jid) || !text(message?.id) || !USER_CONTENT_TYPES.has(message?.type) || !Number.isFinite(timestamp)) return { value: [], save: false }
       const matched = []
       for (const rule of state.rules.filter((entry) => entry.status === 'active')) {
         const resolved = await resolveSourceJid(rule.sourceOriginalJid)

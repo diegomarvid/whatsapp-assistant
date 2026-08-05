@@ -93,6 +93,10 @@ wa agents providers
 wa agents profile set diego-a-florencia-luna \
   --provider codex --model gpt-5.6-luna --reasoning-effort max \
   --prompt-file /ruta/absoluta/diego-a-florencia.md
+wa agents profile set nelcor-platform \
+  --provider claude --model opus --effort medium \
+  --prompt-file /ruta/absoluta/nelcor-platform.md \
+  --workspace /ruta/absoluta/conciliar
 wa agents doctor diego-a-florencia-luna    # binario, versión y flags; no consume tokens
 wa automation prompt add diego-a-florencia \
   --from diego --to florencia --from-me \
@@ -104,7 +108,11 @@ wa automation prompt pause diego-a-florencia
 
 El agente recibe sólo IDs de evento, no texto; trata todo contenido de WhatsApp
 como datos no confiables. Puede consultar únicamente el chat fuente y enviar al
-único destino configurado. Si el proveedor se interrumpe, la ejecución queda
+único destino configurado. Cada corrida recibe una capability efímera que el
+bridge valida por operación y JID: cambiar aliases o el shim local no amplía
+ese permiso. Sin `--workspace`, no puede editar código; con `--workspace`,
+puede trabajar sólo en ese directorio y el prompt debe definir expresamente el
+alcance de releases. Si el proveedor se interrumpe, la ejecución queda
 `uncertain` y no se repite automáticamente, porque podría haber alcanzado a
 enviar. Los perfiles aceptan IDs nuevos de modelos: Claude usa `--effort` y
 Codex usa `--reasoning-effort`; “Luna Max” es

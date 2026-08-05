@@ -194,6 +194,7 @@ wa schedule cancel <id>
 # Preparar un proveedor de IA; esto todavía no instala una regla ni procesa chats.
 wa agents providers
 wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md
+wa agents profile set plataforma --provider claude --model opus --effort medium --prompt-file /ruta/absoluta/prompt.md --workspace /ruta/absoluta/repo
 wa agents profile set seguimiento-codex --provider codex --model gpt-5 --reasoning-effort high --prompt-file /ruta/absoluta/prompt.md
 wa agents profile list
 wa agents doctor seguimiento       # inspección local sin llamar al modelo
@@ -208,10 +209,13 @@ segunda comprobación explícita que carga el prompt real. Los dos modos siguen
 sin crear una regla, leer chats o enviar un WhatsApp.
 
 El prompt debe ser un archivo absoluto, regular, propiedad del usuario actual y
-no escribible por grupo u otros. El perfil guarda el destino resuelto y una
-huella, no el contenido. Si cambiás el prompt, `wa agents doctor <perfil>` lo
-indica como `changed`; para adoptar la nueva versión de forma deliberada,
-repetí `wa agents profile set <perfil> --prompt-file <ruta-absoluta>`.
+no escribible por grupo u otros. `--workspace` es opcional: debe ser un
+directorio absoluto del usuario y habilita edición sólo ahí; los perfiles sin
+workspace siguen siendo agentes de WhatsApp sin acceso a código. El perfil
+guarda el destino resuelto y una huella, no el contenido. Si cambiás el prompt,
+`wa agents doctor <perfil>` lo indica como `changed`; para adoptar la nueva
+versión de forma deliberada, repetí `wa agents profile set <perfil>
+--prompt-file <ruta-absoluta>`.
 
 ## Automatizaciones de prompt
 
@@ -232,14 +236,17 @@ wa automation prompt pause nombre
 ```
 
 La regla registra sólo identidad de chat, dirección, hora e IDs para disparar
-la ejecución; el contenido y media quedan para el prompt. El agente corre en
-un directorio efímero y su único canal de efectos externos es `wa`, acotado al
-chat fuente y destino configurados. Todo texto de WhatsApp, incluso citas y
-links, se marca como dato no confiable, nunca como instrucción. Si el proveedor
-falla o el bridge se reinicia mientras está en marcha, el batch queda
-`uncertain` y no se reintenta automáticamente, ya que podría haber enviado.
-`wa automation forward` fue retirado: no existe un reenvío determinista ni una
-capa semántica alternativa al prompt.
+la ejecución; el contenido y media quedan para el prompt. Sólo contenido de
+usuario (texto o media) puede encolarla; frames de protocolo y reacciones se
+descartan antes de llamar al proveedor. Cada ejecución usa una capability
+efímera validada por el bridge para esos JIDs y acciones, por lo que un alias o
+shim modificado no puede ampliar el alcance. El agente corre en un directorio
+efímero salvo que el perfil tenga un workspace explícito. Todo texto de
+WhatsApp, incluso citas y links, se marca como dato no confiable, nunca como
+instrucción. Si el proveedor falla o el bridge se reinicia mientras está en
+marcha, el batch queda `uncertain` y no se reintenta automáticamente, ya que
+podría haber enviado. `wa automation forward` fue retirado: no existe un
+reenvío determinista ni una capa semántica alternativa al prompt.
 
 Aliases live in `data/aliases.json`, not in Git. When the user supplies a stable
 name/number mapping, save it with `wa alias add` so later requests like

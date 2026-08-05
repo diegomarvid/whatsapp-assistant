@@ -31,6 +31,7 @@ import { MirrorStore, messageKey } from './mirror-store.js'
 import { paths } from './runtime-paths.js'
 import { AgentProfiles } from './agent-providers.js'
 import { runPromptAutomation } from './agent-provider-runner.js'
+import { AutomationCapabilities } from './automation-capabilities.js'
 import { PromptAutomationRules } from './prompt-automation-rules.js'
 import { dispatchScheduledMessages } from './scheduled-dispatch.js'
 import { ScheduledMessages } from './scheduled-messages.js'
@@ -82,6 +83,7 @@ let promptAutomations = null
 let promptAutomationDispatchRunning = false
 let promptAutomationDisabledReason = null
 let agentProfiles = null
+let automationCapabilities = null
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' })
 
@@ -738,8 +740,19 @@ async function processPromptAutomations() {
       await promptAutomations.uncertain(batch.id, `The configured AI profile ${rule.profile} no longer exists. It was not invoked.`)
       return
     }
+    let capabilityToken = null
     try {
-      const result = await runPromptAutomation(profile, { rule, batch, stateDir: stateRoot })
+      const [resolvedSourceJid, resolvedDestinationJid] = await Promise.all([
+        resolveCurrentJid(rule.sourceOriginalJid), resolveCurrentJid(rule.destinationOriginalJid),
+      ])
+      capabilityToken = automationCapabilities.issue({
+        readJids: [rule.sourceJid, rule.sourceOriginalJid, batch.sourceJid, resolvedSourceJid],
+        sendJids: [rule.destinationJid, rule.destinationOriginalJid, resolvedDestinationJid],
+        // The provider gets a short grace window to finish its final scoped wa
+        // call, but a leaked worker token can never become a durable credential.
+        ttlMs: Math.min(Math.max((profile.timeoutMs || 60000) + 30000, 60000), 10 * 60 * 1000),
+      })
+      const result = await runPromptAutomation(profile, { rule, batch, stateDir: stateRoot, capabilityToken })
       if (result.ok) {
         await promptAutomations.complete(batch.id, result)
         logger.info({ automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation agent finished')
@@ -754,6 +767,8 @@ async function processPromptAutomations() {
       // from wedging every future batch behind a perpetual `running` record.
       await promptAutomations.uncertain(batch.id, error.message)
       logger.error({ err: error, automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation could not start and was not retried')
+    } finally {
+      if (capabilityToken) automationCapabilities.revoke(capabilityToken)
     }
   } catch (error) {
     logger.error({ err: error }, 'Could not process due prompt automation')
@@ -815,9 +830,18 @@ function requestBody(request) {
   })
 }
 
-function isAuthorized(request, token) {
+function authorizationFor(request, token) {
   const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '') || ''
-  return supplied.length === token.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(token))
+  return automationCapabilities?.authorization(supplied, token) || null
+}
+
+function capabilityForbidden(response) {
+  return json(response, 403, { error: 'automation_capability_forbidden' })
+}
+
+function automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend }) {
+  return (request.method === 'GET' && ['/resolve', '/coverage', '/messages', '/identities'].includes(url.pathname))
+    || isAudioDownload || isImageDownload || isDocumentDownload || isVideoDownload || isStickerDownload || isMessageSend
 }
 
 async function applyMessageUpdates(updates) {
@@ -1286,6 +1310,7 @@ async function main() {
     processPromptAutomations().catch((error) => logger.error({ err: error }, 'Could not process prompt automations'))
   }, 5 * 1000).unref()
   const token = await loadToken()
+  automationCapabilities = new AutomationCapabilities()
 
   const server = http.createServer((request, response) => {
     const url = new URL(request.url, 'http://127.0.0.1')
@@ -1313,11 +1338,14 @@ async function main() {
         automation: { promptAutomations: promptAutomations ? 'ready' : 'disabled', detail: promptAutomationDisabledReason },
       })
     }
-    if (!isAuthorized(request, token)) return json(response, 401, { error: 'unauthorized' })
+    const authorization = authorizationFor(request, token)
+    if (!authorization) return json(response, 401, { error: 'unauthorized' })
+    if (authorization.kind === 'automation' && !automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend })) return capabilityForbidden(response)
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (request.method === 'GET' && url.pathname === '/resolve') {
       const jid = url.searchParams.get('jid')
       if (!jid) return json(response, 400, { error: 'jid_required' })
+      if (!automationCapabilities.canResolve(authorization, jid)) return capabilityForbidden(response)
       resolveCurrentJid(jid)
         .then((resolvedJid) => json(response, 200, { requestedJid: jid, jid: resolvedJid, remapped: resolvedJid !== jid }))
         .catch((error) => json(response, 422, { error: 'jid_resolution_failed', message: error.message }))
@@ -1352,11 +1380,13 @@ async function main() {
     if (request.method === 'GET' && url.pathname === '/coverage') {
       const jid = url.searchParams.get('jid')
       if (!jid) return json(response, 400, { error: 'jid_required' })
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       return json(response, 200, chatCoverage(jid))
     }
     if (isMessageSend) {
       requestBody(request).then(async ({ jid, text, replyToMessageId, mentions, requestId }) => {
         if (!jid || typeof text !== 'string' || !text.trim()) return json(response, 400, { error: 'invalid_message' })
+        if (!automationCapabilities.canSend(authorization, jid)) return capabilityForbidden(response)
         if (replyToMessageId != null && typeof replyToMessageId !== 'string') return json(response, 400, { error: 'invalid_reply_target' })
         if (mentions !== undefined && (!Array.isArray(mentions) || mentions.some((item) => typeof item !== 'string'))) return json(response, 400, { error: 'invalid_mentions' })
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
@@ -1466,6 +1496,7 @@ async function main() {
     if (isAudioDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const found = findMessage(jid, messageId)
       const message = found?.type === 'audioMessage' ? found : null
       if (!message) return json(response, 404, { error: 'audio_not_found' })
@@ -1477,6 +1508,7 @@ async function main() {
     if (isImageDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const found = findMessage(jid, messageId)
       const message = found?.type === 'imageMessage' ? found : null
       if (!message) return json(response, 404, { error: 'image_not_found' })
@@ -1488,6 +1520,7 @@ async function main() {
     if (isDocumentDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const found = findMessage(jid, messageId)
       const message = found?.type === 'documentMessage' ? found : null
       if (!message) return json(response, 404, { error: 'document_not_found' })
@@ -1497,6 +1530,7 @@ async function main() {
     if (isVideoDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const found = findMessage(jid, messageId)
       const message = found?.type === 'videoMessage' ? found : null
       if (!message) return json(response, 404, { error: 'video_not_found' })
@@ -1506,6 +1540,7 @@ async function main() {
     if (isStickerDownload) {
       const jid = url.searchParams.get('jid')
       const messageId = url.searchParams.get('messageId')
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const found = findMessage(jid, messageId)
       const message = found?.type === 'stickerMessage' ? found : null
       if (!message) return json(response, 404, { error: 'sticker_not_found' })
@@ -1532,8 +1567,14 @@ async function main() {
       for (const [jid, messageCount] of messageCounts) {
         if (!known.has(jid)) chats.push({ jid, name: cache.contacts[jid]?.name || null, lastTimestamp: latestByJid.get(jid) || null, messageCount })
       }
-      const contacts = Object.fromEntries(Object.entries(cache.contacts).map(([jid, contact]) => [jid, { name: contact.name || null }]))
-      return json(response, 200, { chats, contacts })
+      const permittedChats = authorization.kind === 'automation'
+        ? chats.filter((chat) => automationCapabilities.canResolve(authorization, chat.jid))
+        : chats
+      const permittedJids = new Set(permittedChats.map((chat) => chat.jid))
+      const contacts = Object.fromEntries(Object.entries(cache.contacts)
+        .filter(([jid]) => authorization.kind !== 'automation' || permittedJids.has(jid))
+        .map(([jid, contact]) => [jid, { name: contact.name || null }]))
+      return json(response, 200, { chats: permittedChats, contacts })
     }
     if (url.pathname === '/events') {
       const kind = url.searchParams.get('kind')
@@ -1558,6 +1599,7 @@ async function main() {
     if (url.pathname === '/messages') {
       const jid = url.searchParams.get('jid')
       if (!jid) return json(response, 400, { error: 'missing_jid' })
+      if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const messages = cache.messages
         .filter((message) => message.jid === jid)
         .sort((a, b) => b.timestamp - a.timestamp)

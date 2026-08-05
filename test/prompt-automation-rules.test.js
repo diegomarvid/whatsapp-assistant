@@ -19,7 +19,7 @@ async function fixture(context) {
   return { directory, rules, rule, message, advance(seconds) { now += seconds * 1000 } }
 }
 
-test('the queue considers only source metadata and IDs, never the message text or type', async (context) => {
+test('the queue accepts only live user content, never transport/control frames or text instructions', async (context) => {
   const { rules, rule, message } = await fixture(context)
   assert.deepEqual(await rules.enqueue({ ...message, source: 'history' }), [])
   assert.deepEqual(await rules.enqueue({ ...message, fromMe: false, id: 'INCOMING' }), [])
@@ -27,7 +27,24 @@ test('the queue considers only source metadata and IDs, never the message text o
   assert.equal(queued.length, 1)
   assert.equal(queued[0].ruleId, rule.id)
   assert.deepEqual(queued[0].messageIds, ['SOURCE-1'])
+  assert.deepEqual(await rules.enqueue({ ...message, id: 'PROTOCOL', type: 'protocolMessage' }), [])
+  assert.deepEqual(await rules.enqueue({ ...message, id: 'REACTION', type: 'reactionMessage' }), [])
   assert.deepEqual(await rules.enqueue(message), [])
+})
+
+test('an incoming-only rule may reply in the same chat without listening to its own responses', async (context) => {
+  const { directory, message } = await fixture(context)
+  const rules = new PromptAutomationRules(path.join(directory, 'same-chat.json'), { now: () => Date.parse('2026-08-01T12:00:00-03:00') })
+  const rule = await rules.add({
+    name: 'ines-platform', source: 'Inés', sourceTarget: 'ines-nelcor', sourceJid: 'ines@lid', sourceOriginalJid: '59894070759@s.whatsapp.net',
+    destination: 'Inés', destinationTarget: 'ines-nelcor', destinationJid: 'ines@lid', destinationOriginalJid: '59894070759@s.whatsapp.net',
+    profile: 'ines-platform-opus', direction: 'incoming', debounceSeconds: 300,
+  })
+  assert.equal((await rules.enqueue({ ...message, jid: 'ines@lid', fromMe: false, id: 'FROM-INES' })).length, 1)
+  assert.deepEqual(await rules.enqueue({ ...message, jid: 'ines@lid', fromMe: true, id: 'OWN-REPLY' }), [])
+  await assert.rejects(rules.add({
+    ...rule, name: 'bad-same-chat', direction: 'any', createdAt: undefined, updatedAt: undefined,
+  }), /same chat.*incoming/i)
 })
 
 test('new messages reset a single debounce batch and only a due batch can be claimed', async (context) => {

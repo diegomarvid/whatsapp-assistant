@@ -67,6 +67,16 @@ function validTimeout(value) {
   return parsed
 }
 
+async function inspectWorkspaceDirectory(filename) {
+  if (!path.isAbsolute(filename)) throw new Error('Automation workspaces must use an absolute path.')
+  const resolved = await fs.realpath(filename)
+  const stat = await fs.stat(resolved)
+  if (!stat.isDirectory()) throw new Error(`Automation workspace is not a directory: ${resolved}`)
+  const currentUserId = typeof process.getuid === 'function' ? process.getuid() : null
+  if (currentUserId !== null && stat.uid !== currentUserId) throw new Error(`Automation workspaces must be owned by the current user: ${resolved}`)
+  return { path: resolved }
+}
+
 function normalizeProfile(input, { previous = null, now = new Date().toISOString() } = {}) {
   const name = validName(input.name ?? previous?.name)
   const provider = String(input.provider ?? previous?.provider ?? '').trim().toLocaleLowerCase()
@@ -81,8 +91,11 @@ function normalizeProfile(input, { previous = null, now = new Date().toISOString
   if (effort && reasoningEffort) throw new Error('Choose either Claude --effort or Codex --reasoning-effort, not both.')
   const prompt = input.prompt ?? previous?.prompt ?? null
   if (!prompt?.path || !path.isAbsolute(prompt.path) || !/^[a-f0-9]{64}$/.test(prompt.sha256) || !Number.isInteger(prompt?.bytes) || prompt.bytes <= 0 || prompt.bytes > MAX_PROMPT_BYTES) throw new Error('A private absolute prompt file is required when creating a profile. Use --prompt-file <absolute path>.')
+  const workspace = input.workspace === null ? null : input.workspace ?? previous?.workspace ?? null
+  if (workspace !== null && (!workspace?.path || !path.isAbsolute(workspace.path))) throw new Error('Automation workspace must be an approved absolute directory. Use --workspace <absolute path>.')
   return {
     name, provider, model, effort, reasoningEffort, prompt: { path: prompt.path, sha256: prompt.sha256, bytes: prompt.bytes, modifiedAt: prompt.modifiedAt },
+    workspace: workspace ? { path: workspace.path } : null,
     timeoutMs: validTimeout(input.timeoutMs ?? previous?.timeoutMs),
     createdAt: previous?.createdAt || now,
     updatedAt: now,
@@ -204,10 +217,11 @@ export class AgentProfiles extends PrivateJsonStore {
 
   async set(input) {
     const prompt = input.promptFile ? await inspectPromptFile(input.promptFile) : undefined
+    const workspace = input.workspace ? await inspectWorkspaceDirectory(input.workspace) : input.workspace === null ? null : undefined
     return this.withLock(async () => {
       const document = await this.load()
       const name = validName(input.name)
-      const profile = normalizeProfile({ ...input, name, ...(prompt ? { prompt } : {}) }, { previous: document.profiles[name] || null })
+      const profile = normalizeProfile({ ...input, name, ...(prompt ? { prompt } : {}), ...(workspace !== undefined ? { workspace } : {}) }, { previous: document.profiles[name] || null })
       document.profiles[name] = profile
       await writeAtomic(this.filename, document)
       return structured(profile)
@@ -350,6 +364,7 @@ export function formatAgentProfile(profile) {
     `Effort (Claude): ${profile.effort || 'provider default'}`,
     `Reasoning effort (Codex): ${profile.reasoningEffort || 'provider default'}`,
     `Prompt: ${profile.prompt.path} (${profile.prompt.bytes} bytes, sha256 ${profile.prompt.sha256.slice(0, 12)}…)`,
+    `Workspace: ${profile.workspace?.path || 'none (WhatsApp-only agent)'}`,
     `Timeout: ${profile.timeoutMs} ms`,
     `Actualizado: ${profile.updatedAt}`,
   ].join('\n')
