@@ -1,6 +1,7 @@
 export const DEFAULT_RETENTION_DAYS = 7
 // Kept as an alias for callers built against earlier releases.
 export const RECENT_RETENTION_DAYS = DEFAULT_RETENTION_DAYS
+const CONNECTION_EVENT_ORDER_TOLERANCE_SECONDS = 5
 
 function numberOrNull(value) {
   const number = Number(value)
@@ -24,7 +25,10 @@ export function coverageForChat({ chat, messages, connection, sync, retentionDay
   // genuinely unchanged, not merely unobserved; requiring per-chat activity
   // would wrongly mark every quiet chat stale after each reconnect.
   const offlineQueueFlushedAt = numberOrNull(sync?.pendingNotificationsFlushedAt)
-  const offlineQueueDrained = Boolean(offlineQueueFlushedAt && connectedAt && offlineQueueFlushedAt >= connectedAt)
+  const offlineQueueDrained = Boolean(
+    offlineQueueFlushedAt && connectedAt
+    && offlineQueueFlushedAt >= connectedAt - CONNECTION_EVENT_ORDER_TOLERANCE_SECONDS,
+  )
   const reasons = []
 
   if (connection !== 'open') reasons.push('bridge_not_connected')

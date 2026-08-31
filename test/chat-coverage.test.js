@@ -38,6 +38,12 @@ test('an offline flush from a previous connection does not count', () => {
   assert.deepEqual(report.reasons, ['chat_not_observed_after_connection'])
 })
 
+test('a queue confirmation recorded just before connection is fresh', () => {
+  const report = coverage({ sync: { lastConnectedAt: connectedAt, ingestionHealthy: true, pendingNotificationsFlushedAt: connectedAt - 1 } })
+  assert.equal(report.fresh, true)
+  assert.deepEqual(report.reasons, [])
+})
+
 test('a drained queue never overrides a remote cursor ahead of the local cache', () => {
   const report = coverage({
     chat: { jid: '1@lid', remoteLastTimestamp: now - 60 },
