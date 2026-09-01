@@ -8,6 +8,13 @@ function isPackagedInstall(root) {
   return root.split(path.sep).includes('node_modules')
 }
 
+function isGloballyLinkedCli(root, invokedPath) {
+  if (!invokedPath) return false
+  const entry = path.resolve(invokedPath)
+  const rootPrefix = `${path.resolve(root)}${path.sep}`
+  return path.basename(entry) === 'wa' && !entry.startsWith(rootPrefix)
+}
+
 function xdgDirectory(env, variable, fallback) {
   const value = env[variable]?.trim()
   // XDG values must be absolute: a relative value must not make private state
@@ -15,11 +22,17 @@ function xdgDirectory(env, variable, fallback) {
   return value && path.isAbsolute(value) ? value : fallback
 }
 
-export function runtimePaths({ root = projectRoot, env = process.env, platform = process.platform, home = os.homedir() } = {}) {
+export function runtimePaths({
+  root = projectRoot,
+  env = process.env,
+  platform = process.platform,
+  home = os.homedir(),
+  invokedPath = root === projectRoot ? process.argv[1] : path.join(root, 'bin', 'wa.js'),
+} = {}) {
   const configuredStateDir = env.WA_STATE_DIR?.trim()
   const stateRoot = configuredStateDir
     ? path.resolve(configuredStateDir)
-    : isPackagedInstall(root)
+    : isPackagedInstall(root) || isGloballyLinkedCli(root, invokedPath)
       ? platform === 'darwin'
         ? path.join(home, 'Library', 'Application Support', 'WhatsApp Assistant')
         : path.join(xdgDirectory(env, 'XDG_STATE_HOME', path.join(home, '.local', 'state')), 'whatsapp-assistant')

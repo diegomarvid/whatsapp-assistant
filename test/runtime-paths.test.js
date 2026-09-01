@@ -21,6 +21,18 @@ test('uses private macOS application support state for a packaged install', () =
   assert.equal(result.authDir, '/Users/example/Library/Application Support/WhatsApp Assistant/auth')
 })
 
+test('uses private application state when a development checkout is invoked through a global wa link', () => {
+  const result = runtimePaths({
+    root: '/work/whatsapp-assistant',
+    invokedPath: '/opt/homebrew/bin/wa',
+    home: '/Users/example',
+    platform: 'darwin',
+    env: {},
+  })
+  assert.equal(result.stateRoot, '/Users/example/Library/Application Support/WhatsApp Assistant')
+  assert.equal(result.dataDir, '/Users/example/Library/Application Support/WhatsApp Assistant/data')
+})
+
 test('honors an explicit state directory on every platform', () => {
   const result = runtimePaths({ root: '/opt/homebrew/lib/node_modules/whatsapp-assistant', home: '/Users/example', platform: 'linux', env: { WA_STATE_DIR: '/private/wa-state' } })
   assert.equal(result.stateRoot, '/private/wa-state')

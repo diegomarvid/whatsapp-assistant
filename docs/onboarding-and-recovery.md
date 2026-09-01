@@ -105,6 +105,11 @@ local user, and is excluded from Git.
    npm link
    ```
 
+   A globally linked `wa` keeps using the platform's private application state,
+   so it stays aligned with an already installed daemon. To run both the CLI and
+   bridge against checkout-local `data/` and `auth/` during development, invoke
+   `node bin/wa.js` and `node src/server.js` directly from the checkout.
+
 3. The development checkout can load or start a LaunchAgent manually on macOS:
 
    ```bash
