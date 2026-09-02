@@ -47,7 +47,7 @@ function chatLabel(jid, cache) {
   return name ? `${name} (${jid})` : jid
 }
 
-export function printMessages(messages, { ids = false, cache = null, empty = 'No hay mensajes cacheados para este chat.' } = {}) {
+export function printMessages(messages, { ids = false, cache = null, empty = 'No hay mensajes cacheados para este chat.', prefix = null } = {}) {
   if (!messages.length) return console.log(empty)
   for (const message of [...messages].sort((a, b) => a.timestamp - b.timestamp)) {
     const author = message.fromMe ? 'Vos' : message.pushName || 'Contacto'
@@ -63,6 +63,7 @@ export function printMessages(messages, { ids = false, cache = null, empty = 'No
     const context = [message.quotedMessageId ? `↪ ${message.quotedMessageId}` : null, message.reactionToMessageId ? `reacción ${message.reactionText || ''} a ${message.reactionToMessageId}` : null, message.edited ? 'editado' : null, message.ephemeral ? 'efímero' : null, message.viewOnce ? 'view-once no expuesto' : null, structured, status].filter(Boolean).join(' · ')
     const source = message.source === 'live' ? '' : ' [cache histórico]'
     const chat = cache ? `[${chatLabel(message.jid, cache)}] ` : ''
-    console.log(`${chat}${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
+    const leading = typeof prefix === 'function' ? prefix(message) : ''
+    console.log(`${leading}${chat}${formatTime(message.timestamp)} — ${author}: ${text}${context ? ` (${context})` : ''}${ids ? ` [id: ${message.id}]` : ''}${source}`)
   }
 }

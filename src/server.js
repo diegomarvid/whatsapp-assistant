@@ -1600,10 +1600,11 @@ async function main() {
       const jid = url.searchParams.get('jid')
       if (!jid) return json(response, 400, { error: 'missing_jid' })
       if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
+      const messageLimit = normalizeLimit(url.searchParams.get('limit'), 50, 10_000)
       const messages = cache.messages
         .filter((message) => message.jid === jid)
         .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, limit)
+        .slice(0, messageLimit)
       return json(response, 200, { jid, messages })
     }
     if (url.pathname === '/search') {

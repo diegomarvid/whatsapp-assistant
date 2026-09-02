@@ -44,6 +44,8 @@ npm install -g @diegomarvid/whatsapp-assistant && wa setup
 - Ver el último mensaje entrante, la conversación reciente o buscar en todos
   los chats de la ventana: `latest-incoming`, `history`, `search` y
   `search-all`.
+- Revisar un tema dentro de una fecha o rango con cobertura fresca, filtro por
+  autor, coincidencias exactas y contexto deduplicado: `wa review`.
 - Saber si una lectura está realmente al día antes de concluir algo:
   `wa coverage contacto`.
 - Mantener listas privadas de grupos de trabajo, inspeccionarlos y descubrir
@@ -157,7 +159,12 @@ wa coverage contacto
 wa latest-incoming contacto --ids
 wa history contacto 20 --ids
 
-# 3. Sólo ante una instrucción explícita: actuar sobre el ID confirmado
+# 3. Revisar un tema de hoy dicho por el contacto, con contexto deduplicado
+wa review contacto --date today --from incoming \
+  --any IP IPs dinámica dinámicas estática estáticas \
+  --context 4 --ids
+
+# 4. Sólo ante una instrucción explícita: actuar sobre el ID confirmado
 wa reply contacto <message-id> "Mensaje pedido por el usuario"
 ```
 
@@ -414,6 +421,7 @@ wa status
 wa find "Florencia"
 wa latest-incoming Florencia --ids
 wa history Florencia 20 --ids
+wa review Florencia --date today --from incoming --any presupuesto fecha --context 4 --ids
 ```
 
 Guardá una relación estable entre un nombre y un teléfono como alias privado:
@@ -454,6 +462,26 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" [--since 7d] [--ids]` | Busca texto en todos los chats de la ventana retenida (toda la ventana si no se acota) e indica de qué chat es cada resultado. |
+| `wa review contacto --date today --from incoming --any término... --context 4 --ids` | Arma evidencia contextual de un tema: identidad canónica, cobertura fresca, ventana local, coincidencias exactas, diálogo cercano y media disponible. |
+
+`wa review` es el comando preferido para pedidos como “revisá la conversación
+de hoy con X sobre Y”. Antes de leer exige cobertura `fresh`, resuelve el LID
+actual y consulta toda la ventana local retenida, no sólo los últimos 200
+mensajes. `--date` interpreta `today`, `yesterday` o `YYYY-MM-DD` en
+`America/Montevideo`; como alternativa acepta `--since 12h|7d` y `--until`.
+`--from incoming` limita las coincidencias a lo que mandó el contacto y
+`--from me` a mensajes propios, pero el contexto conserva ambos lados del
+diálogo. `--any` acepta cualquiera de los términos y `--all` exige todos en el
+mismo mensaje.
+
+Los términos son palabras o frases completas, comparadas sin distinguir
+mayúsculas ni acentos. Esto evita que `IP` coincida accidentalmente con
+“tipo”; cuando singular y plural importan, se pasan las dos variantes. Las
+ventanas de contexto superpuestas se deduplican. En salida humana, `▶` marca
+la coincidencia y `--ids` imprime los IDs; `--json` devuelve el contrato
+`wa-review.v1` con identidad, cobertura, ventana, textos coincidentes,
+timeline y media cercana. Es un paquete factual: la interpretación sigue en la
+IA que invoca el CLI.
 
 > `latest` incluye tus propios mensajes; para “¿qué me mandó X?”, usar siempre
 > `latest-incoming`. Ambos exigen cobertura reciente antes de responder.

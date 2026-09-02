@@ -186,6 +186,7 @@ wa poll contacto <message-id>
 wa calls contacto
 wa group-events grupo@g.us
 wa search contacto "presupuesto"
+wa review contacto --date today --from incoming --any presupuesto fecha --context 4 --ids
 wa transcribe contacto latest
 wa images contacto
 wa image contacto <message-id>
@@ -206,6 +207,18 @@ wa agents doctor seguimiento       # inspección local sin llamar al modelo
 wa agents validate seguimiento     # prueba mínima neutra; puede consumir el proveedor
 wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt configurado
 ```
+
+Para revisar “la conversación de hoy con X sobre Y”, usar `wa review` en vez de
+armar una búsqueda y un historial por separado. El comando resuelve el LID
+actual, rechaza cobertura desactualizada, interpreta las fechas en
+`America/Montevideo`, consulta toda la ventana retenida y deduplica el contexto
+alrededor de las coincidencias. `--from incoming` hace match sólo sobre lo que
+mandó el contacto, aunque conserva ambos autores en el contexto; `--from me`
+hace lo inverso. `--any` acepta cualquiera de las palabras o frases completas
+y `--all` exige todas en el mismo mensaje. La comparación ignora mayúsculas y
+acentos, pero no inventa plurales: incluir ambas variantes cuando importen.
+Usar `--json` para obtener `wa-review.v1` con identidad, cobertura, ventana,
+texto exacto de cada match, timeline y media cercana.
 
 `doctor` nunca llama a un modelo. La validación estándar comprueba binario,
 autenticación, modelo y flags con un prompt neutro, así no factura el prompt

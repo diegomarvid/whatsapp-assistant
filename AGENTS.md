@@ -52,3 +52,11 @@ bridge before reading, reacting or replying. A historical PN JID can describe
 the same person but miss their current messages. Use `wa latest-incoming` for
 “el último mensaje que me mandó X”; use `wa latest` only when the newest event
 regardless of sender is intended.
+
+For a bounded request such as “review today's conversation with X about Y”,
+prefer `wa review <contact> --date today --from incoming --any <terms...> --context 4 --ids`
+over combining a short history with ad-hoc search. It
+requires fresh coverage, resolves the current LID, scans the retained window,
+deduplicates overlapping context and keeps semantic interpretation in the AI
+layer. Terms are whole words or phrases; include singular and plural variants
+explicitly when both matter.

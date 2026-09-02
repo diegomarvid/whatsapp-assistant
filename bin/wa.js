@@ -13,6 +13,7 @@ import {
   sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
 } from '../src/bridge-client.js'
 import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
+import { REVIEW_TIME_ZONE, reviewWindow, selectConversationReview } from '../src/conversation-review.js'
 import { cacheMatches, loadAliases, phoneFromJid, phoneToJid, recentChats, resolveContact as resolve, saveAliases } from '../src/contact-resolve.js'
 import { daemonDisplayName, daemonStatus, installDaemon, launchAgentPath, lingerInstruction, linuxServiceDiagnostics, restartDaemon, systemdUnitPath, uninstallDaemon } from '../src/daemon-control.js'
 import { tryRun } from '../src/exec.js'
@@ -102,6 +103,7 @@ Comandos:
   wa history <alias or phone> [limit] [--ids]
   wa search <alias or phone> <text>
   wa search-all <text> [--since 7d] [--direct|--groups <list>] [--ids]
+  wa review <alias or phone> [--date today|yesterday|YYYY-MM-DD | --since 12h|7d [--until now|YYYY-MM-DD]] [--from incoming|me|any] [--any term...|--all term...] [--context 4] [--ids|--json]
   wa transcribe <alias or phone> latest
   wa transcribe setup                # instala sólo el runtime Python privado
   wa transcribe doctor               # runtime y modelos locales, sin descargar
@@ -149,7 +151,7 @@ Comandos:
 function help(topic) {
   const topics = {
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
-    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
+    messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa review contacto --date today --from incoming --any IP IPs dinámica dinámicas estática estáticas --context 4 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nreview arma un paquete factual de una conversación: resuelve el LID actual, exige cobertura fresh, acota por fecha en America/Montevideo, busca palabras o frases completas ignorando mayúsculas y acentos, y agrega contexto sin duplicarlo. --from incoming limita las coincidencias a lo que mandó el contacto, pero conserva ambos lados del diálogo como contexto; --from me hace lo inverso. --any acepta cualquier término; --all exige que todos aparezcan en el mismo mensaje. Las palabras se comparan completas: si importan singular y plural, indicá ambas variantes. --json conserva identidad, cobertura, ventana, coincidencias con texto exacto, timeline y media cercana. Sin términos devuelve toda la ventana elegida; el default es hoy.\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>\n  wa schedule cancel <id>\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario antes de enviar. Ante un resultado ambiguo no reintenta: lo deja como uncertain para no duplicar mensajes. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
     automation: `Automatizaciones guiadas por prompt:\n  wa automation prompt add diego-a-florencia --from diego --to florencia --profile diego-a-florencia-luna --from-me --debounce 300 --yes\n  wa automation prompt list\n  wa automation prompt list --verbose  # suma modelo, effort, prompt, workspace y timeout\n  wa automation prompt show diego-a-florencia\n  wa automation prompt pause|resume|remove diego-a-florencia\n\nEl worker sólo detecta mensajes nuevos del chat y los agrupa por el debounce: si no hay novedades, no llama ninguna IA. No lee, clasifica, reescribe ni extrae intención del texto. Cuando vence el debounce ejecuta el proveedor configurado en un directorio efímero; el prompt es quien usa \`wa history\`/\`wa message\` para analizar y \`wa send\` para enviar. La salida del modelo queda como auditoría y jamás se parsea para generar un envío. Por seguridad, la ejecución queda limitada al chat fuente y al único destinatario autorizado; los textos de WhatsApp son datos no confiables. Si el proveedor se interrumpe, el batch queda \`uncertain\` y no se reintenta automáticamente.\n\n\`automation forward\` fue retirado: las reglas deterministas anteriores no se ejecutan.`,
     agents: `Perfiles de proveedores de IA:\n  Claude: wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md\n  Código acotado: wa agents profile set nelcor --provider claude --model opus --effort medium --prompt-file /ruta/prompt.md --workspace /ruta/absoluta/repo\n  Codex:  wa agents profile set seguimiento-codex --provider codex --model gpt-5.6-luna --reasoning-effort max --prompt-file /ruta/absoluta/prompt.md\n  wa agents profile list\n  wa agents profile show seguimiento\n  wa agents doctor seguimiento       # binario, versión y flags reales; no consume tokens\n  wa agents validate seguimiento     # prueba mínima neutra; sí puede consumir el proveedor\n  wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt real\n\nEstos comandos no crean reglas ni envían WhatsApps. El catálogo trae aliases útiles pero no bloquea modelos nuevos o IDs exactos: un perfil acepta el identificador que escribas. En Codex, “Luna Max” significa \`--model gpt-5.6-luna --reasoning-effort max\`. \`doctor\` detecta cambios del binario y \`validate\` prueba el proveedor, autenticación, modelo y flags elegidos. Claude usa \`--effort\`; Codex usa \`--reasoning-effort\`, que se traduce a su configuración \`model_reasoning_effort\`. \`--workspace\` agrega edición y Bash únicamente dentro de ese directorio local; sin él el agente queda WhatsApp-only. Los prompts se guardan como archivo privado referenciado por ruta, con huella y permisos seguros. Para una automatización, el prompt no devuelve una acción estructurada: usa el CLI \`wa\` directamente dentro del scope autorizado.`,
@@ -333,6 +335,40 @@ function extractOption(args, name) {
   const [, value] = args.splice(index, 2)
   if (!value) throw new Error(`Use ${name} <value>`)
   return value
+}
+
+function parseReviewArguments(args) {
+  const options = { date: null, since: null, until: null, mode: 'any', from: 'any', terms: [], context: 4, ids: false, json: false }
+  while (args.length) {
+    const option = args.shift()
+    if (option === '--date' || option === '--since' || option === '--until' || option === '--context') {
+      const value = args.shift()
+      if (!value) throw new Error(`Use ${option} <value>`)
+      if (option === '--date') options.date = value
+      else if (option === '--since') options.since = value
+      else if (option === '--until') options.until = value
+      else options.context = Number.parseInt(value, 10)
+      continue
+    }
+    if (option === '--any' || option === '--all') {
+      options.mode = option.slice(2)
+      const terms = []
+      while (args.length && !args[0].startsWith('--')) terms.push(args.shift())
+      if (!terms.length) throw new Error(`Use ${option} <term...>`)
+      options.terms.push(...terms)
+      continue
+    }
+    if (option === '--from') {
+      options.from = args.shift()
+      if (!['any', 'incoming', 'me'].includes(options.from)) throw new Error('Use --from <incoming|me|any>')
+      continue
+    }
+    if (option === '--ids') { options.ids = true; continue }
+    if (option === '--json') { options.json = true; continue }
+    throw new Error(`Unknown review option: ${option}`)
+  }
+  if (!Number.isInteger(options.context) || options.context < 0 || options.context > 50) throw new Error('Use --context <0-50>')
+  return options
 }
 
 function assertNoArguments(args, command) {
@@ -836,6 +872,94 @@ async function main() {
     const message = await resolveMessageSelector(contact, selector, { incomingOnly: true })
     await markMessageRead(contact.jid, message.id)
     return console.log(`Marked as read (${message.id}).`)
+  }
+  if (command === 'review') {
+    const target = args.shift()
+    if (!target) return usage()
+    const options = parseReviewArguments(args)
+    const contact = await resolve(target)
+    const coverage = await requireFreshCoverage(contact)
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    const window = reviewWindow({
+      date: options.date,
+      since: options.since,
+      until: options.until,
+      nowSeconds,
+      timeZone: REVIEW_TIME_ZONE,
+    })
+    const [{ messages }, identities] = await Promise.all([
+      request(`/messages?jid=${encodeURIComponent(contact.jid)}&limit=10000`, { timeoutMs: 10_000 }),
+      readIdentities(),
+    ])
+    const selected = selectConversationReview(messages, {
+      since: window.since,
+      until: window.until,
+      terms: options.terms,
+      mode: options.mode,
+      from: options.from,
+      context: options.context,
+    })
+    const activeChat = identities.chats.find((chat) => chat.jid === contact.jid)
+    const chat = {
+      input: target,
+      alias: contact.alias || null,
+      name: activeChat?.name || contact.name || null,
+      jid: contact.jid,
+      originalJid: contact.originalJid || null,
+      phone: contact.phone || null,
+    }
+    const report = {
+      schemaVersion: 'wa-review.v1',
+      generatedAt: new Date(nowSeconds * 1000).toISOString(),
+      chat,
+      coverage,
+      window: {
+        ...window,
+        sinceIso: new Date(window.since * 1000).toISOString(),
+        untilIso: new Date(window.until * 1000).toISOString(),
+      },
+      query: {
+        mode: options.mode,
+        from: options.from,
+        terms: options.terms,
+        matching: 'whole-word-or-phrase',
+        caseAndAccentInsensitive: true,
+        contextMessages: options.context,
+      },
+      summary: {
+        messagesInWindow: selected.windowMessages.length,
+        matchingMessages: selected.matching.length,
+        timelineMessages: selected.timeline.length,
+        nearbyMedia: selected.media.length,
+      },
+      matches: selected.matching.map((entry) => ({
+        id: entry.message.id,
+        timestamp: entry.message.timestamp,
+        fromMe: Boolean(entry.message.fromMe),
+        pushName: entry.message.pushName || null,
+        type: entry.message.type,
+        text: entry.message.text,
+        matchedTerms: entry.matchedTerms,
+      })),
+      timeline: selected.timeline,
+      media: selected.media,
+      note: 'Paquete factual local. Las coincidencias son estructurales; el CLI no interpreta intención ni valida afirmaciones técnicas.',
+    }
+    if (options.json) return console.log(JSON.stringify(report, null, 2))
+    console.log(`Review: ${chat.name || target} (${chat.jid})`)
+    if (chat.originalJid) console.log(`Identidad: ${chat.originalJid} → ${chat.jid}`)
+    console.log(`Cobertura: ${coverage.status} · ventana ${report.window.sinceIso} → ${report.window.untilIso} · ${window.timeZone}`)
+    console.log(options.terms.length
+      ? `Búsqueda ${options.mode} · autor ${options.from}: ${options.terms.join(', ')} · ${selected.matching.length} coincidencia(s) · ${selected.timeline.length} mensaje(s) con contexto`
+      : `Sin términos: ${selected.timeline.length} mensaje(s) en la ventana`)
+    if (!selected.timeline.length) return console.log('Sin coincidencias en la ventana elegida.')
+    const matchedIds = new Set(selected.matching.map((entry) => entry.message.id))
+    printMessages(selected.timeline, {
+      ids: options.ids,
+      prefix: (message) => matchedIds.has(message.id) ? '▶ ' : '  ',
+    })
+    if (selected.media.length) console.log(`Media cercana: ${selected.media.map((item) => `${item.type}:${item.id}`).join(', ')}`)
+    return
   }
   if (command === 'search-all') {
     const query = args.shift()?.trim()
