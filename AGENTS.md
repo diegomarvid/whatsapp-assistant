@@ -61,6 +61,12 @@ deduplicates overlapping context and keeps semantic interpretation in the AI
 layer. Terms are whole words or phrases; include singular and plural variants
 explicitly when both matter.
 
+When the right CLI surface is not already obvious, start with `wa help ai`.
+Use `wa help commands` for the complete situation-oriented catalog and
+`wa help review` for the topic-discovery and time-expansion workflow. These
+executable guides are the canonical agent entrypoint and must stay aligned
+with the README, onboarding guide and integration tests.
+
 Every review match and timeline message includes an `America/Montevideo`
 `localTimestamp`. If the first pass discovers the relevant moment, expand it
 without search terms using

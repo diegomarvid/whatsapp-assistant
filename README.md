@@ -151,6 +151,10 @@ La interfaz está diseñada para que un agente no tenga que conocer Baileys ni
 adivinar el estado de WhatsApp. El recorrido seguro es:
 
 ```bash
+# Si la IA todavía no sabe qué comando corresponde a la situación
+wa help ai
+wa help commands
+
 # 1. Resolver la persona y comprobar que el mirror está actualizado
 wa find "Nombre"
 wa coverage contacto
@@ -173,6 +177,9 @@ wa reply contacto <message-id> "Mensaje pedido por el usuario"
 
 Para límites temporales, receipts, reacciones y datos que no pueden
 reconstruirse del pasado, ejecutar siempre `wa help data` antes de inferir algo.
+Para el flujo de búsqueda temática y expansión horaria, ejecutar
+`wa help review`. `wa help ai` funciona como selector por situación y
+`wa help commands` documenta para qué sirve cada familia pública.
 Para la instalación y recuperación completa, seguir
 [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md).
 

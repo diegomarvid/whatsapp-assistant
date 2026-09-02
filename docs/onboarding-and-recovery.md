@@ -169,6 +169,9 @@ It does not contain generated semantic interpretation.
 ## Everyday CLI
 
 ```bash
+wa help ai                         # situación → comando → ejemplo
+wa help commands                   # para qué sirve cada familia pública
+wa help review                     # búsqueda temática + expansión horaria
 wa status
 wa aliases
 wa alias add contacto +598XXXXXXXX "Nombre del contacto"
@@ -208,6 +211,13 @@ wa agents doctor seguimiento       # inspección local sin llamar al modelo
 wa agents validate seguimiento     # prueba mínima neutra; puede consumir el proveedor
 wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt configurado
 ```
+
+Una IA que no conozca la superficie debe empezar por `wa help ai`, no por
+probar comandos al azar. Esa guía traduce pedidos humanos frecuentes al
+comando y ejemplo correspondiente, preserva el orden
+`find → coverage → review → evidencia puntual` y recuerda que las acciones
+requieren autorización explícita. `wa help commands` es el catálogo completo
+por situación y `wa help review` profundiza el flujo en dos pasos.
 
 Para revisar “la conversación de hoy con X sobre Y”, usar `wa review` en vez de
 armar una búsqueda y un historial por separado. El comando resuelve el LID

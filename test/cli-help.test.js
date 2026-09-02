@@ -18,9 +18,51 @@ test('help gives a new user and an AI an actionable onboarding path', () => {
   assert.match(result.stdout, /wa doctor/)
   assert.match(result.stdout, /history-policy show\|set/)
   assert.match(result.stdout, /latest-incoming/)
+  assert.match(result.stdout, /wa help ai/)
+  assert.match(result.stdout, /wa help review/)
+  assert.match(result.stdout, /wa help commands/)
   assert.match(result.stdout, /wa image <alias or phone> <message-id>/)
   assert.match(result.stdout, /wa locations\|contacts\|polls\|calls\|links/)
   assert.doesNotMatch(result.stdout, /image-text/)
+})
+
+test('AI help maps common situations to a safe executable workflow', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'ai'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /Elegí el comando según la situación/)
+  assert.match(result.stdout, /wa latest-incoming tomi --ids/)
+  assert.match(result.stdout, /wa review tomi --date today/)
+  assert.match(result.stdout, /--start 09:00 --end 11:00/)
+  assert.match(result.stdout, /wa search-all "Oracle"/)
+  assert.match(result.stdout, /Nunca enviar, responder, reaccionar/)
+})
+
+test('review help explains when to search, expand by local time, or use another command', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'review'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  assert.match(result.stdout, /persona \+ período \+ tema/)
+  assert.match(result.stdout, /Primer paso/)
+  assert.match(result.stdout, /Segundo paso/)
+  assert.match(result.stdout, /Sin --any ni --all devuelve todos los mensajes/)
+  assert.match(result.stdout, /Usá latest-incoming/)
+  assert.match(result.stdout, /Usá search-all/)
+})
+
+test('command catalog describes every public family by the situation it solves', () => {
+  const result = spawnSync(process.execPath, [cli, 'help', 'commands'], { encoding: 'utf8' })
+  assert.equal(result.status, 0)
+  for (const expected of [
+    'Estado, instalación y recuperación',
+    'Identidad y descubrimiento',
+    'Lectura y búsqueda',
+    'Hechos estructurados',
+    'Media',
+    'Acciones; requieren pedido explícito',
+    'Trabajo futuro y automatización',
+  ]) assert.match(result.stdout, new RegExp(expected))
+  assert.match(result.stdout, /wa review <contacto>/)
+  assert.match(result.stdout, /wa send <contacto>/)
+  assert.match(result.stdout, /wa automation prompt/)
 })
 
 test('setup help explains the QR flow without needing a running bridge', () => {
