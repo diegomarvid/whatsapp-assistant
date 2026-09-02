@@ -164,7 +164,10 @@ wa review contacto --date today --from incoming \
   --any IP IPs dinámica dinámicas estática estáticas \
   --context 4 --ids
 
-# 4. Sólo ante una instrucción explícita: actuar sobre el ID confirmado
+# 4. Si el tema apareció a las 10:44, ampliar sin términos al tramo completo
+wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids
+
+# 5. Sólo ante una instrucción explícita: actuar sobre el ID confirmado
 wa reply contacto <message-id> "Mensaje pedido por el usuario"
 ```
 
@@ -422,6 +425,7 @@ wa find "Florencia"
 wa latest-incoming Florencia --ids
 wa history Florencia 20 --ids
 wa review Florencia --date today --from incoming --any presupuesto fecha --context 4 --ids
+wa review Florencia --date 2026-09-02 --start 09:00 --end 11:00 --ids
 ```
 
 Guardá una relación estable entre un nombre y un teléfono como alias privado:
@@ -462,7 +466,8 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
 | `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
 | `wa search-all "Oracle" [--since 7d] [--ids]` | Busca texto en todos los chats de la ventana retenida (toda la ventana si no se acota) e indica de qué chat es cada resultado. |
-| `wa review contacto --date today --from incoming --any término... --context 4 --ids` | Arma evidencia contextual de un tema: identidad canónica, cobertura fresca, ventana local, coincidencias exactas, diálogo cercano y media disponible. |
+| `wa review contacto --date today --from incoming --any término... --context 4 --ids` | Arma evidencia contextual de un tema: identidad canónica, cobertura fresca, hora local de cada match, diálogo cercano y media disponible. |
+| `wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids` | Devuelve todos los mensajes del tramo horario local, sin depender de que contengan un término. |
 
 `wa review` es el comando preferido para pedidos como “revisá la conversación
 de hoy con X sobre Y”. Antes de leer exige cobertura `fresh`, resuelve el LID
@@ -474,14 +479,22 @@ mensajes. `--date` interpreta `today`, `yesterday` o `YYYY-MM-DD` en
 diálogo. `--any` acepta cualquiera de los términos y `--all` exige todos en el
 mismo mensaje.
 
+La salida muestra `localTimestamp` en cada match y mensaje del timeline. Eso
+permite un flujo de dos pasos: primero descubrir que un tema apareció, por
+ejemplo, a las `10:44`; después repetir `wa review` sin `--any`/`--all` usando
+`--date 2026-09-02 --start 09:00 --end 11:00`. Sin términos, el comando devuelve
+absolutamente todos los mensajes de ese tramo —incluidos saludos, antecedentes,
+respuestas y cambios de tema que la búsqueda original no podía encontrar—. La
+ventana y sus timestamps se expresan explícitamente en `America/Montevideo`.
+
 Los términos son palabras o frases completas, comparadas sin distinguir
 mayúsculas ni acentos. Esto evita que `IP` coincida accidentalmente con
 “tipo”; cuando singular y plural importan, se pasan las dos variantes. Las
 ventanas de contexto superpuestas se deduplican. En salida humana, `▶` marca
 la coincidencia y `--ids` imprime los IDs; `--json` devuelve el contrato
-`wa-review.v1` con identidad, cobertura, ventana, textos coincidentes,
-timeline y media cercana. Es un paquete factual: la interpretación sigue en la
-IA que invoca el CLI.
+`wa-review.v1` con identidad, cobertura, ventana, timestamps locales, textos
+coincidentes, timeline y media cercana. Es un paquete factual: la
+interpretación sigue en la IA que invoca el CLI.
 
 > `latest` incluye tus propios mensajes; para “¿qué me mandó X?”, usar siempre
 > `latest-incoming`. Ambos exigen cobertura reciente antes de responder.

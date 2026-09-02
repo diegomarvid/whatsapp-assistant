@@ -37,9 +37,38 @@ function epochForLocalMidnight(date, timeZone) {
   return Math.floor(epoch / 1000)
 }
 
+function parseLocalTime(value) {
+  const match = String(value || '').match(/^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/)
+  if (!match) throw new Error('Use local time as HH:MM or HH:MM:SS')
+  return {
+    hour: Number.parseInt(match[1], 10),
+    minute: Number.parseInt(match[2], 10),
+    second: Number.parseInt(match[3] || '0', 10),
+  }
+}
+
+function epochForLocalTime(date, time, timeZone) {
+  const [year, month, day] = date.split('-').map((value) => Number.parseInt(value, 10))
+  const parsedTime = parseLocalTime(time)
+  const utcGuess = Date.UTC(year, month - 1, day, parsedTime.hour, parsedTime.minute, parsedTime.second)
+  let epoch = utcGuess - offsetAt(utcGuess, timeZone)
+  epoch = utcGuess - offsetAt(epoch, timeZone)
+  const resolved = zonedParts(epoch, timeZone)
+  if (resolved.year !== year || resolved.month !== month || resolved.day !== day
+    || resolved.hour !== parsedTime.hour || resolved.minute !== parsedTime.minute || resolved.second !== parsedTime.second) {
+    throw new Error(`Local time does not exist in ${timeZone}: ${date} ${time}`)
+  }
+  return Math.floor(epoch / 1000)
+}
+
 function localDateAt(epochSeconds, timeZone) {
   const parts = zonedParts(epochSeconds * 1000, timeZone)
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+export function formatReviewLocalTimestamp(epochSeconds, timeZone = REVIEW_TIME_ZONE) {
+  const parts = zonedParts(epochSeconds * 1000, timeZone)
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')} ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}:${String(parts.second).padStart(2, '0')}`
 }
 
 function shiftDate(date, days) {
@@ -79,9 +108,17 @@ function explicitBoundary(value, { nowSeconds, timeZone, endOfDay = false }) {
   return endOfDay ? range.until : range.since
 }
 
-export function reviewWindow({ date = null, since = null, until = null, nowSeconds = Math.floor(Date.now() / 1000), timeZone = REVIEW_TIME_ZONE } = {}) {
-  if (date && (since || until)) throw new Error('Use --date by itself, or --since/--until; do not combine them.')
-  if (date) return reviewDateRange(date, { nowSeconds, timeZone })
+export function reviewWindow({ date = null, start = null, end = null, since = null, until = null, nowSeconds = Math.floor(Date.now() / 1000), timeZone = REVIEW_TIME_ZONE } = {}) {
+  if (date && (since || until)) throw new Error('Use --date with optional --start/--end, or --since/--until; do not combine them.')
+  if ((start || end) && !date) throw new Error('Use --start/--end together with --date.')
+  if (date) {
+    const range = reviewDateRange(date, { nowSeconds, timeZone })
+    const resolvedSince = start ? epochForLocalTime(range.localDate, start, timeZone) : range.since
+    const requestedUntil = end ? epochForLocalTime(range.localDate, end, timeZone) : range.until
+    const resolvedUntil = Math.min(requestedUntil, nowSeconds)
+    if (resolvedSince >= resolvedUntil) throw new Error('The review window must start before it ends.')
+    return { ...range, since: resolvedSince, until: resolvedUntil }
+  }
   const resolvedSince = since ? explicitBoundary(since, { nowSeconds, timeZone }) : reviewDateRange('today', { nowSeconds, timeZone }).since
   const resolvedUntil = until ? explicitBoundary(until, { nowSeconds, timeZone, endOfDay: true }) : nowSeconds
   if (resolvedSince >= resolvedUntil) throw new Error('The review window must start before it ends.')

@@ -60,3 +60,10 @@ requires fresh coverage, resolves the current LID, scans the retained window,
 deduplicates overlapping context and keeps semantic interpretation in the AI
 layer. Terms are whole words or phrases; include singular and plural variants
 explicitly when both matter.
+
+Every review match and timeline message includes an `America/Montevideo`
+`localTimestamp`. If the first pass discovers the relevant moment, expand it
+without search terms using
+`wa review <contact> --date YYYY-MM-DD --start HH:MM --end HH:MM --json`.
+This second pass must return every message in that local
+clock window so the AI can notice context that no keyword query could match.

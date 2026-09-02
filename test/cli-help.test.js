@@ -39,6 +39,8 @@ test('messages help explains that links are structural URLs for the calling AI t
   assert.match(result.stdout, /wa links contacto/)
   assert.match(result.stdout, /URLs http\(s\) literales/)
   assert.match(result.stdout, /no abre, resume ni clasifica sitios/)
+  assert.match(result.stdout, /--start 09:00 --end 11:00/)
+  assert.match(result.stdout, /todos los mensajes de ese tramo horario/)
 })
 
 test('setup help discloses extended-history sync tradeoffs', () => {

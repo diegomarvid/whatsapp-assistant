@@ -187,6 +187,7 @@ wa calls contacto
 wa group-events grupo@g.us
 wa search contacto "presupuesto"
 wa review contacto --date today --from incoming --any presupuesto fecha --context 4 --ids
+wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids
 wa transcribe contacto latest
 wa images contacto
 wa image contacto <message-id>
@@ -218,7 +219,11 @@ hace lo inverso. `--any` acepta cualquiera de las palabras o frases completas
 y `--all` exige todas en el mismo mensaje. La comparación ignora mayúsculas y
 acentos, pero no inventa plurales: incluir ambas variantes cuando importen.
 Usar `--json` para obtener `wa-review.v1` con identidad, cobertura, ventana,
-texto exacto de cada match, timeline y media cercana.
+hora local y texto exacto de cada match, timeline y media cercana. Una vez que
+un match ubica el tema en un momento concreto, repetir el comando sin términos
+con `--date`, `--start HH:MM` y `--end HH:MM` devuelve todos los mensajes de ese
+tramo horario local. Ese segundo paso sirve para recuperar antecedentes o
+respuestas que no contenían ninguna palabra de la búsqueda inicial.
 
 `doctor` nunca llama a un modelo. La validación estándar comprueba binario,
 autenticación, modelo y flags con un prompt neutro, así no factura el prompt

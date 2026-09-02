@@ -127,7 +127,7 @@ test('review returns a fresh, bounded, contextual evidence packet with canonical
   ]
   fixtures.messages.push(...additions)
   try {
-    const result = await wa('review', 'Gisell', '--date', 'today', '--from', 'incoming', '--any', 'IP', 'dinamica', 'estática', '--context', '1', '--ids', '--json')
+    const result = await wa('review', 'Gisell', '--date', 'today', '--start', '00:00', '--end', '23:59', '--from', 'incoming', '--any', 'IP', 'dinamica', 'estática', '--context', '1', '--ids', '--json')
     assert.equal(result.status, 0, result.stderr)
     const report = JSON.parse(result.stdout)
     assert.equal(report.schemaVersion, 'wa-review.v1')
@@ -136,8 +136,12 @@ test('review returns a fresh, bounded, contextual evidence packet with canonical
     assert.deepEqual(report.query.terms, ['IP', 'dinamica', 'estática'])
     assert.equal(report.query.matching, 'whole-word-or-phrase')
     assert.equal(report.query.from, 'incoming')
+    assert.match(report.window.localSince, /^\d{4}-\d{2}-\d{2} 00:00:00$/)
+    assert.match(report.window.localUntil, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
     assert.deepEqual(report.matches.map((match) => match.id), ['TODAY-IP'])
     assert.equal(report.matches[0].text, 'La IP es dinámica')
+    assert.match(report.matches[0].localTimestamp, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    assert.equal(report.timeline.every((message) => Boolean(message.localTimestamp)), true)
     assert.deepEqual(report.timeline.map((message) => message.id), ['TODAY-BEFORE', 'TODAY-IP', 'TODAY-AUDIO'])
     assert.deepEqual(report.media.map((message) => message.id), ['TODAY-AUDIO'])
     assert.ok(bridge.reads.some((line) => line.includes('/messages?jid=111%40lid&limit=10000')))
