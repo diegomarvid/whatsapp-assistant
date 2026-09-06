@@ -6,6 +6,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import qrcodeTerminal from 'qrcode-terminal'
+import QRCode from 'qrcode'
 import {
   downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
@@ -363,33 +364,40 @@ async function historyPolicyCommand(args) {
 async function waitForSetup(timeoutMs = 90000) {
   const deadline = Date.now() + timeoutMs
   const qrPath = path.join(dataDir, 'link-qr.png')
-  const qrTextPath = path.join(dataDir, 'link-qr.txt')
   while (Date.now() < deadline) {
-    if (await fileExists(qrPath) || await fileExists(qrTextPath)) return { qrPath, health: null }
     try {
       const health = await request('/health')
       if (health.connection === 'open') return { qrPath: null, health }
+      if (health.qrPending) return { qrPath, health }
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 500))
   }
-  return { qrPath: await fileExists(qrPath) ? qrPath : null, health: null }
+  return { qrPath: null, health: null }
 }
 
 async function showQr() {
-  const qrPath = path.join(dataDir, 'link-qr.png')
-  const qrTextPath = path.join(dataDir, 'link-qr.txt')
-  if (!await fileExists(qrPath) && !await fileExists(qrTextPath)) {
-    console.log('No QR is pending. Run `wa status`; if the bridge is not open, run `wa doctor`.')
-    return
+  let pending
+  try { pending = await request('/qr') } catch {
+    throw new Error('No live QR is available. Run `wa doctor`; saved QR files are not valid evidence of a pending link.')
   }
-  console.log('Scan this QR in WhatsApp: Settings → Linked devices → Link a device')
-  if (await fileExists(qrTextPath)) {
-    qrcodeTerminal.generate((await fs.readFile(qrTextPath, 'utf8')).trim(), { small: true })
+  if (!pending.code || !/^[a-f0-9-]+$/.test(pending.id) || !Number.isFinite(pending.expiresAt) || pending.expiresAt <= Date.now()) throw new Error('QR expired. Run `wa qr` again.')
+  const qrPath = path.join(dataDir, `link-qr-${pending.id}.png`)
+  const png = await QRCode.toBuffer(pending.code, { width: 720, margin: 2, errorCorrectionLevel: 'M' })
+  await fs.writeFile(qrPath, png, { mode: 0o600 })
+  // Rendering can overlap rotation or disconnect: verify again before display.
+  let current
+  try { current = await request('/qr') } catch (error) {
+    await fs.rm(qrPath, { force: true })
+    throw error
   }
-  if (await fileExists(qrPath)) {
-    console.log(qrPath)
-    if (process.platform === 'darwin') tryRun('open', [qrPath])
+  if (current.id !== pending.id || current.expiresAt <= Date.now()) {
+    await fs.rm(qrPath, { force: true })
+    throw new Error('QR changed or expired. Run `wa qr` again.')
   }
+  console.log(`Scan in WhatsApp → Linked devices. Expires ${new Date(current.expiresAt).toISOString()}`)
+  qrcodeTerminal.generate(current.code, { small: true })
+  console.log(qrPath)
+  if (process.platform === 'darwin') tryRun('open', [qrPath])
 }
 
 async function installedBaileysVersion() {
@@ -421,7 +429,7 @@ async function doctor() {
     daemon,
     authExists: await fileExists(paths.authDir),
     sqliteExists: await fileExists(path.join(dataDir, 'mirror.sqlite')),
-    qrPending: await fileExists(path.join(dataDir, 'link-qr.png')) || await fileExists(path.join(dataDir, 'link-qr.txt')),
+    qrPending: health?.qrPending === true,
     health,
     nextStep,
   }, null, 2))

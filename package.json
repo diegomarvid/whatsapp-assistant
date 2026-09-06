@@ -34,7 +34,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "baileys": "7.0.0-rc13",
+    "baileys": "7.0.0-rc14",
     "pino": "^9.6.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0"

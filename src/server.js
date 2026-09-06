@@ -4,7 +4,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
-  Browsers,
   DisconnectReason,
   decryptPollVote,
   downloadMediaMessage,
@@ -15,8 +14,7 @@ import makeWASocket, {
 } from 'baileys'
 import { Boom } from '@hapi/boom'
 import pino from 'pino'
-import qrcodeTerminal from 'qrcode-terminal'
-import QRCode from 'qrcode'
+import { LinkState, linkOptions, shouldReconnect } from './link-state.js'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
@@ -40,8 +38,14 @@ const { authDir, dataDir, stateRoot } = paths
 const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
-const qrPath = path.join(dataDir, 'link-qr.png')
-const qrTextPath = path.join(dataDir, 'link-qr.txt')
+const linkState = new LinkState()
+let authRegistered = false
+let pairingRestarts = 0
+async function clearQrFiles() {
+  const names = await fs.readdir(dataDir)
+  await Promise.all(names.filter(name => /^link-qr(?:-[a-f0-9-]+)?\.(png|txt)$/.test(name))
+    .map(name => fs.rm(path.join(dataDir, name), { force: true })))
+}
 const audioEnvelopeDir = path.join(dataDir, 'audio-envelopes')
 const downloadedAudioDir = path.join(dataDir, 'audio')
 const imageEnvelopeDir = path.join(dataDir, 'image-envelopes')
@@ -801,9 +805,11 @@ function installGracefulShutdown(server) {
   const shutdown = (signal) => {
     if (stopping) return
     stopping = true
+    linkState.clear()
     connection = 'stopping'
     clearTimeout(reconnectTimer)
     Promise.resolve()
+      .then(() => clearQrFiles())
       .then(() => saveCache({ full: true }))
       .catch((error) => logger.error({ err: error }, 'Could not persist mirror during shutdown'))
       .finally(() => {
@@ -1092,15 +1098,15 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     cache.sync.pendingNotificationsFlushedAt = nowSeconds()
     await saveCache()
   }
-  if (qr) {
-    console.log('\nScan this QR in WhatsApp: Settings → Linked devices → Link a device\n')
-    qrcodeTerminal.generate(qr, { small: true })
-    await fs.writeFile(qrTextPath, `${qr}\n`, { mode: 0o600 })
-    await QRCode.toFile(qrPath, qr, { width: 720, margin: 2, errorCorrectionLevel: 'M' })
-    await fs.chmod(qrPath, 0o600)
-    console.log(`QR image saved to ${qrPath}`)
+  if (qr && next !== 'open' && next !== 'close') {
+    linkState.publish(linkState.generation, qr)
+    await clearQrFiles()
+    console.log(JSON.stringify({ event: 'link.qr', expiresAt: linkState.pending(connection)?.expiresAt }))
   }
   if (next === 'open') {
+    linkState.clear()
+    authRegistered = true
+    pairingRestarts = 0
     connection = 'open'
     lastError = null
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
@@ -1109,18 +1115,24 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     cache.sync.lastConnectedAt = cache.sync.connectedAt
     cache.sync.ingestionHealthy = true
     await saveCache()
-    await Promise.all([fs.rm(qrPath, { force: true }), fs.rm(qrTextPath, { force: true })])
+    await clearQrFiles()
     console.log('WhatsApp bridge connected (read-only).')
   }
   if (next === 'close') {
+    linkState.clear()
+    await clearQrFiles()
     const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
     connection = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
     lastError = statusCode ? `WhatsApp disconnect (${statusCode})` : 'WhatsApp disconnected'
     cache.sync.lastDisconnectedAt = nowSeconds()
     cache.sync.ingestionHealthy = false
     await saveCache()
-    if (statusCode !== DisconnectReason.loggedOut) scheduleReconnect()
-    else console.error('WhatsApp logged this bridge out. Delete auth/ and restart to link it again.')
+    const retry = shouldReconnect({ registered: authRegistered, statusCode, pairingRestarts })
+    console.log(JSON.stringify({ event: 'link.closed', statusCode, registered: authRegistered, retry }))
+    if (retry) {
+      if (!authRegistered) pairingRestarts++
+      scheduleReconnect({ pairing: !authRegistered })
+    } else console.error('Link stopped. Authentication and cache preserved; inspect wa doctor before a manual restart.')
   }
 }
 
@@ -1128,10 +1140,10 @@ const INITIAL_RECONNECT_DELAY_MS = 3000
 const MAX_RECONNECT_DELAY_MS = 5 * 60 * 1000
 let reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
 
-// A thrown connect() (transient DNS, filesystem or Baileys failure) must never
-// leave the bridge silently dead until a manual daemon restart: keep retrying
-// with a capped backoff.
-function scheduleReconnect() {
+// Established sessions retry transient failures with backoff. Initial linking
+// stops after a failed attempt, apart from the required pair-success restart.
+function scheduleReconnect({ pairing = false } = {}) {
+  if (!authRegistered && !pairing) return
   clearTimeout(reconnectTimer)
   const delayMs = reconnectDelayMs
   reconnectDelayMs = Math.min(reconnectDelayMs * 2, MAX_RECONNECT_DELAY_MS)
@@ -1150,8 +1162,11 @@ let chatNamesRepaired = false
 
 async function connect() {
   clearTimeout(reconnectTimer)
+  const generation = linkState.begin()
+  await clearQrFiles()
   connection = 'connecting'
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
+  authRegistered = Boolean(state.creds.registered)
   if (!chatNamesRepaired) {
     chatNamesRepaired = true
     const repairs = repairedChatNames({ chats: cache.chats, messages: cache.messages, contacts: cache.contacts, ownName: state.creds.me?.name || null })
@@ -1165,18 +1180,20 @@ async function connect() {
     }
   }
   const { version } = await fetchLatestBaileysVersion()
+  console.log(JSON.stringify({ event: 'link.start', node: process.version, version, browser: 'macOS/Chrome', registered: authRegistered, syncFullHistory: historyPolicy.syncFullHistory }))
   socket = makeWASocket({
     version,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger,
-    syncFullHistory: historyPolicy.syncFullHistory,
-    ...(historyPolicy.syncFullHistory ? { browser: Browsers.macOS('Desktop') } : {}),
+    ...linkOptions(historyPolicy),
+    qrTimeout: 60000,
     markOnlineOnConnect: false,
     getMessage: getMessageFromMirror,
     msgRetryCounterCache,
   })
 
   socket.ev.process(async (events) => {
+    if (generation !== linkState.generation) return
     try {
       if (events['creds.update']) await saveCreds()
       if (events['connection.update']) await handleConnectionUpdate(events['connection.update'])
@@ -1333,7 +1350,7 @@ async function main() {
       // the provider changed message shapes without breaking any Baileys API.
       const unknownTypeMessages = cache.messages.reduce((count, message) => count + (message.type === 'unknown' ? 1 : 0), 0)
       return json(response, 200, {
-        connection, lastError, allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages,
+        connection, lastError, qrPending: Boolean(linkState.pending(connection)), allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages,
         ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite',
         automation: { promptAutomations: promptAutomations ? 'ready' : 'disabled', detail: promptAutomationDisabledReason },
       })
@@ -1341,6 +1358,11 @@ async function main() {
     const authorization = authorizationFor(request, token)
     if (!authorization) return json(response, 401, { error: 'unauthorized' })
     if (authorization.kind === 'automation' && !automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend })) return capabilityForbidden(response)
+    if (request.method === 'GET' && url.pathname === '/qr') {
+      response.setHeader('Cache-Control', 'no-store')
+      const pending = linkState.pending(connection)
+      return json(response, pending ? 200 : 409, pending || { error: 'no_live_qr' })
+    }
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (request.method === 'GET' && url.pathname === '/resolve') {
       const jid = url.searchParams.get('jid')
