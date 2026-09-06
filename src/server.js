@@ -31,6 +31,8 @@ import { AgentProfiles } from './agent-providers.js'
 import { runPromptAutomation } from './agent-provider-runner.js'
 import { AutomationCapabilities } from './automation-capabilities.js'
 import { PromptAutomationRules } from './prompt-automation-rules.js'
+import { AutomationWorker } from './automation-worker.js'
+import { AutomationReviews } from './automation-reviews.js'
 import { dispatchScheduledMessages } from './scheduled-dispatch.js'
 import { ScheduledMessages } from './scheduled-messages.js'
 
@@ -39,6 +41,7 @@ const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const linkState = new LinkState()
+let automationReviews = null
 let authRegistered = false
 let pairingRestarts = 0
 async function clearQrFiles() {
@@ -84,7 +87,7 @@ let outboundRetryStore = null
 let scheduledMessages = null
 let scheduledDispatchRunning = false
 let promptAutomations = null
-let promptAutomationDispatchRunning = false
+let automationWorker = null
 let promptAutomationDisabledReason = null
 let agentProfiles = null
 let automationCapabilities = null
@@ -723,62 +726,13 @@ async function enqueuePromptAutomation(message) {
 }
 
 async function processPromptAutomations() {
-  if (!promptAutomations || !agentProfiles || promptAutomationDispatchRunning) return
-  promptAutomationDispatchRunning = true
-  try {
-    const batch = await promptAutomations.claimDue()
-    if (!batch) return
-    const rule = await promptAutomations.getById(batch.ruleId)
-    if (!rule || rule.status !== 'active') {
-      await promptAutomations.uncertain(batch.id, 'The automation rule changed while the batch was waiting. It was not run.')
-      return
-    }
-    if (connection !== 'open' || !socket?.sendMessage) {
-      // This is a transport precondition, not a model decision. Leave the
-      // batch queued and spend no tokens until the local wa CLI can send.
-      await promptAutomations.defer(batch.id)
-      return
-    }
-    const profile = await agentProfiles.get(rule.profile)
-    if (!profile) {
-      await promptAutomations.uncertain(batch.id, `The configured AI profile ${rule.profile} no longer exists. It was not invoked.`)
-      return
-    }
-    let capabilityToken = null
-    try {
-      const [resolvedSourceJid, resolvedDestinationJid] = await Promise.all([
-        resolveCurrentJid(rule.sourceOriginalJid), resolveCurrentJid(rule.destinationOriginalJid),
-      ])
-      capabilityToken = automationCapabilities.issue({
-        readJids: [rule.sourceJid, rule.sourceOriginalJid, batch.sourceJid, resolvedSourceJid],
-        sendJids: [rule.destinationJid, rule.destinationOriginalJid, resolvedDestinationJid],
-        // The provider gets a short grace window to finish its final scoped wa
-        // call, but a leaked worker token can never become a durable credential.
-        ttlMs: Math.min(Math.max((profile.timeoutMs || 60000) + 30000, 60000), 10 * 60 * 1000),
-      })
-      const result = await runPromptAutomation(profile, { rule, batch, stateDir: stateRoot, capabilityToken })
-      if (result.ok) {
-        await promptAutomations.complete(batch.id, result)
-        logger.info({ automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation agent finished')
-      } else {
-        await promptAutomations.uncertain(batch.id, result.error, result.output)
-        logger.error({ automationRule: rule.name, batchId: batch.id, profile: profile.name, exitCode: result.exitCode }, 'Prompt automation agent result is uncertain and was not retried')
-      }
-    } catch (error) {
-      // Preparation failures (for example a changed prompt fingerprint) happen
-      // before a provider process exists, but must still release the queue.
-      // Treating them as uncertain is conservative and keeps a bad profile
-      // from wedging every future batch behind a perpetual `running` record.
-      await promptAutomations.uncertain(batch.id, error.message)
-      logger.error({ err: error, automationRule: rule.name, batchId: batch.id, profile: profile.name }, 'Prompt automation could not start and was not retried')
-    } finally {
-      if (capabilityToken) automationCapabilities.revoke(capabilityToken)
-    }
-  } catch (error) {
-    logger.error({ err: error }, 'Could not process due prompt automation')
-  } finally {
-    promptAutomationDispatchRunning = false
+  if (!automationWorker && promptAutomations && agentProfiles && automationCapabilities) {
+    automationWorker = new AutomationWorker({ rules: promptAutomations, profiles: agentProfiles,
+      capabilities: automationCapabilities, stateDir: stateRoot,
+      connected: () => connection === 'open' && Boolean(socket?.sendMessage),
+      coverage: chatCoverage, resolveJid: resolveCurrentJid, reviews: automationReviews, messages: () => cache.messages, logger })
   }
+  await automationWorker?.tick()
 }
 
 function listenLocal(server) {
@@ -808,6 +762,7 @@ function installGracefulShutdown(server) {
     linkState.clear()
     connection = 'stopping'
     clearTimeout(reconnectTimer)
+    automationWorker?.stop()
     Promise.resolve()
       .then(() => clearQrFiles())
       .then(() => saveCache({ full: true }))
@@ -847,6 +802,9 @@ function capabilityForbidden(response) {
 
 function automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend }) {
   return (request.method === 'GET' && ['/resolve', '/coverage', '/messages', '/identities'].includes(url.pathname))
+    || (request.method === 'GET' && url.pathname === '/automation/context')
+    || (request.method === 'GET' && url.pathname === '/automation/draft')
+    || (request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/draft', '/automation/draft/decision'].includes(url.pathname))
     || isAudioDownload || isImageDownload || isDocumentDownload || isVideoDownload || isStickerDownload || isMessageSend
 }
 
@@ -1297,6 +1255,12 @@ async function main() {
     promptAutomations = new PromptAutomationRules(promptAutomationsPath)
     agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
     const recoveredPromptAutomations = await promptAutomations.recoverInterrupted()
+    automationReviews = new AutomationReviews(promptAutomations, {
+      connected: () => connection === 'open' && cache.sync.ingestionHealthy !== false && Boolean(socket?.sendMessage),
+      coverage: chatCoverage, resolveJid: resolveCurrentJid,
+      transport: (jid, text, messageId) => socket.sendMessage(jid, { text }, { messageId }), logger,
+    })
+    await automationReviews.recover()
     for (const batch of recoveredPromptAutomations) logger.warn({ automationRule: batch.ruleName, batchId: batch.id, status: batch.status }, 'Recovered interrupted prompt automation without retrying it')
   } catch (error) {
     promptAutomations = null
@@ -1325,7 +1289,7 @@ async function main() {
   }, 15 * 1000).unref()
   setInterval(() => {
     processPromptAutomations().catch((error) => logger.error({ err: error }, 'Could not process prompt automations'))
-  }, 5 * 1000).unref()
+  }, 1000).unref()
   const token = await loadToken()
   automationCapabilities = new AutomationCapabilities()
 
@@ -1343,8 +1307,9 @@ async function main() {
     const isMessageRead = request.method === 'POST' && url.pathname === '/messages/read'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
+    const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
@@ -1358,6 +1323,58 @@ async function main() {
     const authorization = authorizationFor(request, token)
     if (!authorization) return json(response, 401, { error: 'unauthorized' })
     if (authorization.kind === 'automation' && !automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend })) return capabilityForbidden(response)
+    if (url.pathname.startsWith('/automation/')) {
+      Promise.resolve().then(async () => {
+        if (!promptAutomations) return json(response, 503, { error: 'automations_disabled' })
+        if (url.pathname === '/automation/trigger' && request.method === 'POST') {
+          if (authorization.kind !== 'full') return capabilityForbidden(response)
+          const { name, key, reason } = await requestBody(request)
+          const rule = await promptAutomations.get(name)
+          if (!rule) throw new Error('Unknown automation rule.')
+          const jid = await resolveCurrentJid(rule.sourceOriginalJid)
+          if (!chatCoverage(jid).fresh) throw new Error('Trigger requires fresh source coverage.')
+          return json(response, 200, await promptAutomations.trigger(name, key, reason, jid))
+        }
+        if (url.pathname === '/automation/preview' && request.method === 'POST') {
+          if (authorization.kind !== 'full') return capabilityForbidden(response)
+          const { name, messageIds } = await requestBody(request)
+          const rule = await promptAutomations.get(name)
+          if (!rule) throw new Error('Unknown automation rule.')
+          const jid = await resolveCurrentJid(rule.sourceOriginalJid)
+          if (!chatCoverage(jid).fresh) throw new Error('Preview requires fresh source coverage.')
+          if (!Array.isArray(messageIds) || !messageIds.every((id) => findMessage(jid, id))) throw new Error('Every preview ID must exist in the configured source chat.')
+          return json(response, 200, await promptAutomations.preview(name, messageIds, jid))
+        }
+        if (authorization.kind !== 'automation' || !authorization.batchId || !authorization.runId) return capabilityForbidden(response)
+        if (url.pathname === '/automation/draft' && request.method === 'GET' && authorization.stage === 'review') {
+          await promptAutomations.assertRun(authorization.batchId, authorization.runId)
+          return json(response, 200, await automationReviews.context(authorization.batchId))
+        }
+        if (url.pathname === '/automation/draft' && request.method === 'POST' && authorization.stage === 'execute') {
+          const { text, reason } = await requestBody(request)
+          const { rule } = await promptAutomations.assertRun(authorization.batchId, authorization.runId)
+          const jid = await resolveCurrentJid(rule.destinationOriginalJid)
+          return json(response, 200, await automationReviews.submit(authorization.batchId, authorization.runId, { text, reason, jid }))
+        }
+        if (url.pathname === '/automation/draft/decision' && request.method === 'POST' && authorization.stage === 'review') {
+          return json(response, 200, await automationReviews.decide(authorization.batchId, authorization.runId, await requestBody(request)))
+        }
+        if (url.pathname === '/automation/context' && request.method === 'GET') {
+          const batch = (await promptAutomations.load()).batches.find((item) => item.id === authorization.batchId)
+          return json(response, 200, await promptAutomations.context(batch.ruleId))
+        }
+        if (url.pathname === '/automation/decision' && request.method === 'POST' && authorization.stage === 'judge') {
+          const { route, reason } = await requestBody(request)
+          return json(response, 200, await promptAutomations.decide(authorization.batchId, authorization.runId, route, reason))
+        }
+        if (url.pathname === '/automation/result' && request.method === 'POST' && authorization.stage === 'execute') {
+          const { outcome, summary, resumeAfter } = await requestBody(request)
+          return json(response, 200, await promptAutomations.report(authorization.batchId, authorization.runId, outcome, summary, resumeAfter))
+        }
+        return capabilityForbidden(response)
+      }).catch((error) => json(response, 422, { error: 'automation_operation_failed', message: error.message }))
+      return
+    }
     if (request.method === 'GET' && url.pathname === '/qr') {
       response.setHeader('Cache-Control', 'no-store')
       const pending = linkState.pending(connection)
@@ -1414,10 +1431,12 @@ async function main() {
         if (!socket?.sendMessage) return json(response, 503, { error: 'whatsapp_not_connected' })
         const options = quotedSendOptions(jid, replyToMessageId)
         if (!options) return json(response, 404, { error: 'reply_target_not_found' })
-        const result = await sendIdempotently({
-          requestId,
-          send: () => socket.sendMessage(jid, { text: text.trim(), mentions: mentions?.length ? mentions : undefined }, options),
-        })
+        const content = { text: text.trim(), mentions: mentions?.length ? mentions : undefined }
+        const result = authorization.kind === 'automation'
+          ? await promptAutomations.send({ batchId: authorization.batchId, runId: authorization.runId, jid, text: JSON.stringify([content, replyToMessageId || null]) },
+            (messageId) => socket.sendMessage(jid, content, { ...options, messageId }),
+            (_rule, batch) => connection === 'open' && cache.sync.ingestionHealthy !== false && chatCoverage(batch.sourceJid).fresh)
+          : await sendIdempotently({ requestId, send: () => socket.sendMessage(jid, content, options) })
         json(response, result.pending ? 202 : 200, result)
       }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
       return

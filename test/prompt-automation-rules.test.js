@@ -42,9 +42,8 @@ test('an incoming-only rule may reply in the same chat without listening to its 
   })
   assert.equal((await rules.enqueue({ ...message, jid: 'ines@lid', fromMe: false, id: 'FROM-INES' })).length, 1)
   assert.deepEqual(await rules.enqueue({ ...message, jid: 'ines@lid', fromMe: true, id: 'OWN-REPLY' }), [])
-  await assert.rejects(rules.add({
-    ...rule, name: 'bad-same-chat', direction: 'any', createdAt: undefined, updatedAt: undefined,
-  }), /same chat.*incoming/i)
+  const groupRule = await rules.add({ ...rule, name: 'same-chat-any', direction: 'any' })
+  assert.equal(groupRule.direction, 'any')
 })
 
 test('new messages reset a single debounce batch and only a due batch can be claimed', async (context) => {
@@ -70,7 +69,7 @@ test('pause removes waiting work instead of reviving it later', async (context) 
   advance(30)
   assert.equal(await rules.claimDue(), null)
   const [batch] = await rules.batchesFor(rule.id)
-  assert.equal(batch.status, 'uncertain')
+  assert.equal(batch.status, 'canceled')
   assert.match(batch.lastError, /paused/)
   await rules.setStatus(rule.name, 'active')
   assert.equal((await rules.enqueue({ ...message, id: 'AFTER-RESUME', timestamp: Math.floor(Date.parse('2026-08-01T12:00:30-03:00') / 1000) })).length, 1)
@@ -86,7 +85,7 @@ test('a running provider is never retried after a bridge restart', async (contex
   assert.equal(recovered.length, 1)
   const [batch] = await rules.batchesFor(rule.id)
   assert.equal(batch.status, 'uncertain')
-  assert.match(batch.lastError, /not retried automatically/)
+  assert.match(batch.lastError, /no automatic replay/)
 })
 
 test('malformed private state is not silently replaced', async (context) => {

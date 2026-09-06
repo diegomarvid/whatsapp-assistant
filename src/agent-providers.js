@@ -61,9 +61,9 @@ function validIdentifier(value, label) {
 }
 
 function validTimeout(value) {
-  if (value === null || value === undefined) return 60000
+  if (value === null || value === undefined) return 0
   const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 1000 || parsed > 300000) throw new Error('timeoutMs must be an integer between 1000 and 300000.')
+  if (!Number.isInteger(parsed) || (parsed !== 0 && parsed < 1000) || parsed > 3600000) throw new Error('timeoutMs must be 0 (unlimited) or an integer between 1000 and 3600000.')
   return parsed
 }
 
@@ -365,7 +365,7 @@ export function formatAgentProfile(profile) {
     `Reasoning effort (Codex): ${profile.reasoningEffort || 'provider default'}`,
     `Prompt: ${profile.prompt.path} (${profile.prompt.bytes} bytes, sha256 ${profile.prompt.sha256.slice(0, 12)}…)`,
     `Workspace: ${profile.workspace?.path || 'none (WhatsApp-only agent)'}`,
-    `Timeout: ${profile.timeoutMs} ms`,
+    `Timeout: ${profile.timeoutMs === 0 ? 'unlimited' : `${profile.timeoutMs} ms`}`,
     `Actualizado: ${profile.updatedAt}`,
   ].join('\n')
 }

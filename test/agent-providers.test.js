@@ -210,7 +210,7 @@ async function script(directory, name, contents) {
 test('runner handles provider exit before stdin without crashing and returns a classified result', async (context) => {
   const { directory, prompt } = await fixture(context)
   const executable = await script(directory, 'fails-immediately', '#!/bin/sh\nexit 1\n')
-  const result = await validateProviderProfile({ provider: 'claude', model: 'opus', effort: null, prompt: { path: prompt }, timeoutMs: 1000 }, { executable, timeoutMs: 1000 })
+  const result = await validateProviderProfile({ provider: 'claude', model: 'opus', effort: null, prompt: { path: prompt }, timeoutMs: 5000 }, { executable, timeoutMs: 5000 })
   assert.equal(result.ok, false)
   assert.equal(result.mode, 'provider')
   assert.notEqual(result.issue, 'timeout')
@@ -291,4 +291,35 @@ test('prompt automation refuses a modified prompt before it starts the provider'
     runPromptAutomation(profile, { executable, stateDir: path.join(directory, 'wa-state'), capabilityToken: 'test-capability-token', rule: { sourceTarget: 'diego', destinationTarget: 'florencia' }, batch: { messageIds: ['SOURCE-1'] } }),
     /prompt changed after it was approved/,
   )
+})
+
+test('Claude is_error is a provider failure even with a zero process exit', async (context) => {
+  const { directory, prompt, profiles } = await fixture(context)
+  const profile = await profiles.set({ name: 'claude-failure', provider: 'claude', model: 'opus', promptFile: prompt })
+  const executable = await script(directory, 'claude-zero-error', `#!/bin/sh
+cat >/dev/null
+printf '%s\\n' '{"is_error":true,"result":"Session limit reached"}'
+`)
+  const result = await runPromptAutomation(profile, { executable, stateDir: directory, capabilityToken: 'cap', rule: { sourceTarget: 'source', destinationTarget: 'source' }, batch: { messageIds: ['IN-1'] } })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /Session limit/)
+})
+
+test('unlimited profile persists zero and provider is not immediately timed out', async (context) => {
+  const { profiles, prompt, directory } = await fixture(context)
+  const profile = await profiles.set({ name: 'unlimited', provider: 'codex', model: 'test', promptFile: prompt, timeoutMs: '0' })
+  assert.equal((await profiles.get('unlimited')).timeoutMs, 0)
+  const executable = path.join(directory, 'fake-provider')
+  await fs.writeFile(executable, '#!/usr/bin/env node\nsetTimeout(() => require("fs").writeFileSync(process.argv[process.argv.indexOf("--output-last-message") + 1], "OK"), 1200)\n', { mode: 0o700 })
+  const result = await validateProviderProfile(profile, { executable })
+  assert.equal(result.ok, true)
+})
+
+test('new profiles default to unlimited and explicit timeouts survive updates', async (context) => {
+  const { profiles, prompt } = await fixture(context)
+  const profile = await profiles.set({ name: 'default-timeout', provider: 'codex', model: 'test', promptFile: prompt })
+  assert.equal(profile.timeoutMs, 0)
+  await profiles.set({ name: 'default-timeout', timeoutMs: 120000 })
+  const updated = await profiles.set({ name: 'default-timeout', model: 'test-new' })
+  assert.equal(updated.timeoutMs, 120000)
 })

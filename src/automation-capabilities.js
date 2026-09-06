@@ -4,7 +4,9 @@ function text(value) { return typeof value === 'string' && value.length > 0 }
 
 function tokenMatches(left, right) {
   if (!text(left) || !text(right) || left.length !== right.length) return false
-  return crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right))
+  const a = Buffer.from(left)
+  const b = Buffer.from(right)
+  return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 
 function jidSet(values) {
@@ -20,15 +22,15 @@ export class AutomationCapabilities {
     this.records = new Map()
   }
 
-  issue({ readJids, sendJids, ttlMs }) {
+  issue({ readJids, sendJids = [], ttlMs, batchId = null, runId = null, stage = null }) {
     const reads = jidSet(readJids)
     const sends = jidSet(sendJids)
-    if (!reads.size || !sends.size) throw new Error('An automation capability needs at least one read and one send chat.')
+    if (!reads.size) throw new Error('An automation capability needs at least one read chat.')
     const lifetime = Number(ttlMs)
-    if (!Number.isInteger(lifetime) || lifetime < 1000 || lifetime > 10 * 60 * 1000) throw new Error('Automation capability lifetime must be between 1 second and 10 minutes.')
+    if (!Number.isInteger(lifetime) || (lifetime !== 0 && lifetime < 1000) || lifetime > 61 * 60 * 1000) throw new Error('Automation capability lifetime must be 0 (run lifetime) or between 1 second and 61 minutes.')
     this.prune()
     const token = crypto.randomBytes(32).toString('base64url')
-    this.records.set(token, { readJids: reads, sendJids: sends, expiresAt: this.now() + lifetime })
+    this.records.set(token, { readJids: reads, sendJids: sends, expiresAt: lifetime === 0 ? Infinity : this.now() + lifetime, batchId, runId, stage })
     return token
   }
 

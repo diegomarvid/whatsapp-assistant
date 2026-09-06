@@ -12,6 +12,7 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   getKeyAuthor,
+  generateWAMessageFromContent,
   makeCacheableSignalKeyStore,
   proto,
   useMultiFileAuthState,
@@ -41,4 +42,9 @@ test('keeps the protobuf stub types used to normalize missed calls', () => {
     assert.equal(typeof stub[name], 'number', `WebMessageInfo.StubType.${name} must exist`)
   }
   assert.equal(typeof proto.Message, 'function', 'quoted replies re-encode proto.Message content')
+})
+
+test('reserved automation message IDs survive Baileys message generation', () => {
+  const message = generateWAMessageFromContent('test@g.us', { conversation: 'Test' }, { userJid: '123@s.whatsapp.net', messageId: '3EB0RESERVED', timestamp: new Date() })
+  assert.equal(message.key.id, '3EB0RESERVED')
 })
