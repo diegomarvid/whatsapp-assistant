@@ -81,6 +81,11 @@ automation work: it maps the code, current deployment snapshot, real pilot evide
 private operational context and remaining validation. Preserve recorded pauses;
 reading or improving this repository does not reactivate a pilot.
 
+[`docs/human-consultation-design.md`](docs/human-consultation-design.md) specifies
+the proposed multi-turn consultation and work continuation feature. It is not
+implemented in 0.10.1; do not treat its proposed CLI commands as available or a
+human clarification as approval of a WhatsApp draft.
+
 Read `docs/autonomous-conversations.md` before changing automation semantics or
 activating a rule. New rules default to observation; retain legacy configuration
 when migrating. The user may explicitly authorize a live pilot for one chat.

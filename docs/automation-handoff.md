@@ -14,6 +14,11 @@ El estado operativo es una fotografía de esa fecha: consultar el CLI antes de a
 4. [Estado privado](private-state.md) y [recuperación del bridge](onboarding-and-recovery.md):
    ubicación de datos y cuidados al cambiar instalación o sesión.
 
+Siguiente capacidad diseñada: [consultas humanas durante el trabajo](human-consultation-design.md).
+Define cómo pausar una tarea, conversar por replies en el mismo bot y confirmar
+antes de retomar, con o sin draft final. **Es un diseño pendiente de implementación**;
+0.10.1 todavía no ofrece consultas con continuación de trabajo.
+
 El motor y el adaptador están en `main`, commit de implementación `6ca5161`.
 El daemon local ejecuta 0.10.1, con la sesión existente, conexión abierta e
 ingestión saludable. **Las tres reglas conservadas de laboratorio/soporte están

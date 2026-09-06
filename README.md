@@ -142,6 +142,10 @@ Para continuar el desarrollo desde otra sesión o equipo, empezar por la
 [guía técnica de automatizaciones](docs/automation-handoff.md): mapa del código,
 piloto real, estado del despliegue, comandos de inspección y mejoras pendientes.
 
+También está documentado el [diseño de consultas humanas durante el trabajo](docs/human-consultation-design.md):
+preguntar por el mismo bot, mantener varios intercambios y confirmar antes de
+retomar. Esa extensión todavía está pendiente de implementación.
+
 `wa automation forward` fue retirado: no queda ningún reenvío determinista
 activo ni una capa que “arregle” texto antes del prompt.
 

@@ -13,6 +13,11 @@ separadas. Una regla puede contestar directamente o exigir revisión. El juez
 opcional sigue decidiendo si corresponde intervenir; el intérprete de revisión
 decide qué pidió la persona que respondió al borrador.
 
+Si la IA necesita aclarar una duda **durante el trabajo**, antes de decidir qué
+responder, ver el [diseño de consultas humanas](human-consultation-design.md).
+Es una capacidad propuesta e independiente de aprobar el texto final; todavía
+no está implementada en el motor descrito aquí.
+
 ```mermaid
 flowchart LR
   A[Mensaje entrante o disparo explícito] --> B[Juez opcional]
