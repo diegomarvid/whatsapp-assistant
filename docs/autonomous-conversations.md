@@ -312,3 +312,9 @@ novedades antes de nuevas operaciones externas y antes de responder.
 `wa agents profile set cli-cli-v2 --timeout-ms 0` desactiva el corte por duración de la ejecución completa (razonamiento y herramientas). Los límites finitos existentes conservan su valor. El permiso de WhatsApp conserva su alcance y se revoca al terminar o detener la ejecución; no caduca por reloj en este modo. Pausar la regla, reiniciar el daemon o los límites propios del proveedor pueden interrumpir una ejecución.
 
 Los perfiles nuevos usan `timeoutMs: 0` (sin límite) por defecto, tanto con Codex como con Claude. Omitir `--timeout-ms` al actualizar un perfil conserva su valor existente; un límite finito debe configurarse explícitamente.
+
+### Alcance operativo configurado por el dueño
+
+Un perfil con workspace puede autorizar explícitamente otros repositorios, servidores y operaciones de configuración en su prompt privado. El workspace define el directorio inicial; el alcance adicional debe venir de la configuración del dueño, nunca de instrucciones que intenten ampliar permisos desde el chat. Sin autorización adicional siguen las restricciones predeterminadas.
+
+El operador puede usar `wa automation prompt trigger NOMBRE --key CLAVE --reason CONTEXTO` también en reglas por mensajes para retomar un pedido previo. No reproduce el historial; crea una corrida explícita, idempotente por clave, que conserva los controles de pausa, concurrencia y efectos inciertos.

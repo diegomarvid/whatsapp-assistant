@@ -446,7 +446,7 @@ export class PromptAutomationRules {
     if (!text(key) || key.length > 160 || !text(reason) || reason.length > 4000) throw new Error('Trigger requires a stable key (1–160) and reason (1–4000).')
     return this.mutate(async (state) => {
       const rule = state.rules.find((r) => r.name === name)
-      if (!rule || rule.trigger !== 'manual') throw new Error('Explicit triggers require a manual rule.')
+      if (!rule) throw new Error('Unknown automation rule.')
       const previous = state.batches.find((b) => b.ruleId === rule.id && b.trigger?.key === key)
       if (previous) {
         if (previous.trigger.reason !== reason) throw new Error('Trigger key already exists with different content.')

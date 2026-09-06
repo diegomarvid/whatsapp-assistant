@@ -276,3 +276,13 @@ test('manual pause actively stops a provider instead of waiting for its full tim
   assert.equal(aborted, true)
   assert.equal((await rules.batchesFor(rule.id))[0].status, 'superseded')
 })
+
+ test('operator can resume a pending request on an event rule without replaying history', async (t) => {
+  const { rules, rule } = await fixture(t)
+  const batch = await rules.trigger(rule.name, 'explicit-catchup', 'Owner requests existing work', rule.sourceJid)
+  assert.deepEqual(batch.messageIds, [])
+  assert.equal(batch.trigger.reason, 'Owner requests existing work')
+  assert.equal((await rules.trigger(rule.name, 'explicit-catchup', 'Owner requests existing work', rule.sourceJid)).id, batch.id)
+  await rules.setStatus(rule.name, 'paused')
+  await assert.rejects(rules.trigger(rule.name, 'another', 'Work', rule.sourceJid), /Activate/)
+})
