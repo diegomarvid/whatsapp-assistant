@@ -13,9 +13,11 @@ export class AutomationWorker {
   }
 
   async tick() {
-    if (this.dispatching || this.stopping || !this.connected()) return
+    if (this.dispatching || this.stopping) return
     this.dispatching = true
     try {
+      await this.cancelInvalidated()
+      if (!this.connected()) return
       if (Date.now() - this.lastReconcileAt >= 60000) {
         await this.rules.reconcile(this.messages(), { resolveSourceJid: this.resolveJid })
         this.lastReconcileAt = Date.now()
@@ -34,6 +36,18 @@ export class AutomationWorker {
     }
   }
 
+  async cancelInvalidated() {
+    if (!this.controllers.size) return
+    const { batches } = await this.rules.load()
+    for (const controller of this.controllers) {
+      const batch = batches.find((item) => item.id === controller.batchId)
+      // An ordinary follow-up must not interrupt a deployment mid-command.
+      // Always stop on explicit control; plain conversation/judge runs can
+      // restart on fresh messages without replaying code side effects.
+      if (batch?.invalidated && (batch.invalidationKind !== 'new_messages' || !controller.workspace)) controller.abort()
+    }
+  }
+
   stop() { this.stopping = true; for (const controller of this.controllers) controller.abort() }
 
   async drain() { await Promise.all([...this.jobs]) }
@@ -42,6 +56,8 @@ export class AutomationWorker {
     let token = null
     let workspace = false
     const controller = new AbortController()
+    controller.batchId = batch.id
+    controller.workspace = Boolean(batch.workspaceLock)
     this.controllers.add(controller)
     const stage = batch.status === 'judging' ? 'judge' : 'execute'
     try {
@@ -57,6 +73,7 @@ export class AutomationWorker {
       if ((profile.workspace?.path || null) !== (batch.workspaceLock || null) && stage !== 'judge') throw new Error('Workspace changed after this job was claimed; inspect configuration before retrying.')
       const readOnly = stage === 'judge' || rule.mode === 'observe' || batch.observe
       workspace = !readOnly && Boolean(profile.workspace?.path)
+      controller.workspace = workspace
       token = this.capabilities.issue({
         readJids: [rule.sourceJid, rule.sourceOriginalJid, batch.sourceJid, source],
         sendJids: readOnly ? [] : [rule.destinationJid, rule.destinationOriginalJid, destination],

@@ -87,7 +87,8 @@ async function runInvocation(invocation, { input, cwd, env, timeoutMs, signal })
       timer = setTimeout(() => {
         timedOut = true
         killProcessTree(child, 'SIGTERM')
-        setTimeout(() => killProcessTree(child, 'SIGKILL'), 2000).unref()
+        killTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 2000)
+        killTimer.unref()
       }, timeoutMs)
       child.stdout.on('data', (part) => stdout.append(part))
       child.stderr.on('data', (part) => stderr.append(part))

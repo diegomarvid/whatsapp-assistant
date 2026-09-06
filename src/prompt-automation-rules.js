@@ -86,7 +86,7 @@ function finish(batch, status, now, detail = null) {
 
 function invalidate(state, ruleId, now, reason, { pendingStatus = 'canceled' } = {}) {
   for (const batch of state.batches.filter((item) => item.ruleId === ruleId)) {
-    if (ACTIVE.has(batch.status)) batch.invalidated = reason
+    if (ACTIVE.has(batch.status)) { batch.invalidated = reason; batch.invalidationKind = 'control' }
     if (['pending', 'waiting'].includes(batch.status)) finish(batch, pendingStatus, now, reason)
   }
 }
@@ -281,7 +281,7 @@ export class PromptAutomationRules {
         for (const waiting of state.batches.filter((batch) => batch.ruleId === rule.id && batch.status === 'waiting')) finish(waiting, 'superseded', this.nowIso(), 'New incoming messages replace the scheduled follow-up.')
         // A message arriving during generation invalidates that response. The
         // job can finish recording its work; the next job sees this report.
-        for (const running of state.batches.filter((batch) => batch.ruleId === rule.id && ACTIVE.has(batch.status))) running.invalidated = 'New messages arrived during this run.'
+        for (const running of state.batches.filter((batch) => batch.ruleId === rule.id && ACTIVE.has(batch.status))) { running.invalidated = 'New messages arrived during this run.'; running.invalidationKind = 'new_messages' }
         let batch = state.batches.find((entry) => entry.ruleId === rule.id && entry.status === 'pending' && entry.messageIds.length < rule.maxBatchMessages)
         if (!batch) {
           batch = { id: id(), ruleId: rule.id, ruleName: rule.name, sourceJid: message.jid, messageIds: [], status: rule.humanHold ? 'human' : 'pending', createdAt: this.nowIso(), dueAt: this.nowIso(), completedAt: rule.humanHold ? this.nowIso() : null, lastError: null, output: null }
@@ -327,7 +327,7 @@ export class PromptAutomationRules {
             || overlaps(other.workspaceLock || workspaces[otherRule?.profile])
         })
         if (busy) continue
-        Object.assign(batch, { status: rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, report: null })
+        Object.assign(batch, { status: rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, invalidationKind: null, report: null })
         return { value: structuredClone(batch) }
       }
       return { value: null, save: false }
@@ -369,7 +369,9 @@ export class PromptAutomationRules {
       const sends = state.outbound.filter((entry) => entry.batchId === batch.id)
       batch.sendCount = sends.filter((entry) => entry.status === 'accepted').length
       batch.summary = batch.report?.summary || batch.summary || null
-      if (!result.ok) {
+      if (!result.ok && batch.invalidated && !workspace && !sends.length) {
+        finish(batch, 'superseded', this.nowIso(), batch.invalidated)
+      } else if (!result.ok) {
         const uncertain = stage === 'execute' && (workspace || sends.length > 0)
         finish(batch, uncertain ? 'uncertain' : 'failed', this.nowIso(), result.error || 'Provider failed.')
         if (uncertain) { rule.humanHold = true; invalidate(state, rule.id, this.nowIso(), 'Uncertain work requires review.', { pendingStatus: 'human' }) }

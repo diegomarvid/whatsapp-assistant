@@ -260,3 +260,19 @@ test('freshness is checked again before the transport starts', async (t) => {
   assert.equal(sent, false)
   assert.equal((await rules.load()).outbound.length, 0)
 })
+
+test('manual pause actively stops a provider instead of waiting for its full timeout', async (t) => {
+  const { rules, rule, directory, message } = await fixture(t)
+  let started
+  const ready = new Promise((resolve) => { started = resolve })
+  let aborted = false
+  const worker = new AutomationWorker({ rules, capabilities: new AutomationCapabilities(), stateDir: directory, profiles: { list: async () => [{ name: 'executor' }], get: async () => ({ name: 'executor', timeoutMs: 60000 }) }, connected: () => true, coverage: () => ({ fresh: true }), resolveJid: async (jid) => jid, logger: { info() {}, error() {} }, run: async (_, input) => {
+    started()
+    return new Promise((resolve) => input.signal.addEventListener('abort', () => { aborted = true; resolve({ ok: false, error: 'Stopped' }) }, { once: true }))
+  } })
+  await rules.enqueue(message()); await worker.tick(); await ready
+  await rules.setStatus(rule.name, 'paused')
+  await worker.tick(); await worker.drain()
+  assert.equal(aborted, true)
+  assert.equal((await rules.batchesFor(rule.id))[0].status, 'superseded')
+})
