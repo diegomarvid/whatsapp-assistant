@@ -1,5 +1,8 @@
 # Borradores con revisión humana
 
+Para arquitectura, mapa del código, despliegue 0.10.1 y evidencia del piloto real,
+ver la [guía técnica de continuidad](automation-handoff.md).
+
 Este es un patrón general para cualquier automatización: preparar un mensaje,
 presentarlo con contexto, interpretar feedback humano, corregir o cancelar, y
 enviar únicamente la versión aprobada. No implementa una campaña ni una
@@ -44,8 +47,9 @@ flowchart LR
 ## Configurar una regla
 
 Crear primero los perfiles del ejecutor y del intérprete usando
-`wa agents profile set`. Como base para el intérprete está
-[`prompts/draft-reviewer.md`](prompts/draft-reviewer.md). Su perfil no debe tener
+`wa agents profile set`. Hay bases reutilizables para el
+[ejecutor conversacional](prompts/reviewed-conversation.md) y el
+[intérprete](prompts/draft-reviewer.md). El perfil del intérprete no debe tener
 workspace. El prompt del ejecutor define el propósito de la automatización, los
 datos que puede consultar y las acciones autorizadas; la revisión de borradores
 autoriza la comunicación, no amplía permisos para modificar sistemas.
@@ -115,7 +119,8 @@ devuelve el mismo trabajo; cambiar el motivo con la misma clave falla. No se
 acepta otro disparo de esa regla mientras tenga trabajo pendiente o incierto.
 Las claves de disparos explícitos sobreviven al período de retención del espejo.
 La política se copia al crear la regla; editar el archivo original no modifica
-aprobaciones o reglas ya creadas. Para otra política, crear una regla nueva y
+aprobaciones o reglas ya creadas. Para cambiar sólo el plazo, usar `review-expiry`
+como se describe arriba. Para otros cambios de política, crear una regla nueva y
 retirar la anterior, conservando el historial.
 
 ## Contrato para cualquier adaptador
@@ -345,7 +350,7 @@ no constituye aislamiento del sistema operativo. El proveedor CLI corre bajo el
 usuario local. No usar un perfil con acceso general a credenciales como si fuera
 un contenedor seguro para mensajes no confiables.
 
-### Verificación del 2026-09-06
+### Historial: verificación inicial 0.10.0 del 2026-09-06
 
 `npm run check` y 203 pruebas del repositorio pasan, incluidas 24 pruebas del
 flujo de revisión y su adaptador, más el contrato de comandos del CLI. El paquete
@@ -365,7 +370,7 @@ textos, políticas y evidencia quedaron en estado privado. Esta prueba valida el
 camino de aprobación; reescritura, cancelación y feedback por audio mantienen
 cobertura simulada, pero todavía no se validaron con intervención humana real.
 
-### Despliegue del 2026-09-06
+### Historial: despliegue 0.10.0 del 2026-09-06
 
 Integrado en `main` y PR #1 fusionada. La versión `0.10.0` quedó instalada en el
 daemon local: sesión existente, conexión abierta, ingestión saludable y cobertura
@@ -377,6 +382,21 @@ Este despliegue no configura una integración de negocio ni una regla nueva de d
 La [release v0.10.0](https://github.com/diegomarvid/whatsapp-assistant/releases/tag/v0.10.0)
 incluye el paquete instalable. GitHub CI pasó las 203 pruebas. La publicación
 automática en npm fue rechazada por el registro (HTTP 404); npm seguía ofreciendo
-`0.9.7` al verificar. Hasta resolver el acceso de publicación, instalar el archivo
-de la release según sus instrucciones. Este pendiente de distribución no impide
-que el daemon local ejecute la versión nueva.
+`0.9.7` al verificar. El archivo de esa release instala 0.10.0, no 0.10.1.
+Este pendiente de distribución no impide que el daemon local ejecute una versión
+instalada desde el código fuente.
+
+### Actualización 0.10.1 del 2026-09-06
+
+El commit `6ca5161` está en `main` e instalado en el daemon local. `npm run check`
+y 205 pruebas pasaron en CI. Agrega siete días por defecto, el comando
+`review-expiry` que conserva pausas y la presentación estructurada del adaptador.
+El cliente y servicio externos también se actualizaron; sus 16 pruebas pasaron.
+Una vista previa real en Telegram verificó el nuevo formato, sin enviar a
+WhatsApp. La aprobación humana con entrega se había probado antes, en 0.10.0.
+
+La regla de prueba conserva el plazo actual de siete días y permanece pausada;
+su lote completado mantiene el vencimiento original de una hora como evidencia
+histórica. Reescritura, cancelación, audio, espera de un día y reinicio durante
+espera siguen pendientes de UAT humana. La [guía de continuidad](automation-handoff.md)
+concentra las rutas privadas, el alcance de cada prueba y los pasos para retomar.

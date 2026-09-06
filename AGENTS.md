@@ -76,6 +76,11 @@ clock window so the AI can notice context that no keyword query could match.
 
 ## Autonomous conversations
 
+Start with [`docs/automation-handoff.md`](docs/automation-handoff.md) when resuming
+automation work: it maps the code, current deployment snapshot, real pilot evidence,
+private operational context and remaining validation. Preserve recorded pauses;
+reading or improving this repository does not reactivate a pilot.
+
 Read `docs/autonomous-conversations.md` before changing automation semantics or
 activating a rule. New rules default to observation; retain legacy configuration
 when migrating. The user may explicitly authorize a live pilot for one chat.

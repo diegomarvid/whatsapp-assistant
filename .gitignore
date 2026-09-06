@@ -1,5 +1,6 @@
 node_modules/
 auth/
 data/
+logs/
 .DS_Store
 npm-debug.log*

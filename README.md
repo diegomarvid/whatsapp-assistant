@@ -115,8 +115,9 @@ un envío ya iniciado. Los mensajes de la automatización nunca vuelven a dispar
 reglas. Un límite por hora corta posibles bucles con otros bots.
 
 Cada corrida conserva decisión, resultado, resumen, IDs de envío y errores por
-separado. Los trabajos largos admiten hasta una hora por ejecución y esperas
-programadas explícitas. Se serializa el trabajo por conversación y workspace,
+separado. Los perfiles nuevos no tienen corte por duración (`timeoutMs: 0`);
+se puede fijar un límite de hasta una hora y pedir esperas programadas explícitas.
+Se serializa el trabajo por conversación y workspace,
 con hasta tres corridas independientes. Efectos inciertos requieren revisión y
 no se reintentan automáticamente.
 
@@ -134,7 +135,12 @@ mediante un adaptador genérico; Maspeak/Mustpeak Drafts para Telegram es opcion
 También admite disparos idempotentes desde Codex u otro scheduler, sin mantener
 un modelo activo durante la espera. [Contrato y configuración](docs/draft-review.md).
 Prompts reutilizables: [grupo dedicado a IA](docs/prompts/ai-group.md) y
-[juez de soporte](docs/prompts/platform-judge.md).
+[juez de soporte](docs/prompts/platform-judge.md), además del
+[ejecutor con revisión](docs/prompts/reviewed-conversation.md).
+
+Para continuar el desarrollo desde otra sesión o equipo, empezar por la
+[guía técnica de automatizaciones](docs/automation-handoff.md): mapa del código,
+piloto real, estado del despliegue, comandos de inspección y mejoras pendientes.
 
 `wa automation forward` fue retirado: no queda ningún reenvío determinista
 activo ni una capa que “arregle” texto antes del prompt.

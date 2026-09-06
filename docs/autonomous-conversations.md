@@ -1,11 +1,16 @@
-# Conversaciones autónomas — v2
+# Conversaciones autónomas
+
+Para retomar el proyecto, empezar por la [guía técnica y estado del piloto](automation-handoff.md).
+El código actual es 0.10.1; las reglas de prueba/soporte están pausadas al
+2026-09-06. Las secciones de validación inicial de este documento conservan el
+historial de la implementación v2; no describen la última ejecución del piloto.
 
 Para revisión humana de borradores y disparos desde cualquier integración, ver
 [el patrón general de drafts](draft-review.md). Esa extensión usa schema v3 y
 conserva las reglas v1/v2 sin revisión. Los comandos del piloto siguen vigentes.
 
-Versión 0.10.0, 2026-09-06. El piloto se prepara para el grupo CLI CLI;
-no modifica las reglas de otros clientes ni procesa retrospectivamente el chat.
+Diseño inicial de conversaciones: versión 0.10.0, 2026-09-06. El piloto del grupo
+se preparó sin procesar retrospectivamente el chat.
 
 ## Contrato
 
@@ -40,13 +45,21 @@ interrupciones observadas, pero no prueba que las otras corridas hayan arreglado
 algo o enviado mensajes. La v2 muestra decisiones, resultados y envíos
 por separado; no se reejecutan esas corridas históricas.
 
-## Validación y entrega
+La inspección posterior de las nueve salidas terminadas encontró decisiones de
+no actuar por las exclusiones del prompt: sólo atendía ciertos errores y dejaba
+fuera mejoras, reportes, correcciones de datos y pedidos ambiguos. La regla fue
+creada el 2026-08-05 y quedó pausada el 2026-09-06. Esa fecha de creación no prueba
+que haya funcionado continuamente. Revisar criterios y timeout antes de otra
+prueba; conservar los trabajos inciertos para inspección, sin reejecutarlos.
+
+## Validación inicial de v2
 
 Validación local: 175 tests pasan, incluyendo agrupación, juez, observación,
 intervención, origen de mensajes, envíos idempotentes, recuperación, concurrencia
 y CLI; `npm run check` pasa. Codex real validado en prueba neutra y en preview contra el grupo real: cobertura
 fresca, contexto leído, propuesta registrada, estado `observed` y cero envíos.
-La entrega real en el grupo se valida durante la UAT al activar la regla.
+En ese punto, la entrega real en el grupo todavía no se había validado. Para
+resultados posteriores, ver [la guía de continuidad](automation-handoff.md#prueba-real-del-chat-directo).
 
 La prueba contra el bridge real detectó además una conversión incorrecta del JID
 numérico de grupos a un JID telefónico al crear reglas. Se corrigió y se agregó
@@ -78,7 +91,8 @@ wa agents validate cli-cli-v2
 con un mensaje neutro sin WhatsApp. Ninguno prueba por sí solo la automatización.
 Los perfiles existentes retienen su configuración; subir un timeout requiere
 editar ese perfil expresamente. Para trabajo de código, usar un checkout aislado
-como `--workspace` y un timeout apropiado, hasta 3.600.000 ms. Nunca compartir
+como `--workspace` y un timeout apropiado: `0` sin corte por reloj o un límite
+finito de hasta 3.600.000 ms. Nunca compartir
 un checkout con cambios manuales para probar despliegues desatendidos.
 
 ### Piloto CLI CLI
@@ -194,7 +208,7 @@ prompts, auditorías y conversaciones son privados; no commitear `data/`.
 | `completed` | Proceso finalizó y registró resultado; mirar resultado y envíos. |
 | `failed` | Etapa fallida sin efectos externos conocidos; revisar diagnóstico. |
 | `superseded` | Novedades o intervención invalidaron la respuesta anterior. |
-| `canceled` | Trabajo pendiente cancelado antes de invocar al proveedor. |
+| `canceled` | Trabajo cancelado; con revisión también puede ocurrir después de generar el borrador, por decisión humana o vencimiento. |
 | `uncertain` | Hubo posible trabajo/envío cuyo resultado no está confirmado. |
 
 Los registros antiguos `completed` sólo significaban proceso terminado: no hay
@@ -240,8 +254,9 @@ para evitar activar retrospectivamente conversaciones de la v1.
    el estado activo fuera del paquete. `wa daemon restart` y `wa doctor` deben
    confirmar la sesión existente, sin un nuevo QR.
 4. Verificar `wa --version`, `wa status`, `wa coverage <grupo>` y la regla.
-5. Antes de volver a v1, pausar automatizaciones y revisar cualquier envío o
-   trabajo posterior al backup. v1 no entiende schema v2; restaurar únicamente
+5. Antes de volver a una versión anterior, pausar automatizaciones y revisar
+   cualquier envío o trabajo posterior al backup. Versiones previas al motor de
+   revisión no entienden schema v3; restaurar únicamente
    un snapshot revisado de reglas/perfiles, no auth ni el mirror. No reactivar
    una cola antigua que pueda repetir trabajo.
 
@@ -263,7 +278,11 @@ comprobar procesos y eliminar sólo ese lock; nunca resetear la sesión.
 - Criterios de intención viven en prompts; nunca en expresiones regulares del CLI.
 
 
-## Entrega local verificada — 2026-09-06
+## Historial: entrega inicial de v2 — 2026-09-06
+
+Fotografía anterior a la prueba real de drafts y al cambio a 0.10.1. Los valores
+de timeout, conteos de pruebas y estado del piloto de esta sección son históricos.
+Consultar [estado y evidencia actualizados](automation-handoff.md).
 
 - Paquete 0.10.0 instalado desde el repositorio y daemon reconectado con la sesión
   existente (`connection: open`, `ingestionHealthy: true`, sin QR nuevo).
@@ -277,7 +296,7 @@ comprobar procesos y eliminar sólo ese lock; nunca resetear la sesión.
   privados de ese chat en este documento.
 - Regla `cli-cli-v2` preparada y pausada: `live`, ambas direcciones, sin juez,
   sin pausa por mensajes propios, silencio de 15 s / máximo de 60 s y límite de
-  20 envíos por hora. La UAT de envío/receipts queda pendiente de activarla.
+  20 envíos por hora. En ese momento, la UAT de envío/receipts estaba pendiente.
 - Commits: `1cafaef` implementa el motor, las herramientas, migración y regresiones;
   el siguiente commit incorpora la interrupción activa al pausar/tomar control.
 
