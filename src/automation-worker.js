@@ -77,7 +77,7 @@ export class AutomationWorker {
       token = this.capabilities.issue({
         readJids: [rule.sourceJid, rule.sourceOriginalJid, batch.sourceJid, source],
         sendJids: readOnly ? [] : [rule.destinationJid, rule.destinationOriginalJid, destination],
-        ttlMs: (profile.timeoutMs || 60000) + 30000,
+        ttlMs: profile.timeoutMs == null || profile.timeoutMs === 0 ? 0 : profile.timeoutMs + 30000,
         batchId: batch.id, runId: batch.runId, stage,
       })
       const context = await this.rules.context(rule.id)

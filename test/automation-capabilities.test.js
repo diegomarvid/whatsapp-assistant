@@ -28,3 +28,14 @@ test('the master bridge credential retains full access', () => {
   assert.equal(capabilities.canRead(authorization, 'any@lid'), true)
   assert.equal(capabilities.canSend(authorization, 'any@lid'), true)
 })
+
+test('run-lifetime capability survives elapsed time but is revoked at completion', () => {
+  let now = 0
+  const caps = new AutomationCapabilities({ now: () => now })
+  const token = caps.issue({ readJids: ['chat'], ttlMs: 0 })
+  now = 100 * 24 * 60 * 60 * 1000
+  caps.prune()
+  assert.equal(caps.authorization(token, 'master').kind, 'automation')
+  caps.revoke(token)
+  assert.equal(caps.authorization(token, 'master'), null)
+})

@@ -27,10 +27,10 @@ export class AutomationCapabilities {
     const sends = jidSet(sendJids)
     if (!reads.size) throw new Error('An automation capability needs at least one read chat.')
     const lifetime = Number(ttlMs)
-    if (!Number.isInteger(lifetime) || lifetime < 1000 || lifetime > 61 * 60 * 1000) throw new Error('Automation capability lifetime must be between 1 second and 61 minutes.')
+    if (!Number.isInteger(lifetime) || (lifetime !== 0 && lifetime < 1000) || lifetime > 61 * 60 * 1000) throw new Error('Automation capability lifetime must be 0 (run lifetime) or between 1 second and 61 minutes.')
     this.prune()
     const token = crypto.randomBytes(32).toString('base64url')
-    this.records.set(token, { readJids: reads, sendJids: sends, expiresAt: this.now() + lifetime, batchId, runId, stage })
+    this.records.set(token, { readJids: reads, sendJids: sends, expiresAt: lifetime === 0 ? Infinity : this.now() + lifetime, batchId, runId, stage })
     return token
   }
 

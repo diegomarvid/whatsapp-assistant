@@ -28,6 +28,7 @@ function outputCapture() {
 }
 
 function effectiveTimeout(timeoutMs) {
+  if (timeoutMs === 0 || timeoutMs === null || timeoutMs === undefined) return 0
   return Number.isInteger(timeoutMs) && timeoutMs >= 1000 && timeoutMs <= 3600000 ? timeoutMs : 60000
 }
 
@@ -84,7 +85,7 @@ async function runInvocation(invocation, { input, cwd, env, timeoutMs, signal })
       child = spawn(invocation.command, invocation.args, {
         cwd, env, shell: false, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
       })
-      timer = setTimeout(() => {
+      if (timeoutMs !== 0) timer = setTimeout(() => {
         timedOut = true
         killProcessTree(child, 'SIGTERM')
         killTimer = setTimeout(() => killProcessTree(child, 'SIGKILL'), 2000)

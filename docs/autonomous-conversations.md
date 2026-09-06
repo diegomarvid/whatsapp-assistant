@@ -283,3 +283,10 @@ que el trabajo iniciado termine y deje su resumen; no se mata un despliegue sól
 porque llega otro mensaje. Una pausa o toma de control explícita sí interrumpe
 el proceso, y exige revisar el posible trabajo parcial. El ejecutor debe revisar
 novedades antes de nuevas operaciones externas y antes de responder.
+
+### Ejecuciones sin límite de tiempo
+
+
+`wa agents profile set cli-cli-v2 --timeout-ms 0` desactiva el corte por duración de la ejecución completa (razonamiento y herramientas). Los límites finitos existentes conservan su valor. El permiso de WhatsApp conserva su alcance y se revoca al terminar o detener la ejecución; no caduca por reloj en este modo. Pausar la regla, reiniciar el daemon o los límites propios del proveedor pueden interrumpir una ejecución.
+
+Los perfiles nuevos usan `timeoutMs: 0` (sin límite) por defecto, tanto con Codex como con Claude. Omitir `--timeout-ms` al actualizar un perfil conserva su valor existente; un límite finito debe configurarse explícitamente.

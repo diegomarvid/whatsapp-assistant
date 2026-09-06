@@ -304,3 +304,22 @@ printf '%s\\n' '{"is_error":true,"result":"Session limit reached"}'
   assert.equal(result.ok, false)
   assert.match(result.error, /Session limit/)
 })
+
+test('unlimited profile persists zero and provider is not immediately timed out', async (context) => {
+  const { profiles, prompt, directory } = await fixture(context)
+  const profile = await profiles.set({ name: 'unlimited', provider: 'codex', model: 'test', promptFile: prompt, timeoutMs: '0' })
+  assert.equal((await profiles.get('unlimited')).timeoutMs, 0)
+  const executable = path.join(directory, 'fake-provider')
+  await fs.writeFile(executable, '#!/usr/bin/env node\nsetTimeout(() => require("fs").writeFileSync(process.argv[process.argv.indexOf("--output-last-message") + 1], "OK"), 1200)\n', { mode: 0o700 })
+  const result = await validateProviderProfile(profile, { executable })
+  assert.equal(result.ok, true)
+})
+
+test('new profiles default to unlimited and explicit timeouts survive updates', async (context) => {
+  const { profiles, prompt } = await fixture(context)
+  const profile = await profiles.set({ name: 'default-timeout', provider: 'codex', model: 'test', promptFile: prompt })
+  assert.equal(profile.timeoutMs, 0)
+  await profiles.set({ name: 'default-timeout', timeoutMs: 120000 })
+  const updated = await profiles.set({ name: 'default-timeout', model: 'test-new' })
+  assert.equal(updated.timeoutMs, 120000)
+})
