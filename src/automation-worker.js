@@ -96,7 +96,7 @@ export class AutomationWorker {
       if (rule.humanConsultation && stage === 'execute' && !readOnly) {
         const snapshot = workspace ? await workspaceCheckpoint(profile.workspace.path) : null
         if (batch.human?.resolved && batch.workspaceCheckpoint && snapshot?.digest !== batch.workspaceCheckpoint.digest) {
-          await this.human.ask(batch.id, batch.runId, { question: 'El repositorio cambió mientras esperaba. ¿Cómo querés que tenga en cuenta esos cambios antes de seguir?', reason: 'Necesito reconciliar el trabajo guardado con el estado actual.', checkpoint: batch.human.summary || batch.human.checkpoint })
+          await this.human.ask(batch.id, batch.runId, { question: 'El repositorio cambió mientras esperaba. ¿Cómo querés que tenga en cuenta esos cambios antes de seguir?', reason: 'Necesito reconciliar el trabajo guardado con el estado actual.', checkpoint: batch.human.summary || batch.human.checkpoint }, { preserveNativeQuestion: true })
           await this.rules.mutate(async (state) => { state.batches.find((b) => b.id === batch.id).workspaceCheckpoint = snapshot })
           await this.rules.finishRun(batch.id, { ok: true, output: 'Workspace changed; awaiting human clarification.' }, { stage, workspace })
           return

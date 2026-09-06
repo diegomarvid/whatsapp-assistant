@@ -404,6 +404,7 @@ export class PromptAutomationRules {
         const rule = state.rules.find((item) => item.id === batch.ruleId)
         if (!rule || rule.status === 'removed' || (!batch.observe && (rule.status !== 'active' || rule.humanHold))) continue
         if (!connected && batch.status !== 'human_ready') continue
+        if (['human_ready', 'human_resume'].includes(batch.status) && ['publishing', 'delivery_unknown'].includes(batch.human.post.delivery)) continue
         if (batch.status === 'human_ready' && (!batch.human.caughtUp || Date.parse(batch.human.replyDueAt || batch.dueAt) > this.now())) continue
         const keys = new Set([rule.sourceJid, rule.sourceOriginalJid, rule.destinationJid, rule.destinationOriginalJid, batch.sourceJid])
         const proposedWorkspace = ['review_ready', 'human_ready'].includes(batch.status) ? null : workspaces[rule.profile] || null

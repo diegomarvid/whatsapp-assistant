@@ -22,7 +22,7 @@ export class AutomationHuman {
 
   // Records an intent only. The worker publishes it after the provider exits
   // successfully. Both WhatsApp sends and draft submissions stop immediately.
-  async ask(batchId, runId, { question, reason, checkpoint }) {
+  async ask(batchId, runId, { question, reason, checkpoint }, { preserveNativeQuestion = false } = {}) {
     if (!validText(question, 2000) || !validText(reason, 600) || !validText(checkpoint, 8000)) throw new Error('Ask requires question (1–2000), reason (1–600) and checkpoint (1–8000).')
     return this.rules.mutate(async (state) => {
       const batch = state.batches.find((b) => b.id === batchId && b.runId === runId && b.status === 'running' && !b.report)
@@ -30,7 +30,9 @@ export class AutomationHuman {
       if (!batch || batch.review || state.outbound.some((o) => o.batchId === batchId && o.status !== 'accepted')) throw new Error('Cannot suspend uncertain work or an active draft.')
       const old = batch.human
       if (old && !old.resolved) throw new Error('This work already has an open consultation.')
-      batch.human = { id: old?.id || crypto.randomUUID(), round: (old?.round || 0) + 1, cursor: old?.cursor || 0, processedCursor: old?.processedCursor || 0, nativeQuestion: null,
+      // Only the worker's pre-launch workspace reconciliation preserves a
+      // deferred native tool. A new executor question starts a fresh one.
+      batch.human = { id: old?.id || crypto.randomUUID(), round: (old?.round || 0) + 1, cursor: old?.cursor || 0, transportCursor: old?.transportCursor ?? old?.cursor ?? 0, processedCursor: old?.processedCursor || 0, nativeQuestion: preserveNativeQuestion ? old?.nativeQuestion || null : null,
         nextPollAt: this.rules.nowIso(), lastActivityAt: this.rules.nowIso(), checkpoint, summary: old?.summary || '', resolved: false, adapterId: old?.adapterId || null,
         post: { key: `human-${batch.id}-${(old?.round || 0) + 1}`, text: question, reason, kind: 'question', delivery: 'queued' }, decision: null }
       batch.report = { outcome: 'awaiting_human', summary: reason, at: this.rules.nowIso() }
@@ -100,9 +102,22 @@ export class AutomationHuman {
     const current = batches.find((b) => b.id === batch.id && b.runId === batch.runId && b.status === 'running')
     const rule = eligible({ rules }, current)
     if (!current?.human?.resolved) return true
-    const page = await this.adapter(rule.humanConsultation.adapter, { op: 'events', dialogueId: current.human.adapterId, after: current.human.cursor }, { signal: this.controller.signal })
-    validateReplyPage(page, current.human.adapterId, current.human.cursor)
+    const after = current.human.transportCursor ?? current.human.cursor
+    const page = await this.adapter(rule.humanConsultation.adapter, { op: 'events', dialogueId: current.human.adapterId, after }, { signal: this.controller.signal })
+    validateReplyPage(page, current.human.adapterId, after)
     if (!page.replies.length) return true
+    if (!page.replies.some((e) => authorized(rule.humanConsultation, e))) {
+      await this.rules.mutate(async (state) => {
+        const b = state.batches.find((b) => b.id === batch.id && b.runId === batch.runId); eligible(state, b)
+        if ((b.human.transportCursor ?? b.human.cursor) !== after) throw new Error('Consultation transport cursor changed.')
+        for (const event of page.replies) journal(state, b.id, `reply-${b.human.id}-${event.cursor}`, 'ignored-reply', event, event.cursor)
+        b.human.transportCursor = page.nextCursor
+      })
+      // Defer only the deterministic preflight if a full page may hide an
+      // authorized answer. Never wake an interpreter for ignored replies.
+      if (page.replies.length === 50) { await this.rules.defer(batch.id, 1); return false }
+      return true
+    }
     await this.rules.mutate(async (state) => {
       const b = state.batches.find((b) => b.id === batch.id && b.runId === batch.runId); eligible(state, b)
       b.status = 'human_ready'; b.human.resolved = false; b.human.decision = null
@@ -120,7 +135,7 @@ export class AutomationHuman {
     if (!b || !policy) throw new Error('Unknown consultation.')
     const post = b.human.post
     const result = await this.adapter(policy.adapter, { op: 'inspect', key: post.key }, { signal: this.controller.signal })
-    if (result?.key !== post.key || result.status !== 'published' || !validText(result.id, 160) || !result.messageId) throw new Error('Publication remains unconfirmed. No resend or continuation was started.')
+    if (result?.key !== post.key || result.status !== 'published' || !validText(result.id, 160) || !result.messageId || (b.human.adapterId && result.id !== b.human.adapterId)) throw new Error('Publication remains unconfirmed. No resend or continuation was started.')
     return this.rules.mutate(async (state) => {
       const current = state.batches.find((b) => b.id === batchId)
       if (current?.human?.post.key !== post.key) throw new Error('Publication changed.')
@@ -150,7 +165,7 @@ export class AutomationHuman {
     try {
       if (h.post.delivery === 'publishing' || h.post.delivery === 'delivery_unknown') {
         const recovered = await this.adapter(policy.adapter, { op: 'inspect', key: h.post.key }, { signal: this.controller.signal })
-        if (recovered?.status !== 'published' || recovered.key !== h.post.key || !validText(recovered.id, 160) || !recovered.messageId) throw new Error('Telegram publication is uncertain. Inspect its stable key before recovery; no automatic resend.')
+        if (recovered?.status !== 'published' || recovered.key !== h.post.key || !validText(recovered.id, 160) || !recovered.messageId || (h.adapterId && recovered.id !== h.adapterId)) throw new Error('Telegram publication is uncertain. Inspect its stable key before recovery; no automatic resend.')
         await this.rules.mutate(async (state) => {
           const b = state.batches.find((b) => b.id === batchId)
           if (b?.human?.post.key !== h.post.key) throw new Error('Publication changed.')
@@ -170,7 +185,7 @@ export class AutomationHuman {
         })
         const result = await this.adapter(policy.adapter, { op: h.adapterId ? 'post' : 'open', dialogueId: h.adapterId,
           post: { ...h.post, actor: policy.actor, automation: rule.name, target: rule.destination } }, { signal: this.controller.signal })
-        if (result?.status !== 'published' || !validText(result.id, 160) || !result.messageId) throw new Error('Telegram did not confirm the consultation message.')
+        if (result?.status !== 'published' || !validText(result.id, 160) || !result.messageId || (h.adapterId && result.id !== h.adapterId)) throw new Error('Adapter did not confirm publication in the same consultation.')
         await this.rules.mutate(async (state) => {
           const current = state.batches.find((b) => b.id === batchId)
           if (current?.human?.post.key !== h.post.key) throw new Error('Publication identity changed.')
@@ -186,7 +201,7 @@ export class AutomationHuman {
       const current = fresh.human
       // Drain bounded pages per tick. If a backlog is larger, stay in transport
       // processing and spend no model calls until the end has been observed.
-      let after = current.cursor; let caughtUp = false; const events = []
+      let after = current.transportCursor ?? current.cursor; let caughtUp = false; const events = []
       for (let n = 0; n < 20; n++) {
         const page = await this.adapter(policy.adapter, { op: 'events', dialogueId: current.adapterId, after }, { signal: this.controller.signal })
         validateReplyPage(page, current.adapterId, after)
@@ -195,24 +210,20 @@ export class AutomationHuman {
       }
       await this.rules.mutate(async (state) => {
         const b = state.batches.find((b) => b.id === batchId); eligible(state, b)
-        if (!HUMAN_WAITING.has(b.status) || b.status === 'human_frozen' || b.human.cursor !== current.cursor) return { save: false }
+        if (!HUMAN_WAITING.has(b.status) || b.status === 'human_frozen' || (b.human.transportCursor ?? b.human.cursor) !== (current.transportCursor ?? current.cursor)) return { save: false }
         const v = b.human
-        for (const event of events) journal(state, batchId, `reply-${v.id}-${event.cursor}`, 'reply', event, event.cursor)
-        v.cursor = after; v.caughtUp = caughtUp; v.lastError = null
-        const actionable = events.some((e) => authorized(policy, e))
+        const accepted = events.filter((e) => authorized(policy, e))
+        for (const event of events) journal(state, batchId, `reply-${v.id}-${event.cursor}`, authorized(policy, event) ? 'reply' : 'ignored-reply', event, event.cursor)
+        v.transportCursor = after; v.cursor = accepted.at(-1)?.cursor ?? v.cursor; v.caughtUp = caughtUp; v.lastError = null
+        const actionable = accepted.length > 0
         if (actionable) {
           v.lastActivityAt = this.rules.nowIso(); v.parked = false
           v.firstReplyAt ||= this.rules.nowIso()
           v.replyDueAt = new Date(Math.min(this.rules.now() + policy.replyDebounceSeconds * 1000, Date.parse(v.firstReplyAt) + policy.replyMaxWaitSeconds * 1000)).toISOString()
-          // A decision is bound to ALL feedback read, including edits. Never
+          // A decision is bound to authorized feedback, including edits. Never
           // resume against a stale acknowledgement or interpretation.
           v.decision = null
           if (b.status === 'clarifying') { b.invalidated = 'New consultation feedback'; b.invalidationKind = 'human_replies' }
-          else b.status = 'human_ready'
-        } else if (events.length && v.decision) {
-          // Even non-authorized events change the cursor: require a new read.
-          v.decision = null
-          if (b.status === 'clarifying') { b.invalidated = 'Consultation cursor changed'; b.invalidationKind = 'human_replies' }
           else b.status = 'human_ready'
         }
         if (!caughtUp) { v.nextPollAt = this.rules.nowIso(); return }

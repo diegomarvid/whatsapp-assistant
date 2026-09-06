@@ -7,6 +7,9 @@ import { PromptAutomationRules } from '../src/prompt-automation-rules.js'
 import { AutomationHuman } from '../src/automation-human.js'
 import { withHumanDefaults } from '../src/human-policy.js'
 import { journal } from '../src/automation-store.js'
+import { AutomationWorker } from '../src/automation-worker.js'
+import { workspaceCheckpoint } from '../src/workspace-checkpoint.js'
+import { execFileSync } from 'node:child_process'
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wa-human-test-'))
@@ -115,6 +118,41 @@ test('later explicit questions do not inherit an already answered native tool', 
   assert.equal((await f.reload()).human.nativeQuestion, null)
 })
 
+test('workspace reconciliation preserves a native question that has not resumed yet', async (t) => {
+  const f = await fixture(t); await f.ask(); f.reply(); await f.human.pollOne(f.batch.id)
+  await f.interpret(); await f.human.pollOne(f.batch.id)
+  const workspace = path.join(f.directory, 'workspace'); await fs.mkdir(workspace)
+  const git = (...args) => execFileSync('git', ['-C', workspace, ...args], { stdio: 'pipe' })
+  git('init'); git('-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-m', 'Initial')
+  const snapshot = await workspaceCheckpoint(workspace)
+  const nativeQuestion = { id: 'pending-tool', input: { questions: [{ question: 'Which color?' }] } }
+  await f.rules.mutate(async (s) => {
+    s.batches[0].human.nativeQuestion = nativeQuestion
+    s.batches[0].human.decision.answers = { 'Which color?': 'Blue' }
+    s.batches[0].workspaceCheckpoint = snapshot
+  })
+  await fs.writeFile(path.join(workspace, 'changed.txt'), 'New work while waiting')
+  const next = await f.rules.claimDue({ workspaces: { executor: workspace } })
+  let launches = 0
+  const worker = new AutomationWorker({ rules: f.rules, human: f.human,
+    profiles: { get: async () => ({ workspace: { path: workspace } }) },
+    capabilities: { issue: () => 'token', revoke() {} }, connected: () => true,
+    coverage: async () => ({ fresh: true }), resolveJid: async (jid) => jid,
+    run: async () => { launches++; throw new Error('Must reconcile before launching') }, logger: { info() {}, error() {} } })
+  await worker.execute(next)
+  assert.equal(launches, 0)
+  const waiting = await f.reload(); assert.equal(waiting.status, 'human_waiting')
+  assert.deepEqual(waiting.human.nativeQuestion, nativeQuestion)
+  await f.human.pollOne(f.batch.id); f.reply('Keep the changed file and use blue'); await f.human.pollOne(f.batch.id)
+  const interpreter = await f.rules.claimDue(); const ctx = await f.human.context(interpreter.id, interpreter.runId)
+  const decision = { action: 'continue', cursor: ctx.cursor, replyId: '2', text: 'Keeping the file and using blue.', summary: 'Color is blue. Keep the new file.' }
+  await assert.rejects(f.human.decide(interpreter.id, interpreter.runId, decision), /Native questions/)
+  await f.human.decide(interpreter.id, interpreter.runId, { ...decision, answers: { 'Which color?': 'Blue' } })
+  await f.human.finish(interpreter.id, { ok: true }); await f.human.pollOne(interpreter.id)
+  assert.equal((await f.reload()).status, 'human_resume')
+  assert.deepEqual((await f.reload()).human.decision.answers, { 'Which color?': 'Blue' })
+})
+
 test('restart preserves committed interpretation and reconciles publication without sending twice', async (t) => {
   const f = await fixture(t); await f.ask(); f.reply(); await f.human.pollOne(f.batch.id)
   const b = await f.rules.claimDue(); const ctx = await f.human.context(b.id, b.runId)
@@ -142,6 +180,40 @@ test('unauthorized replies do not wake models; edited authorized feedback invali
   await f.human.finish(b.id, { ok: false }); assert.equal((await f.reload()).status, 'human_ready')
 })
 
+test('unauthorized traffic never invalidates an active interpretation, acknowledgement or continuation', async (t) => {
+  const f = await fixture(t); await f.ask(); f.reply(); await f.human.pollOne(f.batch.id)
+  const b = await f.rules.claimDue(); const ctx = await f.human.context(b.id, b.runId)
+  f.reply('Noise while interpreting', 'telegram:9'); await f.human.pollOne(b.id)
+  await f.human.decide(b.id, b.runId, { action: 'continue', cursor: ctx.cursor, replyId: '1', text: 'Using blue.', summary: 'Blue selected.' })
+  await f.human.finish(b.id, { ok: true })
+  f.reply('Noise before acknowledgement', 'telegram:9'); await f.human.pollOne(b.id)
+  assert.equal((await f.reload()).status, 'human_resume')
+  const continued = await f.rules.claimDue(); assert.equal(continued.status, 'running')
+  f.reply('Noise before launch', 'telegram:9')
+  assert.equal(await f.human.beforeResume(continued), true)
+  assert.equal((await f.reload()).human.cursor, 1)
+  assert.equal((await f.reload()).human.transportCursor, 4)
+  assert.equal((await f.rules.store.events(b.id, { kind: 'ignored-reply' })).length, 3)
+  assert.equal(f.posts.length, 2)
+})
+
+test('legacy cursors and full ignored pages resume through deterministic preflight only', async (t) => {
+  const f = await fixture(t); await f.ask()
+  await f.rules.mutate(async (s) => { delete s.batches[0].human.transportCursor })
+  f.reply(); await f.human.pollOne(f.batch.id); await f.interpret(); await f.human.pollOne(f.batch.id)
+  for (let n = 0; n < 51; n++) f.reply('Noise ' + n, 'telegram:9')
+  const first = await f.rules.claimDue(); assert.equal(first.status, 'running')
+  assert.equal(await f.human.beforeResume(first), false)
+  assert.equal((await f.reload()).status, 'human_resume')
+  f.advance(2)
+  const second = await f.rules.claimDue(); assert.equal(second.status, 'running')
+  assert.equal(await f.human.beforeResume(second), true)
+  const saved = await f.reload()
+  assert.equal(saved.human.cursor, 1); assert.equal(saved.human.transportCursor, 52)
+  assert.equal(saved.human.decision.action, 'continue'); assert.equal(saved.human.resolved, true)
+  assert.equal(f.posts.length, 2)
+})
+
 test('pagination requires contiguous reads before a decision', async (t) => {
   const f = await fixture(t); await f.ask(); for (let n = 0; n < 120; n++) f.reply('Context ' + n)
   await f.human.pollOne(f.batch.id); const b = await f.rules.claimDue()
@@ -163,6 +235,21 @@ test('publication uncertainty is never retried and pause during publication cann
   await g.ask(); assert.equal((await g.reload()).status, 'human_frozen')
   assert.equal((await g.reload()).human.post.delivery, 'published')
   await g.rules.setStatus(g.rule.name, 'active'); assert.equal(await g.rules.claimDue(), null)
+})
+
+test('a wrong dialogue acknowledgement cannot change root identity or start another model', async (t) => {
+  const f = await fixture(t); await f.ask(); f.reply(); await f.human.pollOne(f.batch.id); await f.interpret()
+  const adapter = f.human.adapter
+  f.human.adapter = async (a, r) => r.op === 'post' ? { id: 'different-work', messageId: '99', status: 'published' } : adapter(a, r)
+  await f.human.pollOne(f.batch.id)
+  assert.equal((await f.reload()).human.adapterId, 'dialogue1')
+  assert.equal((await f.reload()).human.post.delivery, 'delivery_unknown')
+  await f.rules.enqueue({ id: 'changed-while-uncertain', jid: 'sample@lid', type: 'conversation', source: 'live', fromMe: false, timestamp: f.rules.nowSeconds(), text: 'Changed source' })
+  assert.equal((await f.reload()).status, 'human_ready')
+  assert.equal(await f.rules.claimDue(), null)
+  const post = (await f.reload()).human.post
+  f.human.adapter = async () => ({ key: post.key, id: 'different-work', messageId: '99', status: 'published' })
+  await assert.rejects(f.human.reconcilePublication(f.batch.id), /unconfirmed/)
 })
 
 test('SQLite control and journal roll back together and private migration preserves the old state', async (t) => {

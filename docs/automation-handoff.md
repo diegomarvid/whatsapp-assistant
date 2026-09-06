@@ -1,7 +1,7 @@
 # Guía técnica y continuidad de automatizaciones
 
 Punto de entrada para retomar el desarrollo desde otra sesión o equipo. Describe
-el código **0.11.0**, el despliegue y la evidencia revisados el **2026-09-06**.
+el código **0.11.1**, el despliegue y la evidencia revisados el **2026-09-06**.
 El estado operativo es una fotografía de esa fecha: consultar el CLI antes de actuar.
 
 ## Qué leer y qué está funcionando
@@ -22,7 +22,18 @@ Codex y Claude. Funciona con o sin revisión del mensaje final. El
 [investigación de proveedores](provider-consultation-research.md) conservan los
 antecedentes; para configurar o desarrollar, usar el contrato de la guía actual.
 
-### Evidencia de 0.11, 2026-09-06
+### Correcciones de 0.11.1, 2026-09-06
+
+El [registro de revisión](reviews/2026-09-06-consultation-hardening.md) documenta
+cuatro correcciones locales: replies no autorizados sin nuevas llamadas al modelo,
+identidad de publicación y sesión, y conservación de preguntas nativas durante
+una consulta por cambios del repositorio. La revisión solicitada con Claude CLI,
+Fable 5.1 `xhigh`, terminó por límite de sesión sin informe: sigue pendiente.
+La evidencia del piloto real que figura abajo corresponde a 0.11.0; las
+correcciones nuevas se verifican con pruebas de regresión. `npm run check` y
+**225 pruebas** pasaron localmente antes de preparar el despliegue.
+
+### Evidencia de 0.11.0, 2026-09-06
 
 - `npm run check` y **221 pruebas** pasan, incluyendo esperas superiores a una
   semana, varias rondas, ediciones, paginación, cambios del chat antes de retomar,

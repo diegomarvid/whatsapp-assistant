@@ -14,6 +14,7 @@ export function validateHumanPolicy(policy) {
 export function validateStoredHuman(batch, policy) {
   const h = batch.human
   if (!h) { if (HUMAN_WAITING.has(batch.status)) throw new Error('Missing persisted consultation.'); return }
+  if (h.transportCursor !== undefined && (!Number.isSafeInteger(h.transportCursor) || h.transportCursor < h.cursor)) throw new Error('Malformed consultation transport cursor.')
   if (!policy || !/^[a-f0-9-]{36}$/i.test(h.id || '') || !Number.isSafeInteger(h.round) || h.round < 1 || !Number.isSafeInteger(h.cursor) || !Number.isSafeInteger(h.processedCursor) || h.processedCursor < 0 || h.processedCursor > h.cursor || typeof h.resolved !== 'boolean' || typeof h.checkpoint !== 'string' || h.checkpoint.length > 8000 || typeof h.summary !== 'string' || h.summary.length > 8000 || !Number.isFinite(Date.parse(h.nextPollAt)) || !Number.isFinite(Date.parse(h.lastActivityAt)) || !h.post || !['queued','publishing','published','delivery_unknown'].includes(h.post.delivery) || !['question','ack'].includes(h.post.kind) || typeof h.post.key !== 'string' || typeof h.post.text !== 'string' || h.post.text.length > 2000 || (h.post.delivery === 'published' && !h.adapterId)) throw new Error('Malformed persisted human consultation; inspect private state.')
 }
 

@@ -32,13 +32,49 @@ Telegram plugin/receiver to that bot: consumers compete for updates.
 - Native executor context is supplemental evidence. Every run gets a fresh
   capability, current policy, current source and checkpoint. Temporary credentials
   are revoked and removed after the run. A resumed ID cannot switch provider,
-  model, approved prompt or workspace silently.
+  configured model, approved prompt or workspace silently. A resumed result must
+  return the exact saved session ID; a different ID is a failure, never a new
+  continuation. Use a full versioned model ID in profiles when model-version
+  stability is required: provider aliases such as `opus` may change upstream.
 
 Validated with **Codex 0.153.4** and **Claude Code 2.1.263** on 2026-09-06.
 Do not infer compatibility of older versions from ordinary `agents doctor`:
 use the real, neutral test below after installing/upgrading a provider. Unsupported
 flags/results fail closed. No App Server connection, GUI, tmux session, Telegram
 Claude plugin or direct model API key is required by this integration.
+
+### Waiting and model usage
+
+Waiting is deterministic. The executor has exited; the persisted work and a
+transport poll remain. A minute or a week of waiting does not, by itself, consume
+model tokens. The interpreter runs only for authorized feedback (or to reconsider
+that feedback when source facts change); the executor starts again only after the
+current acknowledgement and continuation checks pass. Reading retained context,
+interpreting a reply, drafting another question and continuing work do use tokens.
+Ordinary server/adapter resource usage continues while polling.
+
+The transport cursor includes every received event; the interpretation cursor
+advances only for authorized replies. Ignored events stay in the journal for
+operator inspection without waking a model, invalidating a valid decision or
+entering the interpreter's new feedback. Existing schema-4 state is accepted:
+a missing transport cursor defaults to the previous cursor on first use.
+
+```mermaid
+flowchart LR
+  T[Channel event] --> I{Authorized identity?}
+  I -->|No| A[Audit and transport cursor only]
+  I -->|Yes| J[Persist reply and debounce]
+  J --> M[Run the interpreter]
+  M --> Q[Ask again and exit]
+  M --> C[Publish acknowledgement]
+  C --> P{Current feedback, source and publication?}
+  P -->|Yes| R[Resume executor with fresh credentials]
+```
+
+Publication responses and inspection results must preserve the original dialogue
+ID. An in-flight or ambiguous publication blocks both interpretation and continuation
+until inspection confirms the original result. It cannot be replaced merely because
+a source message arrived.
 
 Claude native defer has a single-tool-call constraint. A hook receipt without the
 expected deferred result is a failure, including an ignored parallel defer. The
@@ -83,8 +119,15 @@ transport poll. An explicit operator pause freezes work: a later Telegram reply
 cannot reactivate it. Model slots are free while waiting; the chat and any code
 workspace remain reserved. Separate isolated Git checkouts allow unrelated work.
 Workspace checks hash HEAD, tracked and staged diffs, and untracked content. Drift produces a
-new consultation before another executor runs. Ignored files, external systems and
+new consultation before another executor runs. If a native question is still
+deferred, this pre-launch consultation preserves it and requires complete answers
+again before resumption. A later question from the executor starts fresh instead.
+Ignored files, external systems and
 detached processes outside the process group are outside that fingerprint.
+
+The [0.11.1 review record](reviews/2026-09-06-consultation-hardening.md) separates
+locally verified corrections from the requested Fable review, which ended at the
+provider's session limit without a review report.
 
 ## Persistence and upgrades
 

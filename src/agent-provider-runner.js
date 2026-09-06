@@ -326,13 +326,14 @@ export async function runPromptAutomation(profile, { rule, batch, stateDir, capa
     }
     const session = persistent && /^[a-f0-9-]{36}$/i.test(sessionId || '') ? { id: sessionId, provider: profile.provider, model: profile.model, promptHash: profile.prompt.sha256, workspace, cwd: workspace || workerDirectory } : null
     if (persistent && !session && !providerFailure) providerFailure = 'Provider did not confirm a durable session. Inspect work before another run.'
+    if (previousSession && session?.id !== previousSession.id) providerFailure = 'Provider returned a different session while resuming. Inspect partial work; the original session remains pinned.'
     const providerOutput = profile.provider === 'codex'
       ? await fs.readFile(outputFile, 'utf8').catch(() => '')
       : claudeOutput
     const detail = `${result.stdout}\n${result.stderr}`.trim().slice(0, 4000)
     return {
       ok: !result.aborted && !result.timedOut && result.code === 0 && !result.error && !providerFailure,
-      command: invocation.command, session, nativeQuestion,
+      command: invocation.command, session: previousSession && session?.id !== previousSession.id ? null : session, nativeQuestion,
       exitCode: result.code,
       timedOut: result.timedOut,
       output: providerOutput.trim().slice(0, 8000),

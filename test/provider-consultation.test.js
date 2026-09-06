@@ -40,6 +40,10 @@ console.log(JSON.stringify({type:'thread.started',thread_id:'${sessionId}'}));
   const resumed = await runPromptAutomation(f.profile, { ...input, capabilityToken: 'second-token', batch: { ...f.batch, providerSessions: { execute: first.session } } })
   assert.equal(resumed.ok, true); assert.equal(resumed.session.id, first.session.id); assert.equal(resumed.session.cwd, first.session.cwd)
   await assert.rejects(runPromptAutomation({ ...f.profile, model: 'different' }, { ...input, batch: { ...f.batch, providerSessions: { execute: first.session } } }), /changed/)
+  const program = await fs.readFile(executable, 'utf8')
+  await fs.writeFile(executable, program.replace(`thread_id:'${sessionId}'`, "thread_id:'00000000-0000-4000-8000-000000000002'"))
+  const wrong = await runPromptAutomation(f.profile, { ...input, capabilityToken: 'third-token', batch: { ...f.batch, providerSessions: { execute: first.session } } })
+  assert.equal(wrong.ok, false); assert.equal(wrong.session, null); assert.match(wrong.error, /different session/)
 })
 
 test('Claude native deferred results require the hook receipt and never become ordinary success', async (t) => {
