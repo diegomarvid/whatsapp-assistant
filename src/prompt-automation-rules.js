@@ -1,11 +1,12 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { authorizedReply, latestReplies, validateReviewPolicy, validateStoredReview } from './review-adapter.js'
 
-const VERSION = 2
+const VERSION = 3
 const RULE_STATUSES = new Set(['active', 'paused', 'removed'])
-const ACTIVE = new Set(['judging', 'running'])
-const BATCH_STATUSES = new Set(['pending', 'judging', 'running', 'waiting', 'completed', 'uncertain', 'failed', 'human', 'ignored', 'observed', 'canceled', 'superseded'])
+const ACTIVE = new Set(['judging', 'running', 'reviewing'])
+const BATCH_STATUSES = new Set(['pending', 'judging', 'running', 'waiting', 'review_waiting', 'review_ready', 'reviewing', 'completed', 'uncertain', 'failed', 'human', 'ignored', 'observed', 'canceled', 'superseded'])
 const DIRECTIONS = new Set(['incoming', 'from-me', 'any'])
 const DEDUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 // Transport/control frames sometimes appear as mirrored messages. They are not
@@ -43,7 +44,7 @@ function validRule(rule) {
 
 function validBatch(batch) {
   return batch && typeof batch === 'object' && typeof batch.id === 'string' && typeof batch.ruleId === 'string' && validName(batch.ruleName)
-    && text(batch.sourceJid) && Array.isArray(batch.messageIds) && batch.messageIds.length > 0 && batch.messageIds.every(text)
+    && text(batch.sourceJid) && Array.isArray(batch.messageIds) && (batch.messageIds.length > 0 || text(batch.trigger?.key)) && batch.messageIds.every(text)
     && BATCH_STATUSES.has(batch.status) && typeof batch.createdAt === 'string' && typeof batch.dueAt === 'string'
     && (batch.completedAt === null || typeof batch.completedAt === 'string')
     && (batch.lastError === null || typeof batch.lastError === 'string')
@@ -52,7 +53,7 @@ function validBatch(batch) {
 
 function defaults(rule) {
   return {
-    mode: 'live', judgeProfile: null, maxWaitSeconds: Math.min(3600, Math.max(60, rule.debounceSeconds * 3)),
+    mode: 'live', judgeProfile: null, review: null, trigger: 'messages', maxWaitSeconds: Math.min(3600, Math.max(60, rule.debounceSeconds * 3)),
     maxBatchMessages: 100, humanTakeover: false, humanHold: false, maxRepliesPerHour: 20,
     ...rule,
     ...(rule.sourceJid?.endsWith('@g.us') ? { sourceOriginalJid: rule.sourceJid } : {}),
@@ -61,17 +62,23 @@ function defaults(rule) {
 }
 
 function normalize(value) {
-  if (!value || ![1, VERSION].includes(value.version) || !Array.isArray(value.rules) || !Array.isArray(value.batches)
+  if (!value || ![1, 2, VERSION].includes(value.version) || !Array.isArray(value.rules) || !Array.isArray(value.batches)
     || value.rules.some((rule) => !validRule(rule)) || value.batches.some((batch) => !validBatch(batch))) {
     throw new Error('Prompt automation state is malformed. It was left unchanged; inspect the private state before enabling or editing a rule.')
   }
   const rules = value.rules.map((rule) => defaults({ reconcileAfter: value.version === 1 ? Math.floor(Date.now() / 1000) : rule.activeAfter, ...rule }))
   for (const rule of rules) validateOptions(rule)
+  for (const batch of value.batches) {
+    validateStoredReview(batch)
+    if (batch.review && !rules.find((rule) => rule.id === batch.ruleId)?.review) throw new Error('Draft batch has no review policy.')
+  }
   if (value.outbound !== undefined && (!Array.isArray(value.outbound) || value.outbound.some((entry) => !text(entry.messageId) || !text(entry.batchId) || !text(entry.jid) || !text(entry.fingerprint) || !['sending', 'accepted', 'uncertain'].includes(entry.status) || !Number.isFinite(Date.parse(entry.createdAt))))) throw new Error('Malformed automation outbound audit.')
   return { version: VERSION, rules, batches: value.batches, outbound: value.outbound || [] }
 }
 
 function validateOptions(rule) {
+  validateReviewPolicy(rule.review)
+  if (!['messages', 'manual'].includes(rule.trigger)) throw new Error('Trigger must be messages or manual.')
   if (!['live', 'observe'].includes(rule.mode)) throw new Error('Mode must be live or observe.')
   if (rule.judgeProfile !== null && !validName(rule.judgeProfile)) throw new Error('Invalid judge profile.')
   if (!Number.isInteger(rule.maxWaitSeconds) || rule.maxWaitSeconds < rule.debounceSeconds || rule.maxWaitSeconds > 3600) throw new Error('Max wait must be at least the debounce and at most 3600 seconds.')
@@ -87,7 +94,7 @@ function finish(batch, status, now, detail = null) {
 function invalidate(state, ruleId, now, reason, { pendingStatus = 'canceled' } = {}) {
   for (const batch of state.batches.filter((item) => item.ruleId === ruleId)) {
     if (ACTIVE.has(batch.status)) { batch.invalidated = reason; batch.invalidationKind = 'control' }
-    if (['pending', 'waiting'].includes(batch.status)) finish(batch, pendingStatus, now, reason)
+    if (['pending', 'waiting', 'review_waiting', 'review_ready'].includes(batch.status)) finish(batch, pendingStatus, now, reason)
   }
 }
 
@@ -128,7 +135,9 @@ export class PromptAutomationRules {
     try {
       handle = await fs.open(temporary, 'w', 0o600)
       const cutoff = this.now() - DEDUP_RETENTION_MS
-      const batches = state.batches.filter((batch) => !['completed', 'ignored', 'observed', 'canceled', 'superseded'].includes(batch.status) || Date.parse(batch.completedAt || batch.createdAt) >= cutoff)
+      // Explicit trigger keys outlive the mirror so old scheduler retries do
+      // not recreate a completed outreach.
+      const batches = state.batches.filter((batch) => batch.trigger || !['completed', 'ignored', 'observed', 'canceled', 'superseded'].includes(batch.status) || Date.parse(batch.completedAt || batch.createdAt) >= cutoff)
       await handle.writeFile(`${JSON.stringify({ version: VERSION, rules: state.rules, batches, outbound: state.outbound.filter((entry) => entry.status !== 'accepted' || Date.parse(entry.createdAt) >= cutoff) }, null, 2)}\n`)
       await handle.sync()
       await handle.close()
@@ -193,7 +202,7 @@ export class PromptAutomationRules {
     name, source, sourceTarget, sourceJid, sourceOriginalJid = null,
     destination, destinationTarget, destinationJid, destinationOriginalJid = null,
     profile, direction = 'incoming', debounceSeconds = 300,
-    mode = 'live', judgeProfile = null, maxWaitSeconds = Math.min(3600, Math.max(60, debounceSeconds * 3)),
+    mode = 'live', judgeProfile = null, review = null, trigger = 'messages', maxWaitSeconds = Math.min(3600, Math.max(60, debounceSeconds * 3)),
     maxBatchMessages = 100, humanTakeover = false, maxRepliesPerHour = 20, status = 'active',
   }) {
     if (!validName(name) || ![source, sourceJid, destination, destinationJid, profile].every(text) || ![sourceTarget, destinationTarget].every(validTarget)) {
@@ -206,7 +215,7 @@ export class PromptAutomationRules {
       const rule = {
         id: id(), name, source: source.trim(), sourceTarget: sourceTarget.trim(), sourceJid: sourceJid.trim(), sourceOriginalJid: sourceOriginalJid?.trim() || sourceJid.trim(),
         destination: destination.trim(), destinationTarget: destinationTarget.trim(), destinationJid: destinationJid.trim(), destinationOriginalJid: destinationOriginalJid?.trim() || destinationJid.trim(),
-        profile: profile.trim(), direction, debounceSeconds, mode, judgeProfile, maxWaitSeconds, maxBatchMessages, humanTakeover, humanHold: false, maxRepliesPerHour, status, reconcileAfter: this.nowSeconds(), activeAfter: this.nowSeconds(), createdAt: this.nowIso(), updatedAt: this.nowIso(),
+        profile: profile.trim(), direction, debounceSeconds, mode, judgeProfile, review, trigger, maxWaitSeconds, maxBatchMessages, humanTakeover, humanHold: false, maxRepliesPerHour, status, reconcileAfter: this.nowSeconds(), activeAfter: this.nowSeconds(), createdAt: this.nowIso(), updatedAt: this.nowIso(),
       }
       validateOptions(rule)
       if (!['active', 'paused'].includes(status)) throw new Error('New rules must be active or paused.')
@@ -272,16 +281,20 @@ export class PromptAutomationRules {
         const resolved = await resolveSourceJid(rule.sourceOriginalJid)
         if (!(sourceKeys(rule).has(message.jid) || resolved === message.jid) || timestamp < rule.activeAfter) continue
         if (state.batches.some((batch) => batch.ruleId === rule.id && batch.messageIds.includes(message.id))) continue
+        const manualBatch = rule.trigger === 'manual' ? state.batches.find((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status)) && timestamp >= Math.floor(Date.parse(b.createdAt) / 1000)) : null
+        if (rule.trigger === 'manual' && !manualBatch) continue
+        if (manualBatch) { manualBatch.messageIds.push(message.id); changed = true }
         if (message.fromMe && rule.humanTakeover) {
           rule.humanHold = true
           invalidate(state, rule.id, this.nowIso(), 'Account owner replied.', { pendingStatus: 'human' })
           changed = true
         }
         if (!directionMatches(rule, message)) continue
-        for (const waiting of state.batches.filter((batch) => batch.ruleId === rule.id && batch.status === 'waiting')) finish(waiting, 'superseded', this.nowIso(), 'New incoming messages replace the scheduled follow-up.')
+        for (const waiting of state.batches.filter((batch) => batch.ruleId === rule.id && ['waiting', 'review_waiting', 'review_ready'].includes(batch.status))) { finish(waiting, 'superseded', this.nowIso(), 'New incoming messages supersede the pending follow-up or draft.'); changed = true }
         // A message arriving during generation invalidates that response. The
         // job can finish recording its work; the next job sees this report.
-        for (const running of state.batches.filter((batch) => batch.ruleId === rule.id && ACTIVE.has(batch.status))) { running.invalidated = 'New messages arrived during this run.'; running.invalidationKind = 'new_messages' }
+        for (const running of state.batches.filter((batch) => batch.ruleId === rule.id && ACTIVE.has(batch.status))) { running.invalidated = 'New messages arrived during this run.'; running.invalidationKind = 'new_messages'; changed = true }
+        if (rule.trigger === 'manual') { if (manualBatch.status === 'pending') finish(manualBatch, 'superseded', this.nowIso(), 'New source messages arrived before the explicit trigger ran.'); continue }
         let batch = state.batches.find((entry) => entry.ruleId === rule.id && entry.status === 'pending' && entry.messageIds.length < rule.maxBatchMessages)
         if (!batch) {
           batch = { id: id(), ruleId: rule.id, ruleName: rule.name, sourceJid: message.jid, messageIds: [], status: rule.humanHold ? 'human' : 'pending', createdAt: this.nowIso(), dueAt: this.nowIso(), completedAt: rule.humanHold ? this.nowIso() : null, lastError: null, output: null }
@@ -300,10 +313,10 @@ export class PromptAutomationRules {
 
   async reconcile(messages, { resolveSourceJid = async (jid) => jid } = {}) {
     const state = await this.load()
-    const rules = await Promise.all(state.rules.filter((rule) => rule.status === 'active').map(async (rule) => ({ ...rule, currentJid: await resolveSourceJid(rule.sourceOriginalJid) })))
+    const rules = await Promise.all(state.rules.filter((rule) => rule.status === 'active').map(async (rule) => ({ ...rule, currentJid: await resolveSourceJid(rule.sourceOriginalJid), manualAfter: rule.trigger === 'manual' ? Math.min(...state.batches.filter((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status))).map((b) => Math.floor(Date.parse(b.createdAt) / 1000))) : 0 })))
     const seen = new Map(rules.map((rule) => [rule.id, new Set(state.batches.filter((batch) => batch.ruleId === rule.id).flatMap((batch) => batch.messageIds))]))
     const own = new Set(state.outbound.map((entry) => `${entry.jid}:${entry.messageId}`))
-    const candidates = messages.filter((message) => message.source === 'live' && USER_CONTENT_TYPES.has(message.type) && !own.has(`${message.jid}:${message.id}`) && rules.some((rule) => [rule.sourceJid, rule.sourceOriginalJid, rule.currentJid].includes(message.jid) && message.timestamp >= Math.max(rule.activeAfter, rule.reconcileAfter || 0) && !seen.get(rule.id).has(message.id) && (directionMatches(rule, message) || (message.fromMe && rule.humanTakeover && !rule.humanHold))))
+    const candidates = messages.filter((message) => message.source === 'live' && USER_CONTENT_TYPES.has(message.type) && !own.has(`${message.jid}:${message.id}`) && rules.some((rule) => [rule.sourceJid, rule.sourceOriginalJid, rule.currentJid].includes(message.jid) && message.timestamp >= Math.max(rule.activeAfter, rule.reconcileAfter || 0, rule.manualAfter) && !seen.get(rule.id).has(message.id) && (directionMatches(rule, message) || (message.fromMe && rule.humanTakeover && !rule.humanHold))))
     for (const message of candidates.sort((a, b) => a.timestamp - b.timestamp)) await this.enqueue(message, { resolveSourceJid })
     return candidates.length
   }
@@ -313,12 +326,12 @@ export class PromptAutomationRules {
       const running = state.batches.filter((item) => ACTIVE.has(item.status))
       const workspaceHolds = state.batches.filter((item) => item.status === 'uncertain' && item.workspaceLock && !item.reviewedAt)
       if (running.length >= maxConcurrent) return { value: null, save: false }
-      const candidates = state.batches.filter((entry) => ['pending', 'waiting'].includes(entry.status) && Date.parse(entry.dueAt) <= this.now()).sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
+      const candidates = state.batches.filter((entry) => ['pending', 'waiting', 'review_ready'].includes(entry.status) && Date.parse(entry.dueAt) <= this.now()).sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
       for (const batch of candidates) {
         const rule = state.rules.find((item) => item.id === batch.ruleId)
         if (!rule || rule.status === 'removed' || (!batch.observe && (rule.status !== 'active' || rule.humanHold))) continue
         const keys = new Set([rule.sourceJid, rule.sourceOriginalJid, rule.destinationJid, rule.destinationOriginalJid, batch.sourceJid])
-        const proposedWorkspace = workspaces[rule.profile] || null
+        const proposedWorkspace = batch.status === 'review_ready' ? null : workspaces[rule.profile] || null
         const overlaps = (other) => proposedWorkspace && other && (proposedWorkspace === other || proposedWorkspace.startsWith(`${other}${path.sep}`) || other.startsWith(`${proposedWorkspace}${path.sep}`))
         if (workspaceHolds.some((item) => overlaps(item.workspaceLock))) continue
         const busy = running.some((other) => {
@@ -327,7 +340,7 @@ export class PromptAutomationRules {
             || overlaps(other.workspaceLock || workspaces[otherRule?.profile])
         })
         if (busy) continue
-        Object.assign(batch, { status: rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, invalidationKind: null, report: null })
+        Object.assign(batch, { status: batch.status === 'review_ready' ? 'reviewing' : rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, invalidationKind: null, report: null, reviewAction: null })
         return { value: structuredClone(batch) }
       }
       return { value: null, save: false }
@@ -335,7 +348,7 @@ export class PromptAutomationRules {
   }
 
   async defer(batchId, seconds = 15) {
-    return this.transition(batchId, (batch) => Object.assign(batch, { status: 'pending', dueAt: new Date(this.now() + seconds * 1000).toISOString() }))
+    return this.transition(batchId, (batch) => Object.assign(batch, { status: batch.status === 'reviewing' ? 'review_ready' : 'pending', dueAt: new Date(this.now() + seconds * 1000).toISOString() }))
   }
 
   async decide(batchId, runId, route, reason) {
@@ -345,6 +358,24 @@ export class PromptAutomationRules {
       if (batch.status !== 'judging' || batch.decision) throw new Error('Only the active judge can record one decision.')
       batch.decision = { route, reason, at: this.nowIso() }
       return { value: structuredClone(batch.decision) }
+    })
+  }
+
+  async trigger(name, key, reason, sourceJid) {
+    if (!text(key) || key.length > 160 || !text(reason) || reason.length > 4000) throw new Error('Trigger requires a stable key (1–160) and reason (1–4000).')
+    return this.mutate(async (state) => {
+      const rule = state.rules.find((r) => r.name === name)
+      if (!rule || rule.trigger !== 'manual') throw new Error('Explicit triggers require a manual rule.')
+      const previous = state.batches.find((b) => b.ruleId === rule.id && b.trigger?.key === key)
+      if (previous) {
+        if (previous.trigger.reason !== reason) throw new Error('Trigger key already exists with different content.')
+        return { value: structuredClone(previous), save: false }
+      }
+      if (rule.status !== 'active' || rule.humanHold) throw new Error('Activate/release the rule before triggering it.')
+      if (state.batches.some((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready', 'uncertain'].includes(b.status)))) throw new Error('This rule already has pending or uncertain work; inspect it before starting another trigger.')
+      const batch = { id: id(), ruleId: rule.id, ruleName: name, sourceJid, messageIds: [], trigger: { key, reason }, status: 'pending', createdAt: this.nowIso(), dueAt: this.nowIso(), completedAt: null, lastError: null, output: null }
+      state.batches.push(batch)
+      return { value: structuredClone(batch) }
     })
   }
 
@@ -369,7 +400,12 @@ export class PromptAutomationRules {
       const sends = state.outbound.filter((entry) => entry.batchId === batch.id)
       batch.sendCount = sends.filter((entry) => entry.status === 'accepted').length
       batch.summary = batch.report?.summary || batch.summary || null
-      if (!result.ok && batch.invalidated && !workspace && !sends.length) {
+      if (stage === 'review' && (!batch.invalidated || batch.invalidationKind === 'review_replies')) {
+        if (batch.invalidationKind === 'review_replies') Object.assign(batch, { status: 'review_ready', invalidated: null, invalidationKind: null, reviewAction: null })
+        else if (!batch.reviewAction) finish(batch, 'failed', this.nowIso(), result.error || 'Review interpreter exited without recording a decision.')
+        else if (batch.reviewAction.action === 'cancel') finish(batch, 'canceled', this.nowIso(), batch.reviewAction.reason)
+        else { batch.status = 'review_waiting'; batch.review.nextPollAt = this.nowIso() }
+      } else if (!result.ok && batch.invalidated && !workspace && !sends.length) {
         finish(batch, 'superseded', this.nowIso(), batch.invalidated)
       } else if (!result.ok) {
         const uncertain = stage === 'execute' && (workspace || sends.length > 0)
@@ -395,6 +431,8 @@ export class PromptAutomationRules {
         finish(batch, 'failed', this.nowIso(), 'Agent exited without recording an outcome. Inspect its audit; completion is not proof of resolution.')
       } else if (rule.mode === 'observe' || batch.observe) {
         finish(batch, 'observed', this.nowIso())
+      } else if (batch.report.outcome === 'awaiting_review') {
+        batch.status = 'review_waiting'
       } else if (batch.report.outcome === 'waiting') {
         Object.assign(batch, { status: 'waiting', dueAt: new Date(this.now() + batch.report.resumeAfter * 1000).toISOString() })
       } else if (batch.report.outcome === 'needs_human') {
@@ -424,13 +462,28 @@ export class PromptAutomationRules {
     })
   }
 
+  async cancel(batchId, reason) {
+    if (!text(reason) || reason.length > 1000) throw new Error('Cancellation requires a reason (1–1000).')
+    return this.mutate(async (state) => {
+      const batch = state.batches.find((b) => b.id === batchId)
+      if (!batch) throw new Error('Unknown batch.')
+      if (batch.status === 'completed' || batch.sendCount) throw new Error('A completed send cannot be canceled.')
+      if (batch.status === 'uncertain' && !batch.reviewedAt) throw new Error('Inspect and record a factual review of uncertain work before canceling.')
+      if (ACTIVE.has(batch.status)) { batch.invalidated = `Operator canceled: ${reason}`; batch.invalidationKind = 'control' }
+      else finish(batch, 'canceled', this.nowIso(), reason)
+      return { value: structuredClone(batch) }
+    })
+  }
+
   async retry(batchId) {
     return this.mutate(async (state) => {
       const batch = state.batches.find((item) => item.id === batchId)
       if (!batch || !['failed', 'observed'].includes(batch.status) || state.outbound.some((entry) => entry.batchId === batchId)) throw new Error('Only failed/observed batches with no attempted sends can be retried. Inspect uncertain work manually.')
       const rule = state.rules.find((item) => item.id === batch.ruleId)
       if (!rule || rule.status !== 'active' || rule.humanHold) throw new Error('Activate/release the rule first.')
-      Object.assign(batch, { status: 'pending', dueAt: this.nowIso(), completedAt: null, decision: null, invalidated: null, lastError: null })
+      const draft = batch.review?.revisions.at(-1)
+      if (draft && !['queued', 'published'].includes(draft.delivery)) throw new Error('Draft publication is uncertain; inspect the stored key before any recovery.')
+      Object.assign(batch, { status: draft ? (draft.delivery === 'queued' || batch.reviewAction ? 'review_waiting' : 'review_ready') : 'pending', dueAt: this.nowIso(), completedAt: null, decision: null, invalidated: null, lastError: null })
       return { value: structuredClone(batch) }
     })
   }
@@ -447,12 +500,18 @@ export class PromptAutomationRules {
 
   // Persist an intent (including the WhatsApp ID) before crossing the transport
   // boundary. Never retry an ambiguous transport call, even after a restart.
-  async send({ batchId, runId, jid, text: body }, transport, preflight = () => true) {
+  async send({ batchId, runId, reviewKey = null, jid, text: body }, transport, preflight = () => true) {
     return this.withLock(async () => {
       const state = await this.load()
-      const { batch, rule } = activeBatch(state, batchId, runId)
-      if (!preflight(rule, batch)) throw new Error('Source coverage or WhatsApp connection is no longer fresh; no send was started.')
-      if (batch.status !== 'running' || batch.report || rule.mode !== 'live' || batch.observe) throw new Error('This run has no permission to send.')
+      const batch = reviewKey ? state.batches.find((b) => b.id === batchId) : activeBatch(state, batchId, runId).batch
+      const rule = state.rules.find((r) => r.id === batch?.ruleId)
+      if (reviewKey) {
+        const draft = batch?.review?.revisions.at(-1)
+        const evidence = draft && latestReplies(draft.events).find((e) => e.id === draft.decision?.replyId)
+        if (!rule?.review || batch.status !== 'review_waiting' || batch.invalidated || rule.status !== 'active' || rule.humanHold || draft?.key !== reviewKey || draft.delivery !== 'published' || draft.decision?.action !== 'approve' || draft.decision.cursor !== draft.cursor || !evidence || !authorizedReply(rule.review, evidence) || draft.targetJid !== jid || draft.text !== body || Date.parse(batch.review.expiresAt) <= this.now()) throw new Error('No current approval for this exact draft and destination.')
+      } else if (rule.review) throw new Error('This rule requires a reviewed draft; direct sends are disabled.')
+      if (!await preflight(rule, batch)) throw new Error('Source coverage or WhatsApp connection is no longer fresh; no send was started.')
+      if ((!reviewKey && (batch.status !== 'running' || batch.report)) || rule.mode !== 'live' || batch.observe) throw new Error('This run has no permission to send.')
       if (state.outbound.some((entry) => entry.batchId === batchId && entry.status !== 'accepted')) throw new Error('Previous send is uncertain; no further sends are allowed for this batch.')
       const fingerprint = crypto.createHash('sha256').update(JSON.stringify([jid, body])).digest('hex')
       const previous = state.outbound.find((entry) => entry.batchId === batchId && entry.fingerprint === fingerprint)
@@ -476,10 +535,12 @@ export class PromptAutomationRules {
         if (result?.key?.id !== entry.messageId) throw new Error('Transport did not confirm the reserved message ID.')
         entry.status = 'accepted'
         entry.acceptedAt = this.nowIso()
+        if (reviewKey) { finish(batch, 'completed', this.nowIso()); batch.sendCount = 1; batch.summary = 'Sent the exact reviewed draft.' }
         await this.save(state)
         return { sent: true, id: entry.messageId, replayed: false }
       } catch (error) {
         entry.status = 'uncertain'
+        if (reviewKey) { finish(batch, 'uncertain', this.nowIso(), 'Reviewed WhatsApp delivery uncertain; inspect the reserved message ID.'); rule.humanHold = true; invalidate(state, rule.id, this.nowIso(), 'Uncertain reviewed delivery.', { pendingStatus: 'human' }) }
         await this.save(state)
         throw error
       } finally { clearTimeout(timer) }
@@ -502,6 +563,15 @@ export class PromptAutomationRules {
     return this.mutate(async (state) => {
       const recovered = []
       for (const batch of state.batches.filter((entry) => ACTIVE.has(entry.status))) {
+        if (batch.status === 'reviewing') {
+          // Interpretation has no external side effects. A committed decision
+          // survives restart; otherwise present the unprocessed replies again.
+          if (batch.invalidated && batch.invalidationKind !== 'review_replies') finish(batch, 'superseded', this.nowIso(), batch.invalidated)
+          else if (batch.invalidationKind === 'review_replies') Object.assign(batch, { status: 'review_ready', invalidated: null, invalidationKind: null, reviewAction: null })
+          else if (batch.reviewAction?.action === 'cancel') finish(batch, 'canceled', this.nowIso(), batch.reviewAction.reason)
+          else batch.status = batch.reviewAction ? 'review_waiting' : 'review_ready'
+          recovered.push(structuredClone(batch)); continue
+        }
         finish(batch, batch.status === 'judging' ? 'failed' : 'uncertain', this.nowIso(), 'Bridge stopped during this run. Inspect work and delivery; no automatic replay.')
         if (batch.status === 'uncertain') {
           const rule = state.rules.find((item) => item.id === batch.ruleId)
@@ -518,5 +588,5 @@ export class PromptAutomationRules {
 export function formatPromptAutomation(rule, batches = []) {
   const counts = batches.reduce((all, batch) => ({ ...all, [batch.status]: (all[batch.status] || 0) + 1 }), {})
   const direction = rule.direction === 'from-me' ? 'mensajes propios' : rule.direction === 'incoming' ? 'entrantes' : 'ambas direcciones'
-  return `${rule.name} — ${rule.status}${rule.humanHold ? ' (control humano)' : ''}\n  Modo: ${rule.mode || 'live'}; juez: ${rule.judgeProfile || 'sin juez'}; pausa por mensaje propio: ${rule.humanTakeover ? 'sí' : 'no'}\n  Perfil: ${rule.profile}; debounce: ${rule.debounceSeconds}s; máximo: ${rule.maxWaitSeconds || 'legacy'}s; límite: ${rule.maxRepliesPerHour || 20} respuestas/hora\n  Fuente: ${rule.source} (${rule.sourceJid}; ${direction})\n  Destino autorizado: ${rule.destination} (${rule.destinationJid})\n  Ejecuciones: ${Object.entries(counts).map(([key, count]) => `${count} ${key}`).join(', ') || 'ninguna'}\n  Envíos aceptados por WhatsApp: ${batches.reduce((n, batch) => n + (batch.sendCount || 0), 0)} (no equivale a lectura)`
+  return `${rule.name} — ${rule.status}${rule.humanHold ? ' (control humano)' : ''}\n  Modo: ${rule.mode || 'live'}; juez: ${rule.judgeProfile || 'sin juez'}; pausa por mensaje propio: ${rule.humanTakeover ? 'sí' : 'no'}\n  Disparador: ${rule.trigger || 'messages'}; revisión: ${rule.review ? `${rule.review.actor} (${rule.review.profile})` : 'sin revisión'}\n  Perfil: ${rule.profile}; debounce: ${rule.debounceSeconds}s; máximo: ${rule.maxWaitSeconds || 'legacy'}s; límite: ${rule.maxRepliesPerHour || 20} respuestas/hora\n  Fuente: ${rule.source} (${rule.sourceJid}; ${direction})\n  Destino autorizado: ${rule.destination} (${rule.destinationJid})\n  Ejecuciones: ${Object.entries(counts).map(([key, count]) => `${count} ${key}`).join(', ') || 'ninguna'}\n  Envíos aceptados por WhatsApp: ${batches.reduce((n, batch) => n + (batch.sendCount || 0), 0)} (no equivale a lectura)`
 }

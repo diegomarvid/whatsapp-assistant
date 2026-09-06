@@ -213,7 +213,7 @@ test('v1 migration preserves active rules, durable human jobs outlive normal aud
   advance(9 * 86400)
   await rules.setHuman(rule.name, false)
   assert.equal((await rules.batchesFor(rule.id))[0].status, 'human')
-  assert.equal(JSON.parse(await fs.readFile(rules.filename)).version, 2)
+  assert.equal(JSON.parse(await fs.readFile(rules.filename)).version, 3)
 })
 
 test('messages arriving after an ai decision must be judged again', async (t) => {

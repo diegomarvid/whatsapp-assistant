@@ -3,8 +3,8 @@ import { runPromptAutomation } from './agent-provider-runner.js'
 // Message ingestion persists events; this worker only claims due jobs. It does
 // not inspect message text or infer intent. Decisions/results use scoped tools.
 export class AutomationWorker {
-  constructor({ rules, profiles, capabilities, stateDir, connected, coverage, resolveJid, messages = () => [], run = runPromptAutomation, logger = console, maxConcurrent = 3 }) {
-    Object.assign(this, { rules, profiles, capabilities, stateDir, connected, coverage, resolveJid, messages, run, logger, maxConcurrent })
+  constructor({ rules, profiles, capabilities, stateDir, connected, coverage, resolveJid, reviews = null, messages = () => [], run = runPromptAutomation, logger = console, maxConcurrent = 3 }) {
+    Object.assign(this, { rules, profiles, capabilities, stateDir, connected, coverage, resolveJid, reviews, messages, run, logger, maxConcurrent })
     this.jobs = new Set()
     this.controllers = new Set()
     this.dispatching = false
@@ -17,6 +17,7 @@ export class AutomationWorker {
     this.dispatching = true
     try {
       await this.cancelInvalidated()
+      this.reviews?.tick()
       if (!this.connected()) return
       if (Date.now() - this.lastReconcileAt >= 60000) {
         await this.rules.reconcile(this.messages(), { resolveSourceJid: this.resolveJid })
@@ -48,7 +49,7 @@ export class AutomationWorker {
     }
   }
 
-  stop() { this.stopping = true; for (const controller of this.controllers) controller.abort() }
+  stop() { this.stopping = true; this.reviews?.stop(); for (const controller of this.controllers) controller.abort() }
 
   async drain() { await Promise.all([...this.jobs]) }
 
@@ -59,7 +60,7 @@ export class AutomationWorker {
     controller.batchId = batch.id
     controller.workspace = Boolean(batch.workspaceLock)
     this.controllers.add(controller)
-    const stage = batch.status === 'judging' ? 'judge' : 'execute'
+    const stage = batch.status === 'judging' ? 'judge' : batch.status === 'reviewing' ? 'review' : 'execute'
     try {
       const rule = await this.rules.getById(batch.ruleId)
       const source = await this.resolveJid(rule.sourceOriginalJid)
@@ -68,15 +69,16 @@ export class AutomationWorker {
         return
       }
       const destination = await this.resolveJid(rule.destinationOriginalJid)
-      const profile = await this.profiles.get(stage === 'judge' ? rule.judgeProfile : rule.profile)
+      const profile = await this.profiles.get(stage === 'judge' ? rule.judgeProfile : stage === 'review' ? rule.review.profile : rule.profile)
       if (!profile) throw new Error('The configured provider profile is missing.')
-      if ((profile.workspace?.path || null) !== (batch.workspaceLock || null) && stage !== 'judge') throw new Error('Workspace changed after this job was claimed; inspect configuration before retrying.')
-      const readOnly = stage === 'judge' || rule.mode === 'observe' || batch.observe
+      if ((profile.workspace?.path || null) !== (batch.workspaceLock || null) && stage === 'execute') throw new Error('Workspace changed after this job was claimed; inspect configuration before retrying.')
+      if (stage === 'review' && profile.workspace) throw new Error('Review profile must not have a workspace.')
+      const readOnly = stage !== 'execute' || rule.mode === 'observe' || batch.observe
       workspace = !readOnly && Boolean(profile.workspace?.path)
       controller.workspace = workspace
       token = this.capabilities.issue({
         readJids: [rule.sourceJid, rule.sourceOriginalJid, batch.sourceJid, source],
-        sendJids: readOnly ? [] : [rule.destinationJid, rule.destinationOriginalJid, destination],
+        sendJids: readOnly || rule.review ? [] : [rule.destinationJid, rule.destinationOriginalJid, destination],
         ttlMs: profile.timeoutMs == null || profile.timeoutMs === 0 ? 0 : profile.timeoutMs + 30000,
         batchId: batch.id, runId: batch.runId, stage,
       })

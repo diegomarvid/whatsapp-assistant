@@ -27,6 +27,7 @@ import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
 import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
 import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
+import { validateReviewPolicy, runReviewAdapter } from '../src/review-adapter.js'
 import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
 import { parseSince } from '../src/search-scope.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
@@ -313,11 +314,16 @@ Matching: palabras o frases completas, sin distinguir mayúsculas ni acentos. No
   wa automation prompt pause|resume|remove <nombre>
   wa automation prompt human|release <nombre>            # control humano; release mira sólo novedades
   wa automation prompt review <batch-id> --summary "verificación de trabajo y entrega"
+  wa automation prompt cancel <batch-id> --reason "motivo"
   wa automation prompt retry <batch-id> --yes            # sólo fallos sin efectos o previews
+  wa automation prompt trigger <nombre> --key <operación-estable> --reason "contexto"
+  wa automation review-policy check|status /ruta/privada/politica.json
 
 Opciones add: --mode observe|live (default observe), --judge <perfil>, --debounce 0..3600,
 --max-wait <segundos> (>= debounce), --max-batch 1..500 (default 100),
 --max-replies-hour 1..100 (default 20), --human-takeover on|off, --paused, --from-me|--any.
+--review-policy <archivo.json> exige revisión de cada borrador antes de enviar.
+--trigger messages|manual (default messages); manual sólo ejecuta con prompt trigger.
 Sin novedades no hay llamadas a IA. Cada mensaje reinicia la espera hasta el máximo.
 Los mensajes propios de la automatización se excluyen antes de evaluar reglas.
 El juez sólo lee y registra ai/human/none; el ejecutor usa wa directamente.
@@ -330,8 +336,11 @@ Herramientas internas del agente (sólo con el permiso efímero de su corrida):
   wa automation context
   wa automation decision ai|human|none --reason "motivo"
   wa automation result resolved|no_reply|needs_human|waiting --summary "resultado y pendientes" [--resume-after <segundos>]
+  wa automation draft submit --text "mensaje exacto" --reason "contexto para el revisor"
+  wa automation draft context
+  wa automation draft decide approve|revise|cancel|wait --revision <n> --cursor <n> --reply <id> --reason "interpretación" [--text "nueva versión"]
 
-Guía completa: docs/autonomous-conversations.md. automation forward fue retirado.`,
+Guías: docs/autonomous-conversations.md y docs/draft-review.md. automation forward fue retirado.`,
     agents: `Perfiles de proveedores de IA:\n  Claude: wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md\n  Código acotado: wa agents profile set nelcor --provider claude --model opus --effort medium --prompt-file /ruta/prompt.md --workspace /ruta/absoluta/repo\n  Codex:  wa agents profile set seguimiento-codex --provider codex --model gpt-5.6-luna --reasoning-effort max --prompt-file /ruta/absoluta/prompt.md\n  wa agents profile list\n  wa agents profile show seguimiento\n  wa agents doctor seguimiento       # binario, versión y flags reales; no consume tokens\n  wa agents validate seguimiento     # prueba mínima neutra; sí puede consumir el proveedor\n  wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt real\n\nEstos comandos no crean reglas ni envían WhatsApps. El catálogo trae aliases útiles pero no bloquea modelos nuevos o IDs exactos: un perfil acepta el identificador que escribas. En Codex, “Luna Max” significa \`--model gpt-5.6-luna --reasoning-effort max\`. \`doctor\` detecta cambios del binario y \`validate\` prueba el proveedor, autenticación, modelo y flags elegidos. Claude usa \`--effort\`; Codex usa \`--reasoning-effort\`, que se traduce a su configuración \`model_reasoning_effort\`. \`--workspace\` agrega edición y Bash únicamente dentro de ese directorio local; sin él el agente queda WhatsApp-only. Los prompts se guardan como archivo privado referenciado por ruta, con huella y permisos seguros. Para una automatización, el prompt no devuelve una acción estructurada: usa el CLI \`wa\` directamente dentro del scope autorizado.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
@@ -697,6 +706,40 @@ async function agentsCommand(args) {
 
 async function automationCommand(args) {
   const kind = args.shift()
+  if (kind === 'draft') {
+    const action = args.shift()
+    if (action === 'context') {
+      assertNoArguments(args, 'wa automation draft context')
+      return console.log(JSON.stringify(await request('/automation/draft'), null, 2))
+    }
+    if (action === 'submit') {
+      const text = extractOption(args, '--text')
+      const reason = extractOption(args, '--reason')
+      assertNoArguments(args, 'wa automation draft submit')
+      return console.log(JSON.stringify(await bridgePost('/automation/draft', { text, reason }, 'Could not submit draft'), null, 2))
+    }
+    if (action === 'decide') {
+      const decision = args.shift()
+      const revision = Number(extractOption(args, '--revision'))
+      const cursor = Number(extractOption(args, '--cursor'))
+      const replyId = extractOption(args, '--reply')
+      const reason = extractOption(args, '--reason')
+      const text = extractOption(args, '--text')
+      assertNoArguments(args, 'wa automation draft decide')
+      return console.log(JSON.stringify(await bridgePost('/automation/draft/decision', { action: decision, revision, cursor, replyId, reason, text }, 'Could not record draft decision'), null, 2))
+    }
+    throw new Error('Use automation draft submit|context|decide.')
+  }
+  if (kind === 'review-policy') {
+    const action = args.shift()
+    const filename = args.shift()
+    assertNoArguments(args, 'wa automation review-policy check|status <file>')
+    if (!['check', 'status'].includes(action) || !filename) throw new Error('Use automation review-policy check|status <file>.')
+    const policy = JSON.parse(await fs.readFile(path.resolve(filename), 'utf8'))
+    validateReviewPolicy(policy)
+    if (!policy) throw new Error('A review policy is required.')
+    return console.log(JSON.stringify(action === 'status' ? await runReviewAdapter(policy.adapter, { op: 'status' }) : { valid: true, actor: policy.actor, profile: policy.profile, reviewers: policy.reviewers, pollSeconds: policy.pollSeconds }, null, 2))
+  }
   if (kind === 'context') {
     assertNoArguments(args, 'wa automation context')
     return console.log(JSON.stringify(await request('/automation/context'), null, 2))
@@ -719,6 +762,13 @@ async function automationCommand(args) {
     throw new Error('`wa automation forward` was retired and is not executed. Use `wa automation prompt` so the configured AI prompt itself reads and sends with `wa`.')
   }
   if (kind !== 'prompt') return usage()
+  if (action === 'trigger') {
+    const name = args.shift()
+    const key = extractOption(args, '--key')
+    const reason = extractOption(args, '--reason')
+    assertNoArguments(args, 'wa automation prompt trigger')
+    return console.log(JSON.stringify(await bridgePost('/automation/trigger', { name, key, reason }, 'Could not trigger automation'), null, 2))
+  }
   if (action === 'add') {
     const name = args.shift()
     const sourceTarget = extractOption(args, '--from')
@@ -728,6 +778,8 @@ async function automationCommand(args) {
     const maxWait = extractOption(args, '--max-wait')
     const maxBatch = extractOption(args, '--max-batch')
     const judgeProfile = extractOption(args, '--judge')
+    const reviewFile = extractOption(args, '--review-policy')
+    const trigger = extractOption(args, '--trigger') || 'messages'
     const mode = extractOption(args, '--mode') || 'observe'
     const humanTakeover = extractOption(args, '--human-takeover')
     const maxReplies = extractOption(args, '--max-replies-hour')
@@ -759,6 +811,14 @@ async function automationCommand(args) {
       const judgeProvider = await probeProvider(judge.provider)
       if (judgeProvider.status !== 'available') throw new Error('Judge provider is unavailable; run wa agents doctor.')
     }
+    const review = reviewFile ? JSON.parse(await fs.readFile(path.resolve(reviewFile), 'utf8')) : null
+    validateReviewPolicy(review)
+    if (reviewFile && !review) throw new Error('A review policy is required.')
+    if (review) {
+      const interpreter = await agentProfiles.get(review.profile)
+      if (!interpreter || interpreter.workspace || (await promptHealth(interpreter)).status !== 'unchanged') throw new Error('Review profile must exist, have an unchanged prompt, and no workspace.')
+      if ((await probeProvider(interpreter.provider)).status !== 'available') throw new Error('Review interpreter is unavailable; run wa agents doctor.')
+    }
     const [source, destination] = await Promise.all([resolve(sourceTarget), resolve(destinationTarget)])
     const sourceOriginalJid = source.originalJid || source.jid
     const destinationOriginalJid = destination.originalJid || destination.jid
@@ -774,7 +834,7 @@ async function automationCommand(args) {
       destinationOriginalJid,
       profile: profile.name,
       direction: fromMe ? 'from-me' : any ? 'any' : 'incoming',
-      debounceSeconds, mode, judgeProfile,
+      debounceSeconds, mode, judgeProfile, review, trigger,
       ...(maxWait !== null ? { maxWaitSeconds: Number(maxWait) } : {}),
       ...(maxBatch !== null ? { maxBatchMessages: Number(maxBatch) } : {}),
       ...(maxReplies !== null ? { maxRepliesPerHour: Number(maxReplies) } : {}),
@@ -832,6 +892,12 @@ async function automationCommand(args) {
     assertNoArguments(args, 'wa automation prompt review')
     return console.log(JSON.stringify(await promptAutomations.review(batchId, summary), null, 2))
   }
+  if (action === 'cancel') {
+    const batchId = args.shift()
+    const reason = extractOption(args, '--reason')
+    assertNoArguments(args, 'wa automation prompt cancel')
+    return console.log(JSON.stringify(await promptAutomations.cancel(batchId, reason), null, 2))
+  }
   if (action === 'retry') {
     const batchId = args.shift()
     const yes = args.includes('--yes')
@@ -858,7 +924,7 @@ async function automationCommand(args) {
       if (!rule) throw new Error(`Unknown prompt automation: ${name}`)
       const batches = await promptAutomations.batchesFor(rule.id)
       if (asJson) return console.log(JSON.stringify({ rule, batches, outbound: (await promptAutomations.load()).outbound.filter((entry) => entry.ruleId === rule.id) }, null, 2))
-      const detail = batches.slice(-20).map((batch) => `  - ${batch.id}: ${batch.status}; ${batch.messageIds.length} mensaje(s); envíos ${batch.sendCount || 0}; vence ${batch.dueAt}${batch.decision ? `; juez: ${batch.decision.route} — ${batch.decision.reason}` : ''}${batch.summary ? `; resultado: ${batch.summary}` : ''}${batch.lastError ? `; detalle: ${batch.lastError}` : ''}`).join('\n')
+      const detail = batches.slice(-20).map((batch) => `  - ${batch.id}: ${batch.status}; ${batch.messageIds.length} mensaje(s); envíos ${batch.sendCount || 0}; vence ${batch.dueAt}${batch.decision ? `; juez: ${batch.decision.route} — ${batch.decision.reason}` : ''}${batch.review ? `; draft v${batch.review.revisions.at(-1).number}: ${batch.review.revisions.at(-1).delivery}; revisión vence ${batch.review.expiresAt}${batch.review.lastError ? `; error revisión: ${batch.review.lastError}` : ''}` : ''}${batch.summary ? `; resultado: ${batch.summary}` : ''}${batch.lastError ? `; detalle: ${batch.lastError}` : ''}`).join('\n')
       return console.log(`${formatPromptAutomation(rule, batches)}${detail ? `\n  Últimas ejecuciones:\n${detail}` : ''}`)
     }
     const status = action === 'pause' ? 'paused' : action === 'resume' ? 'active' : 'removed'

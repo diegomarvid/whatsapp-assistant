@@ -236,6 +236,19 @@ test('calls and group-events consult the events endpoint', async () => {
   assert.ok(bridge.reads.some((line) => line.includes('/events?kind=group')))
 })
 
+test('draft and trigger tools preserve literal text and scoped typed decisions', async () => {
+  const text = 'Texto con "comillas", $variable y `backticks`\nOtra línea'
+  const submit = await wa('automation', 'draft', 'submit', '--text', text, '--reason', 'Contexto')
+  assert.equal(submit.status, 0, submit.stderr)
+  assert.deepEqual(lastWrite(), { path: '/automation/draft', query: {}, body: { text, reason: 'Contexto' } })
+  const decision = await wa('automation', 'draft', 'decide', 'revise', '--revision', '2', '--cursor', '13', '--reply', '13', '--reason', 'Cambios pedidos', '--text', text)
+  assert.equal(decision.status, 0, decision.stderr)
+  assert.deepEqual(lastWrite(), { path: '/automation/draft/decision', query: {}, body: { action: 'revise', revision: 2, cursor: 13, replyId: '13', reason: 'Cambios pedidos', text } })
+  const trigger = await wa('automation', 'prompt', 'trigger', 'generic-task', '--key', 'stable-operation', '--reason', 'Caller context')
+  assert.equal(trigger.status, 0, trigger.stderr)
+  assert.deepEqual(lastWrite(), { path: '/automation/trigger', query: {}, body: { name: 'generic-task', key: 'stable-operation', reason: 'Caller context' } })
+})
+
 test('automation creation preserves numeric group JIDs instead of treating them as phone numbers', async () => {
   const prompt = path.join(bridge.stateRoot, 'group-prompt.md')
   await fs.writeFile(prompt, 'Reply to the authorized group.', { mode: 0o600 })

@@ -32,6 +32,7 @@ import { runPromptAutomation } from './agent-provider-runner.js'
 import { AutomationCapabilities } from './automation-capabilities.js'
 import { PromptAutomationRules } from './prompt-automation-rules.js'
 import { AutomationWorker } from './automation-worker.js'
+import { AutomationReviews } from './automation-reviews.js'
 import { dispatchScheduledMessages } from './scheduled-dispatch.js'
 import { ScheduledMessages } from './scheduled-messages.js'
 
@@ -40,6 +41,7 @@ const cachePath = path.join(dataDir, 'messages.json')
 const mirrorPath = path.join(dataDir, 'mirror.sqlite')
 const tokenPath = path.join(dataDir, 'bridge-token')
 const linkState = new LinkState()
+let automationReviews = null
 let authRegistered = false
 let pairingRestarts = 0
 async function clearQrFiles() {
@@ -728,7 +730,7 @@ async function processPromptAutomations() {
     automationWorker = new AutomationWorker({ rules: promptAutomations, profiles: agentProfiles,
       capabilities: automationCapabilities, stateDir: stateRoot,
       connected: () => connection === 'open' && Boolean(socket?.sendMessage),
-      coverage: chatCoverage, resolveJid: resolveCurrentJid, messages: () => cache.messages, logger })
+      coverage: chatCoverage, resolveJid: resolveCurrentJid, reviews: automationReviews, messages: () => cache.messages, logger })
   }
   await automationWorker?.tick()
 }
@@ -801,7 +803,8 @@ function capabilityForbidden(response) {
 function automationEndpointAllowed(request, url, { isAudioDownload, isImageDownload, isDocumentDownload, isVideoDownload, isStickerDownload, isMessageSend }) {
   return (request.method === 'GET' && ['/resolve', '/coverage', '/messages', '/identities'].includes(url.pathname))
     || (request.method === 'GET' && url.pathname === '/automation/context')
-    || (request.method === 'POST' && ['/automation/decision', '/automation/result'].includes(url.pathname))
+    || (request.method === 'GET' && url.pathname === '/automation/draft')
+    || (request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/draft', '/automation/draft/decision'].includes(url.pathname))
     || isAudioDownload || isImageDownload || isDocumentDownload || isVideoDownload || isStickerDownload || isMessageSend
 }
 
@@ -1252,6 +1255,12 @@ async function main() {
     promptAutomations = new PromptAutomationRules(promptAutomationsPath)
     agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
     const recoveredPromptAutomations = await promptAutomations.recoverInterrupted()
+    automationReviews = new AutomationReviews(promptAutomations, {
+      connected: () => connection === 'open' && cache.sync.ingestionHealthy !== false && Boolean(socket?.sendMessage),
+      coverage: chatCoverage, resolveJid: resolveCurrentJid,
+      transport: (jid, text, messageId) => socket.sendMessage(jid, { text }, { messageId }), logger,
+    })
+    await automationReviews.recover()
     for (const batch of recoveredPromptAutomations) logger.warn({ automationRule: batch.ruleName, batchId: batch.id, status: batch.status }, 'Recovered interrupted prompt automation without retrying it')
   } catch (error) {
     promptAutomations = null
@@ -1298,7 +1307,7 @@ async function main() {
     const isMessageRead = request.method === 'POST' && url.pathname === '/messages/read'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
-    const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview'].includes(url.pathname)
+    const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
@@ -1317,6 +1326,15 @@ async function main() {
     if (url.pathname.startsWith('/automation/')) {
       Promise.resolve().then(async () => {
         if (!promptAutomations) return json(response, 503, { error: 'automations_disabled' })
+        if (url.pathname === '/automation/trigger' && request.method === 'POST') {
+          if (authorization.kind !== 'full') return capabilityForbidden(response)
+          const { name, key, reason } = await requestBody(request)
+          const rule = await promptAutomations.get(name)
+          if (!rule) throw new Error('Unknown automation rule.')
+          const jid = await resolveCurrentJid(rule.sourceOriginalJid)
+          if (!chatCoverage(jid).fresh) throw new Error('Trigger requires fresh source coverage.')
+          return json(response, 200, await promptAutomations.trigger(name, key, reason, jid))
+        }
         if (url.pathname === '/automation/preview' && request.method === 'POST') {
           if (authorization.kind !== 'full') return capabilityForbidden(response)
           const { name, messageIds } = await requestBody(request)
@@ -1328,6 +1346,19 @@ async function main() {
           return json(response, 200, await promptAutomations.preview(name, messageIds, jid))
         }
         if (authorization.kind !== 'automation' || !authorization.batchId || !authorization.runId) return capabilityForbidden(response)
+        if (url.pathname === '/automation/draft' && request.method === 'GET' && authorization.stage === 'review') {
+          await promptAutomations.assertRun(authorization.batchId, authorization.runId)
+          return json(response, 200, await automationReviews.context(authorization.batchId))
+        }
+        if (url.pathname === '/automation/draft' && request.method === 'POST' && authorization.stage === 'execute') {
+          const { text, reason } = await requestBody(request)
+          const { rule } = await promptAutomations.assertRun(authorization.batchId, authorization.runId)
+          const jid = await resolveCurrentJid(rule.destinationOriginalJid)
+          return json(response, 200, await automationReviews.submit(authorization.batchId, authorization.runId, { text, reason, jid }))
+        }
+        if (url.pathname === '/automation/draft/decision' && request.method === 'POST' && authorization.stage === 'review') {
+          return json(response, 200, await automationReviews.decide(authorization.batchId, authorization.runId, await requestBody(request)))
+        }
         if (url.pathname === '/automation/context' && request.method === 'GET') {
           const batch = (await promptAutomations.load()).batches.find((item) => item.id === authorization.batchId)
           return json(response, 200, await promptAutomations.context(batch.ruleId))
