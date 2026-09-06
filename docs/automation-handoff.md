@@ -33,8 +33,10 @@ antecedentes; para configurar o desarrollar, usar el contrato de la guía actual
   fueron simulados; ambos terminaron `completed`, con cero envíos a WhatsApp.
 - **Telegram real + Claude:** el humano respondió la primera pregunta y recibió
   una segunda consulta coherente. Un reinicio durante la espera conservó el
-  mismo trabajo y sesión sin duplicar el mensaje. Al registrar esta evidencia,
-  queda pendiente la respuesta humana al segundo mensaje y el cierre del ciclo.
+  mismo trabajo y sesión sin duplicar el mensaje. Después, el humano respondió
+  el tono, recibió la confirmación y el ejecutor retomó su sesión original hasta
+  `completed`. Se verificaron tres publicaciones, dos replies humanos, cero
+  envíos a WhatsApp y el cierre del proceso. La regla de prueba quedó pausada.
 - El receptor Telegram v2 se desplegó en Linux con **18 pruebas de servicio**
   aprobadas y long polling saludable. Los CLIs nativos se probaron en macOS sin
   interfaz; falta UAT de ambos proveedores autenticados en el VPS elegido.
@@ -43,6 +45,15 @@ La prueba neutra reproducible es `wa automation human test`; usa un bridge de
 fixtures sin conexión ni endpoints de envío a WhatsApp. El caso histórico de
 draft y envío aprobado se documenta más abajo y no debe confundirse con esta
 prueba de consulta y reanudación.
+
+El cambio de implementación está en `main`, commit
+[`fed8c83`](https://github.com/diegomarvid/whatsapp-assistant/commit/fed8c836943c885085038cdcf49766cbe3c67d4a).
+La [CI en Ubuntu / Node 22](https://github.com/diegomarvid/whatsapp-assistant/actions/runs/34040278835)
+aprobó las verificaciones. La instalación activa se actualizó mediante tarball a
+**0.11.0**, con conexión abierta, ingestión y cobertura saludables, sin nuevo QR.
+Se comparó la migración v3 → v4: las cinco reglas (incluidas retiradas), 26 lotes
+y seis registros de salida conservaron todos sus campos originales. Hay un backup
+coherente posterior a la migración, la copia original v3 y evidencia privada.
 
 Las tres reglas conservadas de laboratorio/soporte siguen pausadas. Retomar
 el desarrollo no las activa. Los detalles de instalación local y de cada piloto
