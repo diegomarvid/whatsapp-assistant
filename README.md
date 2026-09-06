@@ -674,14 +674,14 @@ Para el detalle de qué estado es privado y queda excluido de Git, ver
 
 ### 🔔 Las notificaciones del teléfono siguen llegando
 
-Un daemon conectado 24/7 puede robarle las notificaciones push a tu teléfono:
-Baileys marca la conexión como cliente “activo” tras el login, y WhatsApp
-trata al cliente activo como el que muestra las notificaciones. El bridge
-**reafirma modo companion pasivo en cada conexión** (desde v0.9.4), así que tu
-celular sigue sonando normalmente. Verificable: `wa status` debe mostrar
-`passiveModeAssertedAt` con un timestamp posterior a `lastConnectedAt`. Si
-dejás de recibir notificaciones en el teléfono, revisá primero eso y que no
-haya otro cliente/bot vinculado a tu cuenta en modo activo.
+Un daemon conectado 24/7 puede afectar las notificaciones push del teléfono si
+WhatsApp interpreta que la conversación se está leyendo en ese dispositivo.
+El bridge **marca la presencia como no disponible en cada conexión**, conservando
+la entrega activa de mensajes. `wa status` debe mostrar
+`presenceUnavailableAssertedAt` igual o posterior a `lastConnectedAt`.
+`passiveModeAssertedAt: null` es intencional: el antiguo modo pasivo provocaba
+entregas agrupadas con demora. Si faltan notificaciones, revisar esa confirmación
+y los demás clientes vinculados; comprobar también el comportamiento del teléfono.
 
 ## 🩺 Operación y recuperación
 

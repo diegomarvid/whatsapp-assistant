@@ -335,7 +335,21 @@ incluye el código y la guía del adaptador, sin estado privado. Se verificó el
 adaptador Maspeak con una consulta real de salud: servicio conectado, modo de
 respuestas activo, sin ejecución de WhatsApp por parte de ese servicio.
 
-Esta ampliación está preparada en el repositorio. No se instaló en el daemon
-activo ni se creó una regla de negocio, un horario, un borrador real o un envío.
 La publicación y entrega de extremo a extremo están probadas con transportes
 simulados; queda la prueba humana real al configurar una política de laboratorio.
+
+### Despliegue del 2026-09-06
+
+Integrado en `main` y PR #1 fusionada. La versión `0.10.0` quedó instalada en el
+daemon local: sesión existente, conexión abierta, ingestión saludable y cobertura
+fresca del grupo de laboratorio. Se verificó el código instalado contra la versión
+etiquetada. La migración a schema v3 conservó los perfiles y estados de las reglas
+existentes, sin nuevos trabajos inciertos; se guardó backup privado previo.
+Este despliegue no configura una integración de negocio ni una regla nueva de drafts.
+
+La [release v0.10.0](https://github.com/diegomarvid/whatsapp-assistant/releases/tag/v0.10.0)
+incluye el paquete instalable. GitHub CI pasó las 203 pruebas. La publicación
+automática en npm fue rechazada por el registro (HTTP 404); npm seguía ofreciendo
+`0.9.7` al verificar. Hasta resolver el acceso de publicación, instalar el archivo
+de la release según sus instrucciones. Este pendiente de distribución no impide
+que el daemon local ejecute la versión nueva.
