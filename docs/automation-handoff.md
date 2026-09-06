@@ -33,6 +33,16 @@ La evidencia del piloto real que figura abajo corresponde a 0.11.0; las
 correcciones nuevas se verifican con pruebas de regresión. `npm run check` y
 **225 pruebas** pasaron localmente antes de preparar el despliegue.
 
+Se instaló **0.11.1** desde el tarball del commit
+[`114e95d`](https://github.com/diegomarvid/whatsapp-assistant/commit/114e95d9cc6fead8f05cdc511e3d1da256f49896),
+después de parar el daemon y completar un backup privado coherente de sesión,
+configuración y bases SQLite con integridad verificada. Tras arrancar se confirmó
+conexión abierta, ingestión y cobertura frescas, presencia no disponible y ningún
+QR pendiente. El estado de control completo coincidió con el backup: cinco
+reglas, 26 lotes y seis registros de salida; las tres reglas conservadas siguen
+pausadas y no había consultas ni ejecutores activos. No se hizo una nueva prueba
+de mensajes reales como parte de esta revisión.
+
 ### Evidencia de 0.11.0, 2026-09-06
 
 - `npm run check` y **221 pruebas** pasan, incluyendo esperas superiores a una
@@ -60,7 +70,7 @@ prueba de consulta y reanudación.
 El cambio de implementación está en `main`, commit
 [`fed8c83`](https://github.com/diegomarvid/whatsapp-assistant/commit/fed8c836943c885085038cdcf49766cbe3c67d4a).
 La [CI en Ubuntu / Node 22](https://github.com/diegomarvid/whatsapp-assistant/actions/runs/34040278835)
-aprobó las verificaciones. La instalación activa se actualizó mediante tarball a
+aprobó las verificaciones. En ese despliegue se actualizó mediante tarball a
 **0.11.0**, con conexión abierta, ingestión y cobertura saludables, sin nuevo QR.
 Se comparó la migración v3 → v4: las cinco reglas (incluidas retiradas), 26 lotes
 y seis registros de salida conservaron todos sus campos originales. Hay un backup
