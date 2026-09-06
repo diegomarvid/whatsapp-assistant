@@ -86,7 +86,7 @@ test('v2 migration keeps legacy rules direct and preserves control state', async
   await fs.writeFile(f.rules.filename, JSON.stringify(state), { mode: 0o600 })
   await f.rules.recoverInterrupted()
   const migrated = await f.rules.load()
-  assert.equal(migrated.version, 3)
+  assert.equal(migrated.version, 4)
   assert.equal(migrated.rules[0].review, null)
   assert.equal(migrated.rules[0].trigger, 'messages')
   assert.equal(migrated.rules[0].status, 'paused')

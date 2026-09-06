@@ -2,7 +2,20 @@
 
 Investigación del **2026-09-06**, sobre `main` `6409452`. Complementa y ajusta
 el [diseño de consultas](human-consultation-design.md). **Investigación y diseño;
-no implementación ni validación de una consulta real con estos mecanismos.**
+fotografía previa a la implementación.**
+
+**Actualización 0.11, 2026-09-06:** el [runtime implementado](human-consultations.md)
+pasó el circuito completo con ambos CLIs reales y canal/respuestas simuladas: dos
+rondas de preguntas, confirmación y continuación de la sesión guardada, sin envío
+a WhatsApp. Además se publicó una consulta real en el canal configurado; su reply
+humano se verifica por separado.
+
+La prueba de Claude mostró un requisito que el diseño inicial no contemplaba:
+el hook solo no expone AskUserQuestion en headless. El runtime agrega un servidor
+MCP mínimo de permisos, configurado con `--permission-prompt-tool`, que deniega
+acciones no autorizadas y deja que el hook maneje el defer/answer. No es el plugin
+de Telegram y no consume mensajes del bot. En Codex, los comandos usan la ruta
+exacta del shim para evitar otra versión instalada por un shell de login.
 «Claude CLI» aquí significa Claude Code, no un CLI de infraestructura cloud.
 
 ## Conclusión y decisión

@@ -51,18 +51,25 @@ export function buildProviderInvocation(profile, { promptFile = profile?.prompt?
 export function buildAutomationProviderInvocation(profile, {
   outputFile = null,
   stateDir,
+  session = null,
+  consultation = null,
   executable = null,
 } = {}) {
   assertProfile(profile)
   if (!stateDir || !path.isAbsolute(stateDir)) throw new Error('Automation provider invocations require an absolute WhatsApp state directory.')
+  if (session && !/^[a-f0-9-]{36}$/i.test(session.id || '')) throw new Error('A pinned native session UUID is required.')
+  if (consultation && profile.provider === 'claude' && (![consultation.settings, consultation.mcp].every((f) => typeof f === 'string' && path.isAbsolute(f)) || !/^[a-f0-9-]{36}$/i.test(consultation.sessionId || ''))) throw new Error('Controlled native consultation settings are required.')
   const codeWorkspace = profile.workspace?.path || null
   if (codeWorkspace && !path.isAbsolute(codeWorkspace)) throw new Error('Automation workspaces must use an absolute path.')
   if (profile.provider === 'claude') {
-    const tools = codeWorkspace ? 'Read,Edit,Write,Bash' : 'Bash'
+    const tools = (codeWorkspace ? 'Read,Edit,Write,Bash' : 'Bash') + (consultation ? ',AskUserQuestion' : '')
     return {
       command: executable || PROVIDERS.claude.binary,
       args: [
-        '-p', '--output-format', 'json', '--no-session-persistence', '--safe-mode', '--strict-mcp-config',
+        '-p', '--output-format', 'json',
+        ...(consultation ? ['--restricted', '--setting-sources', '', '--settings', consultation.settings, '--mcp-config', consultation.mcp, '--permission-prompt-tool', 'mcp__wa_control__permission', '--disable-slash-commands', '--no-chrome'] : ['--safe-mode']),
+        ...(session?.id ? ['--resume', session.id] : consultation ? ['--session-id', consultation.sessionId] : ['--no-session-persistence']),
+        '--strict-mcp-config',
         '--tools', tools,
         ...(codeWorkspace ? ['--permission-mode', 'acceptEdits', '--allowedTools', 'Bash'] : ['--allowedTools', 'Bash(wa *)']),
         ...(codeWorkspace ? ['--add-dir', stateDir] : []),
@@ -78,12 +85,12 @@ export function buildAutomationProviderInvocation(profile, {
       // Codex's workspace-write sandbox blocks even the loopback request that
       // `wa` needs to make to the local bridge. The surrounding worker still
       // gives it only an ephemeral CLI state and a target-checked `wa` shim.
-      'exec', '--json', '--ephemeral', '--sandbox', 'danger-full-access', '--add-dir', stateDir,
+      'exec', '--json', ...(consultation || session ? [] : ['--ephemeral']), '--sandbox', 'danger-full-access', '--add-dir', stateDir,
       ...(codeWorkspace ? ['--add-dir', codeWorkspace] : []),
       '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
       `--model=${profile.model}`,
       ...(profile.reasoningEffort ? ['--config', `model_reasoning_effort=${JSON.stringify(profile.reasoningEffort)}`] : []),
-      '--output-last-message', outputFile, '-',
+      '--output-last-message', outputFile, ...(session?.id ? ['resume', session.id] : []), '-',
     ],
   }
 }

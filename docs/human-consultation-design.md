@@ -1,6 +1,13 @@
 # Consultas humanas durante una automatización
 
-**Estado: diseño para implementar, 2026-09-06. No disponible en 0.10.1.**
+**Documento de diseño original, 2026-09-06. Implementación disponible en 0.11.**
+
+La fuente de verdad actual es [human-consultations.md](human-consultations.md).
+Este texto conserva la propuesta y su checklist: no todos sus nombres de comandos
+o tablas son los elegidos finalmente. El runtime mantiene un trabajo por batch
+estable, dos tablas transaccionales (control y journal), sesión nativa sólo para
+el ejecutor e intérpretes separados con resumen paginado. App Server, plugin
+Telegram, asignación automática de worktrees y renovación de login no son dependencias.
 Base revisada: `main`, commit `5c401e2`, y el servicio externo de drafts descrito
 en la [guía de continuidad](automation-handoff.md). Este documento define el
 comportamiento, los contratos, la migración y la prueba; no activa automatizaciones.

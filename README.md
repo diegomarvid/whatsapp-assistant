@@ -142,9 +142,14 @@ Para continuar el desarrollo desde otra sesión o equipo, empezar por la
 [guía técnica de automatizaciones](docs/automation-handoff.md): mapa del código,
 piloto real, estado del despliegue, comandos de inspección y mejoras pendientes.
 
-También está documentado el [diseño de consultas humanas durante el trabajo](docs/human-consultation-design.md):
-preguntar por el mismo bot, mantener varios intercambios y confirmar antes de
-retomar. Esa extensión todavía está pendiente de implementación.
+Las [consultas humanas durante el trabajo](docs/human-consultations.md) permiten
+preguntar por el mismo bot, conversar lo necesario y confirmar antes de retomar.
+Funcionan headless con Codex CLI y Claude Code CLI, sin modelo activo mientras
+esperan. El estado es durable y una demora no cancela la consulta.
+
+Para probar el circuito con un ejemplo que no puede enviar WhatsApp:
+`wa automation human test --profile <perfil> --state-dir /ruta/privada/prueba`.
+Agregar `--policy /ruta/privada/consulta.json` para usar replies reales de Telegram.
 
 `wa automation forward` fue retirado: no queda ningún reenvío determinista
 activo ni una capa que “arregle” texto antes del prompt.

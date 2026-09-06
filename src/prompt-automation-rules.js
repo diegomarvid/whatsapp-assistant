@@ -1,12 +1,14 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { AutomationStore, journal } from './automation-store.js'
+import { validateHumanPolicy, withHumanDefaults, HUMAN_WAITING, validateStoredHuman, commitHumanDecision } from './human-policy.js'
 import { authorizedReply, latestReplies, validateReviewPolicy, validateStoredReview, withReviewDefaults } from './review-adapter.js'
 
-const VERSION = 3
+const VERSION = 4
 const RULE_STATUSES = new Set(['active', 'paused', 'removed'])
-const ACTIVE = new Set(['judging', 'running', 'reviewing'])
-const BATCH_STATUSES = new Set(['pending', 'judging', 'running', 'waiting', 'review_waiting', 'review_ready', 'reviewing', 'completed', 'uncertain', 'failed', 'human', 'ignored', 'observed', 'canceled', 'superseded'])
+const ACTIVE = new Set(['judging', 'running', 'reviewing', 'clarifying'])
+const BATCH_STATUSES = new Set(['pending', 'judging', 'running', 'waiting', 'review_waiting', 'review_ready', 'reviewing', 'completed', 'uncertain', 'failed', 'human', 'ignored', 'observed', 'canceled', 'superseded', 'human_waiting', 'human_ready', 'clarifying', 'human_ack', 'human_resume', 'human_frozen'])
 const DIRECTIONS = new Set(['incoming', 'from-me', 'any'])
 const DEDUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 // Transport/control frames sometimes appear as mirrored messages. They are not
@@ -53,7 +55,7 @@ function validBatch(batch) {
 
 function defaults(rule) {
   return {
-    mode: 'live', judgeProfile: null, review: null, trigger: 'messages', maxWaitSeconds: Math.min(3600, Math.max(60, rule.debounceSeconds * 3)),
+    mode: 'live', judgeProfile: null, review: null, humanConsultation: null, trigger: 'messages', maxWaitSeconds: Math.min(3600, Math.max(60, rule.debounceSeconds * 3)),
     maxBatchMessages: 100, humanTakeover: false, humanHold: false, maxRepliesPerHour: 20,
     ...rule,
     ...(rule.sourceJid?.endsWith('@g.us') ? { sourceOriginalJid: rule.sourceJid } : {}),
@@ -62,7 +64,7 @@ function defaults(rule) {
 }
 
 function normalize(value) {
-  if (!value || ![1, 2, VERSION].includes(value.version) || !Array.isArray(value.rules) || !Array.isArray(value.batches)
+  if (!value || ![1, 2, 3, VERSION].includes(value.version) || !Array.isArray(value.rules) || !Array.isArray(value.batches)
     || value.rules.some((rule) => !validRule(rule)) || value.batches.some((batch) => !validBatch(batch))) {
     throw new Error('Prompt automation state is malformed. It was left unchanged; inspect the private state before enabling or editing a rule.')
   }
@@ -70,6 +72,7 @@ function normalize(value) {
   for (const rule of rules) validateOptions(rule)
   for (const batch of value.batches) {
     validateStoredReview(batch)
+    validateStoredHuman(batch, rules.find((r) => r.id === batch.ruleId)?.humanConsultation)
     if (batch.review && !rules.find((rule) => rule.id === batch.ruleId)?.review) throw new Error('Draft batch has no review policy.')
   }
   if (value.outbound !== undefined && (!Array.isArray(value.outbound) || value.outbound.some((entry) => !text(entry.messageId) || !text(entry.batchId) || !text(entry.jid) || !text(entry.fingerprint) || !['sending', 'accepted', 'uncertain'].includes(entry.status) || !Number.isFinite(Date.parse(entry.createdAt))))) throw new Error('Malformed automation outbound audit.')
@@ -78,6 +81,7 @@ function normalize(value) {
 
 function validateOptions(rule) {
   validateReviewPolicy(rule.review)
+  validateHumanPolicy(rule.humanConsultation ?? null)
   if (!['messages', 'manual'].includes(rule.trigger)) throw new Error('Trigger must be messages or manual.')
   if (!['live', 'observe'].includes(rule.mode)) throw new Error('Mode must be live or observe.')
   if (rule.judgeProfile !== null && !validName(rule.judgeProfile)) throw new Error('Invalid judge profile.')
@@ -94,6 +98,7 @@ function finish(batch, status, now, detail = null) {
 function invalidate(state, ruleId, now, reason, { pendingStatus = 'canceled' } = {}) {
   for (const batch of state.batches.filter((item) => item.ruleId === ruleId)) {
     if (ACTIVE.has(batch.status)) { batch.invalidated = reason; batch.invalidationKind = 'control' }
+    else if (HUMAN_WAITING.has(batch.status)) { batch.status = 'human_frozen'; batch.lastError = reason }
     if (['pending', 'waiting', 'review_waiting', 'review_ready'].includes(batch.status)) finish(batch, pendingStatus, now, reason)
   }
 }
@@ -110,6 +115,7 @@ function activeBatch(state, batchId, runId) {
 export class PromptAutomationRules {
   constructor(filename, { now = () => Date.now(), lockRetryMs = 25, lockTimeoutMs = 5000, staleLockMs = 60 * 1000 } = {}) {
     this.filename = filename
+    this.store = new AutomationStore(filename)
     this.lockFilename = `${filename}.lock`
     this.now = now
     this.lockRetryMs = lockRetryMs
@@ -121,32 +127,39 @@ export class PromptAutomationRules {
   nowSeconds() { return Math.floor(this.now() / 1000) }
 
   async load() {
-    try { return normalize(JSON.parse(await fs.readFile(this.filename, 'utf8'))) } catch (error) {
-      if (error.code === 'ENOENT') return { version: VERSION, rules: [], batches: [], outbound: [] }
-      if (error instanceof SyntaxError) throw new Error('Prompt automation state could not be parsed. It was left unchanged; inspect the private state before enabling or editing a rule.')
+    try {
+      const value = JSON.parse(await fs.readFile(this.filename, 'utf8'))
+      if (value.storage === 'sqlite' && value.version === VERSION) {
+        await fs.access(this.store.filename)
+        return normalize(await this.store.load())
+      }
+      return normalize(value)
+    } catch (error) {
+      if (error.code === 'ENOENT' && error.path === this.filename) return { version: VERSION, rules: [], batches: [], outbound: [] }
+      if (error instanceof SyntaxError) throw new Error('Prompt automation state could not be parsed. It was left unchanged; inspect private state.')
       throw error
     }
   }
 
   async save(state) {
     await fs.mkdir(path.dirname(this.filename), { recursive: true, mode: 0o700 })
-    const temporary = `${this.filename}.${crypto.randomUUID()}.tmp`
-    let handle = null
-    try {
-      handle = await fs.open(temporary, 'w', 0o600)
-      const cutoff = this.now() - DEDUP_RETENTION_MS
-      // Explicit trigger keys outlive the mirror so old scheduler retries do
-      // not recreate a completed outreach.
-      const batches = state.batches.filter((batch) => batch.trigger || !['completed', 'ignored', 'observed', 'canceled', 'superseded'].includes(batch.status) || Date.parse(batch.completedAt || batch.createdAt) >= cutoff)
-      await handle.writeFile(`${JSON.stringify({ version: VERSION, rules: state.rules, batches, outbound: state.outbound.filter((entry) => entry.status !== 'accepted' || Date.parse(entry.createdAt) >= cutoff) }, null, 2)}\n`)
-      await handle.sync()
-      await handle.close()
-      handle = null
+    let migrated = false
+    try { migrated = JSON.parse(await fs.readFile(this.filename, 'utf8')).storage === 'sqlite' } catch (error) { if (error.code !== 'ENOENT') throw error }
+    if (!migrated) {
+      try { await fs.copyFile(this.filename, `${this.filename}.pre-sqlite`, fs.constants.COPYFILE_EXCL); await fs.chmod(`${this.filename}.pre-sqlite`, 0o600) }
+      catch (error) { if (!['ENOENT', 'EEXIST'].includes(error.code)) throw error }
+    }
+    const cutoff = this.now() - DEDUP_RETENTION_MS
+    state.version = VERSION
+    state.batches = state.batches.filter((b) => b.human || b.trigger || !['completed', 'ignored', 'observed', 'canceled', 'superseded'].includes(b.status) || Date.parse(b.completedAt || b.createdAt) >= cutoff)
+    state.outbound = state.outbound.filter((e) => e.status !== 'accepted' || Date.parse(e.createdAt) >= cutoff || state.batches.some((b) => b.id === e.batchId && b.human))
+    await this.store.save(state)
+    if (!migrated) {
+      const temporary = `${this.filename}.${crypto.randomUUID()}.tmp`
+      const handle = await fs.open(temporary, 'wx', 0o600)
+      try { await handle.writeFile(JSON.stringify({ version: VERSION, storage: 'sqlite' }) + '\n'); await handle.sync() } finally { await handle.close() }
       await fs.rename(temporary, this.filename)
-    } catch (error) {
-      await handle?.close().catch(() => {})
-      await fs.rm(temporary, { force: true }).catch(() => {})
-      throw error
+      const directory = await fs.open(path.dirname(this.filename), 'r'); try { await directory.sync() } finally { await directory.close() }
     }
   }
 
@@ -202,10 +215,11 @@ export class PromptAutomationRules {
     name, source, sourceTarget, sourceJid, sourceOriginalJid = null,
     destination, destinationTarget, destinationJid, destinationOriginalJid = null,
     profile, direction = 'incoming', debounceSeconds = 300,
-    mode = 'live', judgeProfile = null, review = null, trigger = 'messages', maxWaitSeconds = Math.min(3600, Math.max(60, debounceSeconds * 3)),
+    mode = 'live', judgeProfile = null, review = null, humanConsultation = null, trigger = 'messages', maxWaitSeconds = Math.min(3600, Math.max(60, debounceSeconds * 3)),
     maxBatchMessages = 100, humanTakeover = false, maxRepliesPerHour = 20, status = 'active',
   }) {
     review = withReviewDefaults(review)
+    humanConsultation = withHumanDefaults(humanConsultation)
     if (!validName(name) || ![source, sourceJid, destination, destinationJid, profile].every(text) || ![sourceTarget, destinationTarget].every(validTarget)) {
       throw new Error('A rule name, source, destination, CLI targets, and AI profile are required.')
     }
@@ -216,7 +230,7 @@ export class PromptAutomationRules {
       const rule = {
         id: id(), name, source: source.trim(), sourceTarget: sourceTarget.trim(), sourceJid: sourceJid.trim(), sourceOriginalJid: sourceOriginalJid?.trim() || sourceJid.trim(),
         destination: destination.trim(), destinationTarget: destinationTarget.trim(), destinationJid: destinationJid.trim(), destinationOriginalJid: destinationOriginalJid?.trim() || destinationJid.trim(),
-        profile: profile.trim(), direction, debounceSeconds, mode, judgeProfile, review, trigger, maxWaitSeconds, maxBatchMessages, humanTakeover, humanHold: false, maxRepliesPerHour, status, reconcileAfter: this.nowSeconds(), activeAfter: this.nowSeconds(), createdAt: this.nowIso(), updatedAt: this.nowIso(),
+        profile: profile.trim(), direction, debounceSeconds, mode, judgeProfile, review, humanConsultation, trigger, maxWaitSeconds, maxBatchMessages, humanTakeover, humanHold: false, maxRepliesPerHour, status, reconcileAfter: this.nowSeconds(), activeAfter: this.nowSeconds(), createdAt: this.nowIso(), updatedAt: this.nowIso(),
       }
       validateOptions(rule)
       if (!['active', 'paused'].includes(status)) throw new Error('New rules must be active or paused.')
@@ -229,6 +243,29 @@ export class PromptAutomationRules {
   async get(name) { const rule = [...(await this.load()).rules].reverse().find((entry) => entry.name === name); return rule ? structuredClone(rule) : null }
   async getById(id) { const rule = (await this.load()).rules.find((entry) => entry.id === id); return rule ? structuredClone(rule) : null }
   async batchesFor(ruleId) { return (await this.load()).batches.filter((batch) => batch.ruleId === ruleId).map((batch) => structuredClone(batch)) }
+
+  async setHumanPolicy(name, policy) {
+    policy = withHumanDefaults(policy); validateHumanPolicy(policy)
+    return this.mutate(async (state) => {
+      const rule = state.rules.find((r) => r.name === name && r.status !== 'removed')
+      if (!rule) throw new Error('Unknown rule.')
+      if (state.batches.some((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || HUMAN_WAITING.has(b.status)))) throw new Error('Finish or cancel existing work before changing consultation policy.')
+      rule.humanConsultation = policy; rule.updatedAt = this.nowIso()
+      return { value: structuredClone(rule) }
+    })
+  }
+
+  async resumeHuman(batchId) {
+    return this.mutate(async (state) => {
+      const b = state.batches.find((b) => b.id === batchId && b.status === 'human_frozen')
+      const rule = state.rules.find((r) => r.id === b?.ruleId)
+      if (!b || rule?.status !== 'active' || rule.humanHold) throw new Error('Activate the rule and inspect frozen work first.')
+      if (b.human.post.delivery === 'delivery_unknown' || b.human.post.delivery === 'publishing') throw new Error('Resolve uncertain publication by its stable key before resuming.')
+      Object.assign(b, { status: b.human.cursor > b.human.processedCursor ? 'human_ready' : 'human_waiting', invalidated: null, invalidationKind: null, lastError: null })
+      b.human.decision = null; b.human.nextPollAt = this.nowIso()
+      return { value: structuredClone(b) }
+    })
+  }
 
   async setReviewExpiry(name, expiresSeconds) {
     return this.mutate(async (state) => {
@@ -302,7 +339,7 @@ export class PromptAutomationRules {
         const resolved = await resolveSourceJid(rule.sourceOriginalJid)
         if (!(sourceKeys(rule).has(message.jid) || resolved === message.jid) || timestamp < rule.activeAfter) continue
         if (state.batches.some((batch) => batch.ruleId === rule.id && batch.messageIds.includes(message.id))) continue
-        const manualBatch = rule.trigger === 'manual' ? state.batches.find((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status)) && timestamp >= Math.floor(Date.parse(b.createdAt) / 1000)) : null
+        const manualBatch = rule.trigger === 'manual' ? state.batches.find((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || HUMAN_WAITING.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status)) && timestamp >= Math.floor(Date.parse(b.createdAt) / 1000)) : null
         if (rule.trigger === 'manual' && !manualBatch) continue
         if (manualBatch) { manualBatch.messageIds.push(message.id); changed = true }
         if (message.fromMe && rule.humanTakeover) {
@@ -311,6 +348,21 @@ export class PromptAutomationRules {
           changed = true
         }
         if (!directionMatches(rule, message)) continue
+        const consulting = state.batches.find((b) => b.ruleId === rule.id && (HUMAN_WAITING.has(b.status) || (b.status === 'running' && b.report?.outcome === 'awaiting_human')))
+        if (consulting) {
+          if (!consulting.messageIds.includes(message.id)) consulting.messageIds.push(message.id)
+          consulting.sourceEpoch = (consulting.sourceEpoch || 0) + 1
+          journal(state, consulting.id, `source-${consulting.id}-${message.id}`, 'source', message)
+          if (consulting.status === 'clarifying') { consulting.invalidated = 'Source changed during consultation'; consulting.invalidationKind = 'human_replies' }
+          else if (['human_ack', 'human_resume'].includes(consulting.status)) {
+            // Re-read the evidence behind an acknowledged continuation if
+            // source facts changed before execution. No new human reply is
+            // needed merely to notice that the old answer is now insufficient.
+            consulting.human.processedCursor = Math.min(consulting.human.processedCursor, consulting.human.decision?.inputCursor ?? consulting.human.processedCursor)
+            consulting.status = 'human_ready'; consulting.human.decision = null; consulting.human.resolved = false
+          }
+          matched.push(structuredClone(consulting)); changed = true; continue
+        }
         for (const waiting of state.batches.filter((batch) => batch.ruleId === rule.id && ['waiting', 'review_waiting', 'review_ready'].includes(batch.status))) { finish(waiting, 'superseded', this.nowIso(), 'New incoming messages supersede the pending follow-up or draft.'); changed = true }
         // A message arriving during generation invalidates that response. The
         // job can finish recording its work; the next job sees this report.
@@ -334,7 +386,7 @@ export class PromptAutomationRules {
 
   async reconcile(messages, { resolveSourceJid = async (jid) => jid } = {}) {
     const state = await this.load()
-    const rules = await Promise.all(state.rules.filter((rule) => rule.status === 'active').map(async (rule) => ({ ...rule, currentJid: await resolveSourceJid(rule.sourceOriginalJid), manualAfter: rule.trigger === 'manual' ? Math.min(...state.batches.filter((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status))).map((b) => Math.floor(Date.parse(b.createdAt) / 1000))) : 0 })))
+    const rules = await Promise.all(state.rules.filter((rule) => rule.status === 'active').map(async (rule) => ({ ...rule, currentJid: await resolveSourceJid(rule.sourceOriginalJid), manualAfter: rule.trigger === 'manual' ? Math.min(...state.batches.filter((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || HUMAN_WAITING.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready'].includes(b.status))).map((b) => Math.floor(Date.parse(b.createdAt) / 1000))) : 0 })))
     const seen = new Map(rules.map((rule) => [rule.id, new Set(state.batches.filter((batch) => batch.ruleId === rule.id).flatMap((batch) => batch.messageIds))]))
     const own = new Set(state.outbound.map((entry) => `${entry.jid}:${entry.messageId}`))
     const candidates = messages.filter((message) => message.source === 'live' && USER_CONTENT_TYPES.has(message.type) && !own.has(`${message.jid}:${message.id}`) && rules.some((rule) => [rule.sourceJid, rule.sourceOriginalJid, rule.currentJid].includes(message.jid) && message.timestamp >= Math.max(rule.activeAfter, rule.reconcileAfter || 0, rule.manualAfter) && !seen.get(rule.id).has(message.id) && (directionMatches(rule, message) || (message.fromMe && rule.humanTakeover && !rule.humanHold))))
@@ -342,26 +394,30 @@ export class PromptAutomationRules {
     return candidates.length
   }
 
-  async claimDue({ workspaces = {}, maxConcurrent = 3 } = {}) {
+  async claimDue({ workspaces = {}, maxConcurrent = 3, connected = true } = {}) {
     return this.mutate(async (state) => {
       const running = state.batches.filter((item) => ACTIVE.has(item.status))
-      const workspaceHolds = state.batches.filter((item) => item.status === 'uncertain' && item.workspaceLock && !item.reviewedAt)
+      const workspaceHolds = state.batches.filter((item) => (item.status === 'uncertain' && item.workspaceLock && !item.reviewedAt) || HUMAN_WAITING.has(item.status))
       if (running.length >= maxConcurrent) return { value: null, save: false }
-      const candidates = state.batches.filter((entry) => ['pending', 'waiting', 'review_ready'].includes(entry.status) && Date.parse(entry.dueAt) <= this.now()).sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
+      const candidates = state.batches.filter((entry) => ['pending', 'waiting', 'review_ready', 'human_ready', 'human_resume'].includes(entry.status) && Date.parse(entry.dueAt) <= this.now()).sort((a, b) => Date.parse(a.dueAt) - Date.parse(b.dueAt))
       for (const batch of candidates) {
         const rule = state.rules.find((item) => item.id === batch.ruleId)
         if (!rule || rule.status === 'removed' || (!batch.observe && (rule.status !== 'active' || rule.humanHold))) continue
+        if (!connected && batch.status !== 'human_ready') continue
+        if (batch.status === 'human_ready' && (!batch.human.caughtUp || Date.parse(batch.human.replyDueAt || batch.dueAt) > this.now())) continue
         const keys = new Set([rule.sourceJid, rule.sourceOriginalJid, rule.destinationJid, rule.destinationOriginalJid, batch.sourceJid])
-        const proposedWorkspace = batch.status === 'review_ready' ? null : workspaces[rule.profile] || null
+        const proposedWorkspace = ['review_ready', 'human_ready'].includes(batch.status) ? null : workspaces[rule.profile] || null
         const overlaps = (other) => proposedWorkspace && other && (proposedWorkspace === other || proposedWorkspace.startsWith(`${other}${path.sep}`) || other.startsWith(`${proposedWorkspace}${path.sep}`))
-        if (workspaceHolds.some((item) => overlaps(item.workspaceLock))) continue
+        if (workspaceHolds.some((item) => item.id !== batch.id && (overlaps(item.reservedWorkspace || item.workspaceLock) || item.ruleId === batch.ruleId || [item.sourceJid, state.rules.find((r) => r.id === item.ruleId)?.destinationJid].some((key) => keys.has(key))))) continue
         const busy = running.some((other) => {
           const otherRule = state.rules.find((item) => item.id === other.ruleId)
           return other.ruleId === rule.id || [other.sourceJid, otherRule?.sourceJid, otherRule?.sourceOriginalJid, otherRule?.destinationJid, otherRule?.destinationOriginalJid].some((key) => keys.has(key))
             || overlaps(other.workspaceLock || workspaces[otherRule?.profile])
         })
         if (busy) continue
-        Object.assign(batch, { status: batch.status === 'review_ready' ? 'reviewing' : rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, invalidationKind: null, report: null, reviewAction: null })
+        Object.assign(batch, { status: batch.status === 'human_ready' ? 'clarifying' : batch.status === 'review_ready' ? 'reviewing' : rule.judgeProfile && !batch.decision ? 'judging' : 'running', runId: id(), workspaceLock: proposedWorkspace, startedAt: this.nowIso(), attempt: (batch.attempt || 0) + 1, invalidated: null, invalidationKind: null, report: null, reviewAction: null })
+        if (batch.status === 'running') batch.reservedWorkspace = proposedWorkspace
+        if (batch.status === 'clarifying') { batch.human.readCursor = batch.human.processedCursor; batch.human.sourceReadCursor = 0; batch.human.sourceReadEpoch = null; batch.human.decision = null }
         return { value: structuredClone(batch) }
       }
       return { value: null, save: false }
@@ -369,7 +425,10 @@ export class PromptAutomationRules {
   }
 
   async defer(batchId, seconds = 15) {
-    return this.transition(batchId, (batch) => Object.assign(batch, { status: batch.status === 'reviewing' ? 'review_ready' : 'pending', dueAt: new Date(this.now() + seconds * 1000).toISOString() }))
+    return this.transition(batchId, (batch) => {
+      if (batch.invalidated) { if (batch.human) batch.status = 'human_frozen'; else finish(batch, 'canceled', this.nowIso(), batch.invalidated); return }
+      Object.assign(batch, { status: batch.status === 'clarifying' ? 'human_ready' : batch.status === 'reviewing' ? 'review_ready' : batch.human?.resolved ? 'human_resume' : 'pending', dueAt: new Date(this.now() + seconds * 1000).toISOString() })
+    })
   }
 
   async decide(batchId, runId, route, reason) {
@@ -393,7 +452,7 @@ export class PromptAutomationRules {
         return { value: structuredClone(previous), save: false }
       }
       if (rule.status !== 'active' || rule.humanHold) throw new Error('Activate/release the rule before triggering it.')
-      if (state.batches.some((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready', 'uncertain'].includes(b.status)))) throw new Error('This rule already has pending or uncertain work; inspect it before starting another trigger.')
+      if (state.batches.some((b) => b.ruleId === rule.id && (ACTIVE.has(b.status) || HUMAN_WAITING.has(b.status) || ['pending', 'waiting', 'review_waiting', 'review_ready', 'uncertain'].includes(b.status)))) throw new Error('This rule already has pending or uncertain work; inspect it before starting another trigger.')
       const batch = { id: id(), ruleId: rule.id, ruleName: name, sourceJid, messageIds: [], trigger: { key, reason }, status: 'pending', createdAt: this.nowIso(), dueAt: this.nowIso(), completedAt: null, lastError: null, output: null }
       state.batches.push(batch)
       return { value: structuredClone(batch) }
@@ -418,6 +477,7 @@ export class PromptAutomationRules {
       if (!batch) return { value: null, save: false }
       const rule = state.rules.find((item) => item.id === batch.ruleId)
       batch.output = String(result.output || '').slice(0, 8000)
+      if (result.session) { batch.providerSessions ||= {}; batch.providerSessions[stage] = result.session; journal(state, batch.id, `provider-${batch.runId}`, 'provider-session', { ...result.session, stage, nativeDeferred: Boolean(result.nativeQuestion), at: this.nowIso() }) }
       const sends = state.outbound.filter((entry) => entry.batchId === batch.id)
       batch.sendCount = sends.filter((entry) => entry.status === 'accepted').length
       batch.summary = batch.report?.summary || batch.summary || null
@@ -452,6 +512,9 @@ export class PromptAutomationRules {
         finish(batch, 'failed', this.nowIso(), 'Agent exited without recording an outcome. Inspect its audit; completion is not proof of resolution.')
       } else if (rule.mode === 'observe' || batch.observe) {
         finish(batch, 'observed', this.nowIso())
+      } else if (batch.report.outcome === 'awaiting_human') {
+        batch.status = 'human_waiting'
+        if (result.nativeQuestion) batch.human.nativeQuestion = result.nativeQuestion
       } else if (batch.report.outcome === 'awaiting_review') {
         batch.status = 'review_waiting'
       } else if (batch.report.outcome === 'waiting') {
@@ -584,6 +647,12 @@ export class PromptAutomationRules {
     return this.mutate(async (state) => {
       const recovered = []
       for (const batch of state.batches.filter((entry) => ACTIVE.has(entry.status))) {
+        if (batch.status === 'clarifying') {
+          if (batch.invalidated && batch.invalidationKind !== 'human_replies') batch.status = 'human_frozen'
+          else if (!batch.invalidated && batch.human.decision?.cursor === batch.human.cursor && batch.human.decision.sourceEpoch === (batch.sourceEpoch || 0)) commitHumanDecision(batch, this.nowIso())
+          else { Object.assign(batch, { status: 'human_ready', invalidated: null, invalidationKind: null }); batch.human.decision = null }
+          recovered.push(structuredClone(batch)); continue
+        }
         if (batch.status === 'reviewing') {
           // Interpretation has no external side effects. A committed decision
           // survives restart; otherwise present the unprocessed replies again.
@@ -609,5 +678,5 @@ export class PromptAutomationRules {
 export function formatPromptAutomation(rule, batches = []) {
   const counts = batches.reduce((all, batch) => ({ ...all, [batch.status]: (all[batch.status] || 0) + 1 }), {})
   const direction = rule.direction === 'from-me' ? 'mensajes propios' : rule.direction === 'incoming' ? 'entrantes' : 'ambas direcciones'
-  return `${rule.name} — ${rule.status}${rule.humanHold ? ' (control humano)' : ''}\n  Modo: ${rule.mode || 'live'}; juez: ${rule.judgeProfile || 'sin juez'}; pausa por mensaje propio: ${rule.humanTakeover ? 'sí' : 'no'}\n  Disparador: ${rule.trigger || 'messages'}; revisión: ${rule.review ? `${rule.review.actor} (${rule.review.profile})` : 'sin revisión'}\n  Perfil: ${rule.profile}; debounce: ${rule.debounceSeconds}s; máximo: ${rule.maxWaitSeconds || 'legacy'}s; límite: ${rule.maxRepliesPerHour || 20} respuestas/hora\n  Fuente: ${rule.source} (${rule.sourceJid}; ${direction})\n  Destino autorizado: ${rule.destination} (${rule.destinationJid})\n  Ejecuciones: ${Object.entries(counts).map(([key, count]) => `${count} ${key}`).join(', ') || 'ninguna'}\n  Envíos aceptados por WhatsApp: ${batches.reduce((n, batch) => n + (batch.sendCount || 0), 0)} (no equivale a lectura)`
+  return `${rule.name} — ${rule.status}${rule.humanHold ? ' (control humano)' : ''}\n  Modo: ${rule.mode || 'live'}; juez: ${rule.judgeProfile || 'sin juez'}; pausa por mensaje propio: ${rule.humanTakeover ? 'sí' : 'no'}\n  Disparador: ${rule.trigger || 'messages'}; revisión: ${rule.review ? `${rule.review.actor} (${rule.review.profile})` : 'sin revisión'}\n  Consulta humana: ${rule.humanConsultation ? `${rule.humanConsultation.actor} (${rule.humanConsultation.profile}); sin cancelación por demora` : 'sin configurar'}\n  Perfil: ${rule.profile}; debounce: ${rule.debounceSeconds}s; máximo: ${rule.maxWaitSeconds || 'legacy'}s; límite: ${rule.maxRepliesPerHour || 20} respuestas/hora\n  Fuente: ${rule.source} (${rule.sourceJid}; ${direction})\n  Destino autorizado: ${rule.destination} (${rule.destinationJid})\n  Ejecuciones: ${Object.entries(counts).map(([key, count]) => `${count} ${key}`).join(', ') || 'ninguna'}\n  Envíos aceptados por WhatsApp: ${batches.reduce((n, batch) => n + (batch.sendCount || 0), 0)} (no equivale a lectura)`
 }

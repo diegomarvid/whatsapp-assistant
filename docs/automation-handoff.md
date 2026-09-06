@@ -1,7 +1,7 @@
 # Guía técnica y continuidad de automatizaciones
 
 Punto de entrada para retomar el desarrollo desde otra sesión o equipo. Describe
-el código **0.10.1**, el despliegue y la evidencia revisados el **2026-09-06**.
+el código **0.11.0**, el despliegue y la evidencia revisados el **2026-09-06**.
 El estado operativo es una fotografía de esa fecha: consultar el CLI antes de actuar.
 
 ## Qué leer y qué está funcionando
@@ -14,25 +14,46 @@ El estado operativo es una fotografía de esa fecha: consultar el CLI antes de a
 4. [Estado privado](private-state.md) y [recuperación del bridge](onboarding-and-recovery.md):
    ubicación de datos y cuidados al cambiar instalación o sesión.
 
-Siguiente capacidad diseñada: [consultas humanas durante el trabajo](human-consultation-design.md).
-Define cómo pausar una tarea, conversar por replies en el mismo bot y confirmar
-antes de retomar, con o sin draft final. **Es un diseño pendiente de implementación**;
-0.10.1 todavía no ofrece consultas con continuación de trabajo.
-La [comparación técnica de Codex y Claude](provider-consultation-research.md)
-documenta las funciones nativas aprovechables, las flags que hoy las desactivan
-y las pruebas de compatibilidad previas a implementarlas.
+La [guía de consultas humanas](human-consultations.md) define la implementación
+0.11: tarea estable, diario SQLite, preguntas y replies de varias rondas,
+confirmación publicada antes de continuar y reanudación de sesión nativa para
+Codex y Claude. Funciona con o sin revisión del mensaje final. El
+[diseño](human-consultation-design.md) y la
+[investigación de proveedores](provider-consultation-research.md) conservan los
+antecedentes; para configurar o desarrollar, usar el contrato de la guía actual.
 
-El motor y el adaptador están en `main`, commit de implementación `6ca5161`.
-El daemon local ejecuta 0.10.1, con la sesión existente, conexión abierta e
-ingestión saludable. **Las tres reglas conservadas de laboratorio/soporte están
-pausadas**, sin revisión humana pendiente ni proveedor ejecutándose al verificar.
-El seguimiento temporal de Codex también está pausado. Retomar documentación
-o desarrollo no autoriza reactivarlas.
+### Evidencia de 0.11, 2026-09-06
 
-La distribución tiene un pendiente separado: al verificar, npm aún ofrecía
-0.9.7 y la release descargable era v0.10.0. Para reproducir **0.10.1**, usar el
-código de ese commit o un `main` posterior verificado y generar su paquete;
-no asumir que instalar la última versión del registro obtiene estos cambios.
+- `npm run check` y **221 pruebas** pasan, incluyendo esperas superiores a una
+  semana, varias rondas, ediciones, paginación, cambios del chat antes de retomar,
+  publicaciones ambiguas, pausa y recuperación transaccional.
+- **Codex 0.153.4 y Claude Code 2.1.263 reales**, sin terminal interactiva:
+  pregunta de color, aclaración del tono, confirmación y continuación en la misma
+  sesión del ejecutor. En estas dos pruebas el canal y las respuestas humanas
+  fueron simulados; ambos terminaron `completed`, con cero envíos a WhatsApp.
+- **Telegram real + Claude:** el humano respondió la primera pregunta y recibió
+  una segunda consulta coherente. Un reinicio durante la espera conservó el
+  mismo trabajo y sesión sin duplicar el mensaje. Al registrar esta evidencia,
+  queda pendiente la respuesta humana al segundo mensaje y el cierre del ciclo.
+- El receptor Telegram v2 se desplegó en Linux con **18 pruebas de servicio**
+  aprobadas y long polling saludable. Los CLIs nativos se probaron en macOS sin
+  interfaz; falta UAT de ambos proveedores autenticados en el VPS elegido.
+
+La prueba neutra reproducible es `wa automation human test`; usa un bridge de
+fixtures sin conexión ni endpoints de envío a WhatsApp. El caso histórico de
+draft y envío aprobado se documenta más abajo y no debe confundirse con esta
+prueba de consulta y reanudación.
+
+Las tres reglas conservadas de laboratorio/soporte siguen pausadas. Retomar
+el desarrollo no las activa. Los detalles de instalación local y de cada piloto
+están en el expediente privado. Antes de migrar 0.10 → 0.11, parar el daemon
+anterior y respaldar el estado coherentemente: el schema v4 no admite volver a
+una versión antigua contra el mismo archivo.
+
+La distribución pública se debe verificar por separado: una instalación del
+registro o de Homebrew puede ir detrás de `main`. Se puede reproducir esta versión
+con el código 0.11.0, `npm ci`, sus verificaciones y un tarball de `npm pack`.
+No asumir que la última versión del registro tiene estas capacidades.
 
 ## Recorrido completo
 
@@ -82,6 +103,8 @@ interpretación del modelo y la comprobación previa al envío.
 | --- | --- |
 | Bridge y API local | [server.js](../src/server.js): eventos, mirror, endpoints y comprobaciones de acceso. |
 | Reglas y cola | [prompt-automation-rules.js](../src/prompt-automation-rules.js): agrupación, estados, pausas, novedades, outbox, migración y recuperación. |
+| Consultas humanas | [automation-human.js](../src/automation-human.js): diálogo, respuestas autorizadas, confirmación, reanudación y recuperación de publicación. |
+| Diario durable | [automation-store.js](../src/automation-store.js): control y eventos en una misma transacción SQLite. |
 | Coordinador | [automation-worker.js](../src/automation-worker.js): etapas, cobertura fresca, concurrencia, procesos e interrupción. |
 | Revisión humana | [automation-reviews.js](../src/automation-reviews.js): publicación, feedback, versiones, decisiones, vencimiento y entrega aprobada. |
 | Contrato externo | [review-adapter.js](../src/review-adapter.js): validación, proceso JSON sin shell, límites y normalización de identidad/ediciones. |
@@ -124,11 +147,14 @@ Se puede responder al día siguiente si el plazo sigue vigente y el contexto no
 fue invalidado. Esperar más tiempo no concede aprobación. El daemon y el canal
 deben estar disponibles para procesar; una Mac dormida no ejecuta el flujo.
 
-El estado de reglas es schema v3 y lee v1/v2. Se escribe con lock de proceso y
-reemplazo atómico. El mirror es SQLite. Feedback y cursor de recepción se guardan
+El estado de reglas es schema v4 en SQLite y migra v1/v2/v3 JSON, manteniendo
+pausas e historial. Los escritores conservan el lock de proceso; cada cambio
+de control y sus eventos se guardan en una transacción. El JSON original pasa
+a ser un marcador que rechazan las versiones antiguas. El mirror usa otra base SQLite. Feedback y cursor de recepción se guardan
 antes de invocar al intérprete; `processedCursor` registra por separado lo ya
 decidido. Pendientes e inciertos se conservan; terminales por mensajes y outbox
-aceptado usan retención de siete días. Las claves de disparos manuales se
+aceptado usan retención de siete días, salvo trabajos con consulta humana y sus
+envíos, que se conservan junto con el diario sin poda automática. Las claves de disparos manuales se
 conservan indefinidamente para impedir duplicados del scheduler.
 
 La publicación reserva una clave estable antes de llamar al canal; WhatsApp
@@ -287,9 +313,11 @@ no debe contener conversaciones, identidades, destinos ni credenciales reales.
 - **UAT del ciclo de cambios:** versión 2, cancelación, audio, espera de un día
   y reinicio durante espera. Comprobar un solo envío exacto y que una respuesta
   vieja o una novedad del chat no autorice una propuesta desactualizada.
-- **Operación:** vista unificada de pendientes con regla, modelo, versión,
+- **Operación de drafts:** vista unificada de pendientes con regla, modelo, versión,
   vencimiento, última consulta y error; confirmaciones visibles en el canal al
-  aprobar/cancelar/entregar. Hoy la evidencia completa está en el CLI y el estado.
+  aprobar/cancelar/entregar. Las consultas ya tienen `human list/show`, modelo,
+  rondas, errores y confirmación antes de continuar; los drafts conservan su
+  contrato independiente. Hoy la evidencia completa está en el CLI y el estado.
 - **Disponibilidad:** host siempre encendido, salud del bridge/proveedor/canal y
   backup periódico consistente de la cola externa; hoy hay backup manual del
   despliegue, no una política automática verificada para ese servicio.

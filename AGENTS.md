@@ -81,14 +81,13 @@ automation work: it maps the code, current deployment snapshot, real pilot evide
 private operational context and remaining validation. Preserve recorded pauses;
 reading or improving this repository does not reactivate a pilot.
 
-[`docs/human-consultation-design.md`](docs/human-consultation-design.md) specifies
-the proposed multi-turn consultation and work continuation feature. It is not
-implemented in 0.10.1; do not treat its proposed CLI commands as available or a
-human clarification as approval of a WhatsApp draft.
-Read [`docs/provider-consultation-research.md`](docs/provider-consultation-research.md)
-before implementing native provider suspension/resume. Pin runtime capabilities,
-distinguish deferred results from completion, and preserve engine-owned approvals,
-checkpoints and per-run credentials when reusing a provider session.
+Read [`docs/human-consultations.md`](docs/human-consultations.md) before changing
+consultation behavior. It is implemented in 0.11: durable multi-turn dialogue,
+acknowledgement before continuation, native executor sessions and scoped per-run
+credentials. The older design/research documents explain the proposal; the runtime
+guide defines the actual CLI and remaining limits. Never interpret a consultation
+answer as a WhatsApp draft approval. Verify real native session behavior with the
+neutral `wa automation human test` after a provider upgrade.
 
 Read `docs/autonomous-conversations.md` before changing automation semantics or
 activating a rule. New rules default to observation; retain legacy configuration
@@ -96,7 +95,7 @@ when migrating. The user may explicitly authorize a live pilot for one chat.
 Use the `wa automation` tools for judge decisions and executor outcomes. Never
 parse narrative model output into a send. Tests must cover server send guards,
 human takeover, outbound-origin exclusion, interrupted jobs and restart repair.
-Rule state is schema v3 (reads v1/v2); keep a private snapshot before installing/downgrading.
+Rule state is schema v4 in SQLite (imports v1/v2/v3 JSON). Stop old writers and keep a coherent private backup before upgrading. Never downgrade against the v4 storage marker.
 
 Read `docs/draft-review.md` before changing review semantics. Review is an optional,
 generic adapter contract, independent of business integrations. Keep real policies,

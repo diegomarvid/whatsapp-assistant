@@ -26,6 +26,9 @@ import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
 import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
+import { consultationSmoke } from '../src/consultation-smoke.js'
+import { withHumanDefaults, validateHumanPolicy, HUMAN_WAITING } from '../src/human-policy.js'
+import { AutomationHuman, runHumanAdapter } from '../src/automation-human.js'
 import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
 import { validateReviewPolicy, runReviewAdapter, withReviewDefaults } from '../src/review-adapter.js'
 import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
@@ -339,6 +342,15 @@ Herramientas internas del agente (sólo con el permiso efímero de su corrida):
   wa automation result resolved|no_reply|needs_human|waiting --summary "resultado y pendientes" [--resume-after <segundos>]
   wa automation draft submit --text "mensaje exacto" --reason "contexto para el revisor"
   wa automation draft context
+  wa automation human-policy check|status <file>
+  wa automation human-policy set <rule> <file>
+  wa automation human list [--pending]
+  wa automation human show <work-id> [--after <cursor>]
+  wa automation human reconcile|resume <work-id>
+  wa automation human test --profile <name> --state-dir <private-directory> [--policy <file>]
+  wa automation human ask --question "duda" --reason "motivo" --checkpoint "trabajo realizado y pendiente"
+  wa automation human context [--after <cursor>] [--source-after <cursor>]
+  wa automation human decide ask|wait|continue|cancel --cursor <n> --reply <id> --text "pregunta o confirmación" --summary "resumen acumulado" [--answers-json <json>]
   wa automation draft decide approve|revise|cancel|wait --revision <n> --cursor <n> --reply <id> --reason "interpretación" [--text "nueva versión"]
 
 Guías: docs/autonomous-conversations.md y docs/draft-review.md. automation forward fue retirado.`,
@@ -707,6 +719,76 @@ async function agentsCommand(args) {
 
 async function automationCommand(args) {
   const kind = args.shift()
+  if (kind === 'human') {
+    const action = args.shift()
+    if (action === 'test') {
+      const name = extractOption(args, '--profile'); const directory = extractOption(args, '--state-dir'); const filename = extractOption(args, '--policy')
+      assertNoArguments(args, 'wa automation human test --profile <name> --state-dir <private-directory> [--policy <file>]')
+      const profile = await agentProfiles.get(name); if (!profile || !directory) throw new Error('A configured profile and dedicated private test directory are required.')
+      const policy = filename ? withHumanDefaults(JSON.parse(await fs.readFile(path.resolve(filename), 'utf8'))) : null
+      if (policy) validateHumanPolicy(policy)
+      const result = await consultationSmoke({ profile, stateDir: path.resolve(directory), policy })
+      if (!['completed', 'human_waiting', 'human_ready'].includes(result.status)) process.exitCode = 1
+      return
+    }
+    if (action === 'ask') {
+      const question = extractOption(args, '--question'); const reason = extractOption(args, '--reason')
+      let checkpoint = extractOption(args, '--checkpoint'); const filename = extractOption(args, '--checkpoint-file')
+      if (filename) { if (checkpoint) throw new Error('Use checkpoint or checkpoint-file.'); checkpoint = await fs.readFile(path.resolve(filename), 'utf8') }
+      assertNoArguments(args, 'wa automation human ask')
+      return console.log(JSON.stringify(await bridgePost('/automation/human/ask', { question, reason, checkpoint }, 'Could not record consultation'), null, 2))
+    }
+    if (action === 'context') {
+      const after = extractOption(args, '--after'); const sourceAfter = extractOption(args, '--source-after'); assertNoArguments(args, 'wa automation human context')
+      return console.log(JSON.stringify(await request('/automation/human?' + new URLSearchParams({ ...(after === null ? {} : { after }), ...(sourceAfter === null ? {} : { sourceAfter }) })), null, 2))
+    }
+    if (action === 'decide') {
+      const decision = args.shift(); const cursor = Number(extractOption(args, '--cursor'))
+      const replyId = extractOption(args, '--reply'); const text = extractOption(args, '--text'); const summary = extractOption(args, '--summary')
+      const answers = extractOption(args, '--answers-json'); assertNoArguments(args, 'wa automation human decide')
+      return console.log(JSON.stringify(await bridgePost('/automation/human/decision', { action: decision, cursor, replyId, text, summary, ...(answers ? { answers: JSON.parse(answers) } : {}) }, 'Could not decide consultation'), null, 2))
+    }
+    if (action === 'list') {
+      const pending = args.includes('--pending'); if (pending) args.splice(args.indexOf('--pending'), 1)
+      assertNoArguments(args, 'wa automation human list [--pending]')
+      const state = await promptAutomations.load(); const profiles = await agentProfiles.list()
+      const rows = state.batches.filter((b) => b.human && (!pending || HUMAN_WAITING.has(b.status))).map((b) => {
+        const rule = state.rules.find((r) => r.id === b.ruleId)
+        const profile = profiles.find((p) => p.name === rule.profile); const interpreter = profiles.find((p) => p.name === rule.humanConsultation?.profile)
+        return { workId: b.id, automation: b.ruleName, ruleStatus: rule.status, status: b.status, parked: Boolean(b.human.parked), question: b.human.post.text, round: b.human.round,
+          actor: rule.humanConsultation?.actor, executor: { profile: profile?.name, provider: profile?.provider, model: profile?.model }, interpreter: { profile: interpreter?.name, provider: interpreter?.provider, model: interpreter?.model }, lastError: b.human.lastError || b.lastError, providerSessions: b.providerSessions }
+      })
+      return console.log(JSON.stringify(rows, null, 2))
+    }
+    if (action === 'show') {
+      const id = args.shift(); const after = Number(extractOption(args, '--after') || 0); assertNoArguments(args, 'wa automation human show <work-id>')
+      const b = (await promptAutomations.load()).batches.find((b) => b.id === id && b.human)
+      if (!b) throw new Error('Unknown consultation.')
+      const events = await promptAutomations.store.events(id, { after })
+      return console.log(JSON.stringify({ work: b, events, nextCursor: events.at(-1)?.seq || after }, null, 2))
+    }
+    if (action === 'reconcile') {
+      const id = args.shift(); assertNoArguments(args, 'wa automation human reconcile <work-id>')
+      return console.log(JSON.stringify(await new AutomationHuman(promptAutomations).reconcilePublication(id), null, 2))
+    }
+    if (action === 'resume') {
+      const id = args.shift(); assertNoArguments(args, 'wa automation human resume <work-id>')
+      return console.log(JSON.stringify(await promptAutomations.resumeHuman(id), null, 2))
+    }
+    throw new Error('Use human ask|context|decide|list|show|reconcile|resume|test. Cancel with automation prompt cancel <work-id> --reason.')
+  }
+  if (kind === 'human-policy') {
+    const action = args.shift(); const name = action === 'set' ? args.shift() : null; const filename = args.shift()
+    assertNoArguments(args, 'wa automation human-policy check|status|set [rule] <file>')
+    if (!['check', 'status', 'set'].includes(action) || !filename) throw new Error('Use human-policy check|status <file> or set <rule> <file>.')
+    const policy = withHumanDefaults(JSON.parse(await fs.readFile(path.resolve(filename), 'utf8'))); validateHumanPolicy(policy)
+    if (!policy) throw new Error('A policy is required.')
+    const profile = await agentProfiles.get(policy.profile)
+    if (!profile || profile.workspace || (await promptHealth(profile)).status !== 'unchanged') throw new Error('Consultation interpreter requires an unchanged profile without a workspace.')
+    const status = action === 'check' ? null : await runHumanAdapter(policy.adapter, { op: 'status' })
+    if (action === 'set' && (!status?.capabilities?.dialogues || !status?.capabilities?.idempotentInspection)) throw new Error('The adapter must support durable dialogue protocol v2 and publication inspection.')
+    return console.log(JSON.stringify(action === 'set' ? await promptAutomations.setHumanPolicy(name, policy) : action === 'status' ? status : { valid: true, ...policy }, null, 2))
+  }
   if (kind === 'draft') {
     const action = args.shift()
     if (action === 'context') {
@@ -787,6 +869,7 @@ async function automationCommand(args) {
     const maxBatch = extractOption(args, '--max-batch')
     const judgeProfile = extractOption(args, '--judge')
     const reviewFile = extractOption(args, '--review-policy')
+    const humanFile = extractOption(args, '--human-policy')
     const trigger = extractOption(args, '--trigger') || 'messages'
     const mode = extractOption(args, '--mode') || 'observe'
     const humanTakeover = extractOption(args, '--human-takeover')
@@ -827,6 +910,14 @@ async function automationCommand(args) {
       if (!interpreter || interpreter.workspace || (await promptHealth(interpreter)).status !== 'unchanged') throw new Error('Review profile must exist, have an unchanged prompt, and no workspace.')
       if ((await probeProvider(interpreter.provider)).status !== 'available') throw new Error('Review interpreter is unavailable; run wa agents doctor.')
     }
+    const humanConsultation = humanFile ? withHumanDefaults(JSON.parse(await fs.readFile(path.resolve(humanFile), 'utf8'))) : null
+    validateHumanPolicy(humanConsultation)
+    if (humanConsultation) {
+      const interpreter = await agentProfiles.get(humanConsultation.profile)
+      if (!interpreter || interpreter.workspace || (await promptHealth(interpreter)).status !== 'unchanged') throw new Error('Consultation interpreter requires a valid profile without a workspace.')
+      const status = await runHumanAdapter(humanConsultation.adapter, { op: 'status' })
+      if (!status?.capabilities?.dialogues || !status?.capabilities?.idempotentInspection) throw new Error('The adapter must support durable dialogue protocol v2 and publication inspection.')
+    }
     const [source, destination] = await Promise.all([resolve(sourceTarget), resolve(destinationTarget)])
     const sourceOriginalJid = source.originalJid || source.jid
     const destinationOriginalJid = destination.originalJid || destination.jid
@@ -842,7 +933,7 @@ async function automationCommand(args) {
       destinationOriginalJid,
       profile: profile.name,
       direction: fromMe ? 'from-me' : any ? 'any' : 'incoming',
-      debounceSeconds, mode, judgeProfile, review, trigger,
+      debounceSeconds, mode, judgeProfile, review, humanConsultation, trigger,
       ...(maxWait !== null ? { maxWaitSeconds: Number(maxWait) } : {}),
       ...(maxBatch !== null ? { maxBatchMessages: Number(maxBatch) } : {}),
       ...(maxReplies !== null ? { maxRepliesPerHour: Number(maxReplies) } : {}),

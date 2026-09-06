@@ -13,7 +13,21 @@ export async function maspeakDrafts(request, config, run = runAdapterCommand) {
     if (!result.ok) throw new Error('Maspeak drafts service rejected the request.')
     return result.data
   }
-  if (request.version !== 1) throw new Error('Unsupported protocol version.')
+  if (request.version === 2) {
+    if (request.op === 'status') { const status = await invoke(['status']); return { version: 2, capabilities: { dialogues: status.dialogue_protocol === 2, idempotentInspection: status.dialogue_protocol === 2 }, status } }
+    if (['open', 'post'].includes(request.op)) {
+      const p = request.post
+      const result = await invoke([...(request.op === 'open' ? ['dialogue-open'] : ['dialogue-post', request.dialogueId]), '--key', p.key, '--target', p.target, '--actor', p.actor, '--automation', p.automation, '--kind', p.kind, '--text', p.text, ...(p.reason ? ['--reason', p.reason] : [])])
+      return { id: result.id, messageId: result.message_id, status: result.state === 'sent' ? 'published' : 'delivery_unknown' }
+    }
+    if (request.op === 'inspect') {
+      const result = await invoke(['dialogue-inspect', '--key', request.key])
+      return result ? { id: result.id, key: result.key, messageId: result.message_id, status: result.state === 'sent' ? 'published' : 'delivery_unknown' } : { status: 'not_found' }
+    }
+    if (request.op === 'events') request = { ...request, op: 'replies', draftId: request.dialogueId, dialogue: true }
+    else throw new Error('Unsupported dialogue operation.')
+  }
+  if (![1, 2].includes(request.version)) throw new Error('Unsupported protocol version.')
   if (request.op === 'status') return { status: await invoke(['status']) }
   if (request.op === 'publish') {
     const { draft } = request
@@ -21,7 +35,7 @@ export async function maspeakDrafts(request, config, run = runAdapterCommand) {
     return { id: result.id, messageId: result.message_id, status: result.state === 'sent' ? 'published' : 'delivery_unknown' }
   }
   if (request.op === 'replies') {
-    const result = await invoke(['replies', request.draftId, '--after', String(request.after), '--wait', '0'])
+    const result = await invoke([request.dialogue ? 'dialogue-events' : 'replies', request.draftId, '--after', String(request.after), '--wait', '0'])
     const replies = []
     for (const r of result.replies) {
       const reply = { id: r.reply_id, cursor: r.cursor, draftId: r.draft_id, messageId: String(r.message_id), replyToMessageId: String(r.reply_to_message_id || ''), author: r.from ? { id: `telegram:${r.from.id}`, label: [r.from.first_name, r.from.last_name].filter(Boolean).join(' '), isBot: r.from.is_bot === true } : null, senderChat: r.sender_chat || null, date: r.date, text: r.text, edited: r.edited === true, audio: r.audio ? { mimeType: r.audio.mime_type, duration: r.audio.duration } : null }
