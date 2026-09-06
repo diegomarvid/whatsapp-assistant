@@ -335,8 +335,17 @@ incluye el código y la guía del adaptador, sin estado privado. Se verificó el
 adaptador Maspeak con una consulta real de salud: servicio conectado, modo de
 respuestas activo, sin ejecución de WhatsApp por parte de ese servicio.
 
-La publicación y entrega de extremo a extremo están probadas con transportes
-simulados; queda la prueba humana real al configurar una política de laboratorio.
+También se completó una prueba humana real con una regla temporal en un chat
+directo: un mensaje entrante nuevo disparó el borrador, el adaptador lo publicó
+en Telegram y el motor quedó esperando sin enviar a WhatsApp. Una respuesta del
+revisor autorizado al mensaje del bot produjo la decisión de aprobación; se
+envió una sola vez el texto exacto de esa versión. El bridge registró el mensaje
+y recibió `DELIVERY_ACK` (estado 3); esa evidencia confirma entrega, no lectura.
+
+Al terminar se pausaron la regla de prueba y su seguimiento de Codex. Los IDs,
+textos, políticas y evidencia quedaron en estado privado. Esta prueba valida el
+camino de aprobación; reescritura, cancelación y feedback por audio mantienen
+cobertura simulada, pero todavía no se validaron con intervención humana real.
 
 ### Despliegue del 2026-09-06
 
