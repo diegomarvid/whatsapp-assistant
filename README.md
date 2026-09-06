@@ -82,45 +82,52 @@ npm install -g @diegomarvid/whatsapp-assistant && wa setup
 - Nada se envía por iniciativa del bridge, salvo una automatización que hayas
   creado explícitamente y que figure como activa.
 
-### 🧠 Automatizar con un prompt que usa `wa`
+### 🧠 Conversaciones autónomas
 
-El bridge puede agrupar mensajes nuevos por chat sin gastar IA cuando no hay
-novedades. Al vencer el debounce, ejecuta un agente en un directorio efímero:
-el prompt es quien lee el chat con `wa` y corre `wa send`. El bridge no clasifica
-texto, no devuelve JSON de acciones y jamás convierte la salida del modelo en
-un envío.
+El bridge recibe eventos, agrupa mensajes con una espera deslizante y un máximo,
+y ejecuta el agente sólo cuando hay trabajo. Un juez opcional decide `ai`, `human`
+o `none` mediante una herramienta sin permisos de envío. El agente usa `wa`
+directamente y registra un resultado durable: la salida narrativa nunca se
+convierte automáticamente en un mensaje.
 
 ```bash
-wa agents providers
-wa agents profile set diego-a-florencia-luna \
-  --provider codex --model gpt-5.6-luna --reasoning-effort max \
-  --prompt-file /ruta/absoluta/diego-a-florencia.md
-wa agents profile set nelcor-platform \
-  --provider claude --model opus --effort medium \
-  --prompt-file /ruta/absoluta/nelcor-platform.md \
-  --workspace /ruta/absoluta/conciliar
-wa agents doctor diego-a-florencia-luna    # binario, versión y flags; no consume tokens
-wa automation prompt add diego-a-florencia \
-  --from diego --to florencia --from-me \
-  --profile diego-a-florencia-luna --debounce 300 --yes
-wa automation prompt list
-wa automation prompt list --verbose  # regla + modelo, effort, prompt, workspace y timeout
-wa automation prompt show diego-a-florencia
-wa automation prompt pause diego-a-florencia
+wa agents profile set charla --provider codex --model gpt-5.6-sol \
+  --reasoning-effort medium --timeout-ms 180000 \
+  --prompt-file /ruta/absoluta/ai-group.md
+wa agents doctor charla
+wa agents validate charla          # prueba neutra explícita, consume proveedor
+wa automation prompt add prueba \
+  --from grupo@g.us --to grupo@g.us --profile charla --any \
+  --debounce 15 --max-wait 60 --human-takeover off --mode live --paused --yes
+wa automation prompt show prueba --json
+wa automation prompt preview prueba --ids MENSAJE_1,MENSAJE_2
+wa automation prompt resume prueba # activa sólo para mensajes futuros
+wa automation prompt pause prueba
 ```
 
-El agente recibe sólo IDs de evento, no texto; trata todo contenido de WhatsApp
-como datos no confiables. Puede consultar únicamente el chat fuente y enviar al
-único destino configurado. Cada corrida recibe una capability efímera que el
-bridge valida por operación y JID: cambiar aliases o el shim local no amplía
-ese permiso. Sin `--workspace`, no puede editar código; con `--workspace`,
-puede trabajar sólo en ese directorio y el prompt debe definir expresamente el
-alcance de releases. Si el proveedor se interrumpe, la ejecución queda
-`uncertain` y no se repite automáticamente, porque podría haber alcanzado a
-enviar. Los perfiles aceptan IDs nuevos de modelos: Claude usa `--effort` y
-Codex usa `--reasoning-effort`; “Luna Max” es
-`--model gpt-5.6-luna --reasoning-effort max`. El prompt se fija con una huella
-privada y debe readoptarse explícitamente si cambia.
+Las reglas nuevas usan `observe` por defecto. La observación y el juez reciben
+permisos del bridge sin envío y se ejecutan sin workspace. Para chats compartidos
+con una persona, `--human-takeover on` pone el chat bajo control humano cuando
+responde el dueño. `human`/`release` permiten intervenir expresamente. Una pausa
+invalida los envíos e interrumpe el proveedor; si había trabajo parcial requiere
+revisión. Un mensaje nuevo invalida la respuesta de la corrida en curso. No puede retirar
+un envío ya iniciado. Los mensajes de la automatización nunca vuelven a disparar
+reglas. Un límite por hora corta posibles bucles con otros bots.
+
+Cada corrida conserva decisión, resultado, resumen, IDs de envío y errores por
+separado. Los trabajos largos admiten hasta una hora por ejecución y esperas
+programadas explícitas. Se serializa el trabajo por conversación y workspace,
+con hasta tres corridas independientes. Efectos inciertos requieren revisión y
+no se reintentan automáticamente.
+
+El bridge limita por operación y chat las credenciales efímeras. El alcance de
+archivos y comandos del agente depende además del proveedor y su sandbox: no
+es un aislamiento de sistema operativo implementado por este CLI. Un perfil con
+`--workspace` debe definir expresamente el alcance de trabajo y releases.
+
+[Guía completa, recuperación y prueba del grupo CLI CLI](docs/autonomous-conversations.md).
+Prompts reutilizables: [grupo dedicado a IA](docs/prompts/ai-group.md) y
+[juez de soporte](docs/prompts/platform-judge.md).
 
 `wa automation forward` fue retirado: no queda ningún reenvío determinista
 activo ni una capa que “arregle” texto antes del prompt.

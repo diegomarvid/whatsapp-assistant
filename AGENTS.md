@@ -4,7 +4,7 @@ Read [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md)
 before changing the bridge, its session, or its cache.
 
 The normal operating mode is deliberately narrow: recent sync only, seven-day
-local retention in the durable SQLite mirror, no autonomous sending, and audio transcription only on demand. A packaged installation keeps its private state outside the code package (`~/Library/Application Support/WhatsApp Assistant` on macOS); never make a formula, update, or uninstall write over that state.
+local retention in the durable SQLite mirror, no autonomous sending unless an explicitly configured rule authorizes it, and audio transcription only on demand. A packaged installation keeps its private state outside the code package (`~/Library/Application Support/WhatsApp Assistant` on macOS); never make a formula, update, or uninstall write over that state.
 Do not reset `auth/`, change history-sync settings, or ask for another QR
 without first following the recovery checks in that document.
 
@@ -73,3 +73,13 @@ without search terms using
 `wa review <contact> --date YYYY-MM-DD --start HH:MM --end HH:MM --json`.
 This second pass must return every message in that local
 clock window so the AI can notice context that no keyword query could match.
+
+## Autonomous conversations
+
+Read `docs/autonomous-conversations.md` before changing automation semantics or
+activating a rule. New rules default to observation; retain legacy configuration
+when migrating. The user may explicitly authorize a live pilot for one chat.
+Use the `wa automation` tools for judge decisions and executor outcomes. Never
+parse narrative model output into a send. Tests must cover server send guards,
+human takeover, outbound-origin exclusion, interrupted jobs and restart repair.
+Rule state is schema v2; keep a private snapshot before installing/downgrading.
