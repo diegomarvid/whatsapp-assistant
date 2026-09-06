@@ -73,8 +73,20 @@ Guardar fuera del repositorio una política JSON completa, por ejemplo
 El adaptador es un programa de confianza configurado por el operador. Se ejecuta
 sin shell, con argumentos separados, timeout de 35 segundos y salida limitada.
 `pollSeconds` admite 5–3600; `expiresSeconds`, 60–2592000; `maxRevisions`, 1–20.
-Cada publicación tiene una clave estable. El plazo cuenta desde la primera
-propuesta y no se reinicia al corregirla.
+Si se omite `expiresSeconds` al crear la regla, el plazo predeterminado es **siete
+días**. Las políticas existentes conservan su plazo explícito. Cada publicación
+tiene una clave estable. El plazo cuenta desde la primera propuesta y no se
+reinicia al corregirla.
+
+Para cambiar el plazo de una regla existente sin recrearla ni activarla:
+
+```sh
+wa automation prompt review-expiry conversacion-revisada --days 7
+```
+
+Admite de uno a treinta días. Actualiza la política para futuras propuestas y
+los borradores todavía vigentes, contando desde su creación original. No revive
+borradores vencidos, cancelados o completados; conserva pausas y control humano.
 
 ```sh
 wa automation review-policy check /ruta/privada/review-policy.json
@@ -212,7 +224,13 @@ Con un wrapper remoto, `command` puede ser
 
 Las identidades se representan como `telegram:ID_NUMERICO`. Configurar los IDs
 permitidos en la política privada. El adaptador usa `send`/`revise` con `--key`,
-`--actor`, `--target` y contexto; consulta `replies ID --after CURSOR --wait 0`.
+`--actor`, `--target` (nombre visible), `--automation`, `--reason`, `--revision`
+y `--text` (mensaje literal); consulta `replies ID --after CURSOR --wait 0`.
+Requiere un cliente/servicio Drafts con estos campos de presentación. El servicio
+renderiza MarkdownV2 con título, viñetas, motivo y mensaje separados; escapa el
+contenido literal y oculta los IDs de transporte. La identidad exacta de destino
+sigue guardada y verificada por el motor de WhatsApp. Actualizar cliente y
+servicio antes de instalar esta versión del adaptador.
 No interpreta «sí» o «no»: devuelve texto, identidad y ediciones literales.
 Con privacy mode de Telegram, responder directamente al mensaje del bot es el
 camino garantizado. Telegram puede no avisar al bot que se borró una respuesta;

@@ -27,7 +27,7 @@ import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
 import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
 import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
-import { validateReviewPolicy, runReviewAdapter } from '../src/review-adapter.js'
+import { validateReviewPolicy, runReviewAdapter, withReviewDefaults } from '../src/review-adapter.js'
 import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
 import { parseSince } from '../src/search-scope.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
@@ -318,6 +318,7 @@ Matching: palabras o frases completas, sin distinguir mayúsculas ni acentos. No
   wa automation prompt retry <batch-id> --yes            # sólo fallos sin efectos o previews
   wa automation prompt trigger <nombre> --key <operación-estable> --reason "contexto"
   wa automation review-policy check|status /ruta/privada/politica.json
+  wa automation prompt review-expiry <nombre> --days 7   # plazo de revisión; no reactiva la regla
 
 Opciones add: --mode observe|live (default observe), --judge <perfil>, --debounce 0..3600,
 --max-wait <segundos> (>= debounce), --max-batch 1..500 (default 100),
@@ -735,10 +736,10 @@ async function automationCommand(args) {
     const filename = args.shift()
     assertNoArguments(args, 'wa automation review-policy check|status <file>')
     if (!['check', 'status'].includes(action) || !filename) throw new Error('Use automation review-policy check|status <file>.')
-    const policy = JSON.parse(await fs.readFile(path.resolve(filename), 'utf8'))
+    const policy = withReviewDefaults(JSON.parse(await fs.readFile(path.resolve(filename), 'utf8')))
     validateReviewPolicy(policy)
     if (!policy) throw new Error('A review policy is required.')
-    return console.log(JSON.stringify(action === 'status' ? await runReviewAdapter(policy.adapter, { op: 'status' }) : { valid: true, actor: policy.actor, profile: policy.profile, reviewers: policy.reviewers, pollSeconds: policy.pollSeconds }, null, 2))
+    return console.log(JSON.stringify(action === 'status' ? await runReviewAdapter(policy.adapter, { op: 'status' }) : { valid: true, actor: policy.actor, profile: policy.profile, reviewers: policy.reviewers, pollSeconds: policy.pollSeconds, expiresSeconds: policy.expiresSeconds }, null, 2))
   }
   if (kind === 'context') {
     assertNoArguments(args, 'wa automation context')
@@ -762,6 +763,13 @@ async function automationCommand(args) {
     throw new Error('`wa automation forward` was retired and is not executed. Use `wa automation prompt` so the configured AI prompt itself reads and sends with `wa`.')
   }
   if (kind !== 'prompt') return usage()
+  if (action === 'review-expiry') {
+    const name = args.shift()
+    const days = Number(extractOption(args, '--days'))
+    assertNoArguments(args, 'wa automation prompt review-expiry <name> --days <1..30>')
+    if (!name || !Number.isInteger(days) || days < 1 || days > 30) throw new Error('Use automation prompt review-expiry <name> --days <1..30>.')
+    return console.log(JSON.stringify(await promptAutomations.setReviewExpiry(name, days * 86400), null, 2))
+  }
   if (action === 'trigger') {
     const name = args.shift()
     const key = extractOption(args, '--key')
@@ -811,7 +819,7 @@ async function automationCommand(args) {
       const judgeProvider = await probeProvider(judge.provider)
       if (judgeProvider.status !== 'available') throw new Error('Judge provider is unavailable; run wa agents doctor.')
     }
-    const review = reviewFile ? JSON.parse(await fs.readFile(path.resolve(reviewFile), 'utf8')) : null
+    const review = reviewFile ? withReviewDefaults(JSON.parse(await fs.readFile(path.resolve(reviewFile), 'utf8'))) : null
     validateReviewPolicy(review)
     if (reviewFile && !review) throw new Error('A review policy is required.')
     if (review) {

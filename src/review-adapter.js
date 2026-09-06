@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 
+export const DEFAULT_REVIEW_EXPIRY_SECONDS = 7 * 24 * 60 * 60
+
+export function withReviewDefaults(policy) {
+  return policy && typeof policy === 'object' ? { expiresSeconds: DEFAULT_REVIEW_EXPIRY_SECONDS, ...policy } : policy
+}
+
 export function validateReviewPolicy(policy) {
   if (policy === null) return
   if (!policy || policy.version !== 1) throw new Error('Review policy must have version: 1.')

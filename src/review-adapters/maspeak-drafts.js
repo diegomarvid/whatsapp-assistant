@@ -17,8 +17,7 @@ export async function maspeakDrafts(request, config, run = runAdapterCommand) {
   if (request.op === 'status') return { status: await invoke(['status']) }
   if (request.op === 'publish') {
     const { draft } = request
-    const context = `Automatización: ${draft.context.automation}\nMotivo: ${draft.context.reason}\nVersión: ${draft.revision}\n\nTexto propuesto para WhatsApp:\n${draft.text}`
-    const result = await invoke([...(draft.parentId ? ['revise', draft.parentId] : ['send']), '--key', draft.key, '--target', `${draft.target.label} · ${draft.target.jid}`, '--actor', draft.context.actor, '--text', context])
+    const result = await invoke([...(draft.parentId ? ['revise', draft.parentId] : ['send']), '--key', draft.key, '--target', draft.target.label, '--actor', draft.context.actor, '--automation', draft.context.automation, '--reason', draft.context.reason, '--revision', String(draft.revision), '--text', draft.text])
     return { id: result.id, messageId: result.message_id, status: result.state === 'sent' ? 'published' : 'delivery_unknown' }
   }
   if (request.op === 'replies') {

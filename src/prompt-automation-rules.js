@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { authorizedReply, latestReplies, validateReviewPolicy, validateStoredReview } from './review-adapter.js'
+import { authorizedReply, latestReplies, validateReviewPolicy, validateStoredReview, withReviewDefaults } from './review-adapter.js'
 
 const VERSION = 3
 const RULE_STATUSES = new Set(['active', 'paused', 'removed'])
@@ -205,6 +205,7 @@ export class PromptAutomationRules {
     mode = 'live', judgeProfile = null, review = null, trigger = 'messages', maxWaitSeconds = Math.min(3600, Math.max(60, debounceSeconds * 3)),
     maxBatchMessages = 100, humanTakeover = false, maxRepliesPerHour = 20, status = 'active',
   }) {
+    review = withReviewDefaults(review)
     if (!validName(name) || ![source, sourceJid, destination, destinationJid, profile].every(text) || ![sourceTarget, destinationTarget].every(validTarget)) {
       throw new Error('A rule name, source, destination, CLI targets, and AI profile are required.')
     }
@@ -228,6 +229,26 @@ export class PromptAutomationRules {
   async get(name) { const rule = [...(await this.load()).rules].reverse().find((entry) => entry.name === name); return rule ? structuredClone(rule) : null }
   async getById(id) { const rule = (await this.load()).rules.find((entry) => entry.id === id); return rule ? structuredClone(rule) : null }
   async batchesFor(ruleId) { return (await this.load()).batches.filter((batch) => batch.ruleId === ruleId).map((batch) => structuredClone(batch)) }
+
+  async setReviewExpiry(name, expiresSeconds) {
+    return this.mutate(async (state) => {
+      const rule = state.rules.find((item) => item.name === name)
+      if (!rule?.review || rule.status === 'removed') throw new Error('An existing rule with draft review is required.')
+      const review = { ...rule.review, expiresSeconds }
+      validateReviewPolicy(review)
+      rule.review = review
+      rule.updatedAt = this.nowIso()
+      let pendingUpdated = 0
+      for (const batch of state.batches.filter((b) => b.ruleId === rule.id && b.review && ['running', 'review_waiting', 'review_ready', 'reviewing'].includes(b.status))) {
+        // Never revive expired or terminal drafts. Keep the original start;
+        // changing the duration does not grant a fresh full window from now.
+        if (batch.invalidated || Date.parse(batch.review.expiresAt) <= this.now()) continue
+        batch.review.expiresAt = new Date(Date.parse(batch.review.revisions[0].createdAt) + expiresSeconds * 1000).toISOString()
+        pendingUpdated++
+      }
+      return { value: { name: rule.name, status: rule.status, expiresSeconds, pendingUpdated } }
+    })
+  }
 
   async setStatus(name, status) {
     if (!RULE_STATUSES.has(status)) throw new Error('Invalid prompt automation status.')

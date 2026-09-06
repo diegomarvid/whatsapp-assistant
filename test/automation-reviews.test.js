@@ -43,6 +43,42 @@ test('review policy is opt-in, validates identities and shell-free adapter confi
   assert.throws(() => validateReviewPolicy({ ...policy, pollSeconds: 0 }), /limits/)
 })
 
+test('new reviews default to seven days and accept human feedback the next day after recovery', async (t) => {
+  const { expiresSeconds: _expiry, ...withoutExpiry } = policy
+  const f = await fixture(t, { review: withoutExpiry })
+  assert.equal(f.rule.review.expiresSeconds, 604800)
+  const batch = await f.start(); await f.submit(batch)
+  f.advance(86400 + 60)
+  await f.rules.recoverInterrupted(); await f.reviews.recover()
+  await f.reviews.pollOne(batch.id)
+  assert.equal((await f.get(batch)).status, 'review_waiting')
+  assert.equal(await f.rules.claimDue(), null)
+  f.reply(); await f.reviews.pollOne(batch.id)
+  const reviewer = await f.rules.claimDue(); await f.decide(reviewer)
+  await f.rules.finishRun(batch.id, { ok: true }, { stage: 'review' })
+  await f.reviews.pollOne(batch.id)
+  assert.equal(f.sent.length, 1)
+})
+
+test('expiry can be extended for future and current drafts without reviving closed or expired work', async (t) => {
+  const f = await fixture(t); const batch = await f.start(); await f.submit(batch)
+  const original = (await f.get(batch)).review.revisions[0].createdAt
+  f.advance(1800)
+  assert.equal((await f.rules.setReviewExpiry(f.rule.name, 604800)).pendingUpdated, 1)
+  assert.equal((await f.get(batch)).review.expiresAt, new Date(Date.parse(original) + 604800000).toISOString())
+  f.advance(86400); await f.reviews.pollOne(batch.id)
+  assert.equal((await f.get(batch)).status, 'review_waiting')
+  f.advance(7 * 86400)
+  assert.equal((await f.rules.setReviewExpiry(f.rule.name, 30 * 86400)).pendingUpdated, 0)
+  await f.reviews.pollOne(batch.id)
+  assert.equal((await f.get(batch)).status, 'canceled')
+  await f.rules.setStatus(f.rule.name, 'paused')
+  assert.equal((await f.rules.setReviewExpiry(f.rule.name, 604800)).status, 'paused')
+  assert.equal((await f.get(batch)).status, 'canceled')
+  await assert.rejects(f.rules.setReviewExpiry(f.rule.name, 0), /limits/)
+  assert.equal((await f.rules.get(f.rule.name)).review.expiresSeconds, 604800)
+})
+
 test('v2 migration keeps legacy rules direct and preserves control state', async (t) => {
   const f = await fixture(t, { review: null, mode: 'observe', status: 'paused' })
   const state = await f.rules.load(); state.version = 2
@@ -341,7 +377,13 @@ test('Maspeak is an optional adapter: wraps send/revise and maps raw identity, e
   const draft = { key: 'stable-key', parentId: 'PARENT', revision: 2, text: 'Literal draft', target: { jid: 'target@g.us', label: 'Recipient' }, context: { actor: 'Owner', automation: 'general-rule', reason: 'Context for human' } }
   assert.equal((await maspeakDrafts({ version: 1, op: 'publish', draft }, config, run)).status, 'published')
   assert.ok(calls[0].includes('revise')); assert.ok(calls[0].includes('PARENT'))
-  assert.match(calls[0].at(-2), /general-rule\nMotivo: Context for human/)
+  const value = (flag) => calls[0][calls[0].indexOf(flag) + 1]
+  assert.equal(value('--target'), 'Recipient')
+  assert.equal(calls[0].includes('target@g.us'), false)
+  assert.equal(value('--automation'), 'general-rule')
+  assert.equal(value('--reason'), 'Context for human')
+  assert.equal(value('--revision'), '2')
+  assert.equal(value('--text'), draft.text)
   const result = await maspeakDrafts({ version: 1, op: 'replies', draftId: 'D', after: 0 }, config, run)
   assert.equal(result.replies[0].author.id, 'telegram:42')
   assert.equal(result.replies[0].text, 'Raw opinion'); assert.equal(result.replies[0].edited, true)
