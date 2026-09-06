@@ -18,6 +18,9 @@ Siguiente capacidad diseñada: [consultas humanas durante el trabajo](human-cons
 Define cómo pausar una tarea, conversar por replies en el mismo bot y confirmar
 antes de retomar, con o sin draft final. **Es un diseño pendiente de implementación**;
 0.10.1 todavía no ofrece consultas con continuación de trabajo.
+La [comparación técnica de Codex y Claude](provider-consultation-research.md)
+documenta las funciones nativas aprovechables, las flags que hoy las desactivan
+y las pruebas de compatibilidad previas a implementarlas.
 
 El motor y el adaptador están en `main`, commit de implementación `6ca5161`.
 El daemon local ejecuta 0.10.1, con la sesión existente, conexión abierta e

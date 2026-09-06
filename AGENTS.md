@@ -85,6 +85,10 @@ reading or improving this repository does not reactivate a pilot.
 the proposed multi-turn consultation and work continuation feature. It is not
 implemented in 0.10.1; do not treat its proposed CLI commands as available or a
 human clarification as approval of a WhatsApp draft.
+Read [`docs/provider-consultation-research.md`](docs/provider-consultation-research.md)
+before implementing native provider suspension/resume. Pin runtime capabilities,
+distinguish deferred results from completion, and preserve engine-owned approvals,
+checkpoints and per-run credentials when reusing a provider session.
 
 Read `docs/autonomous-conversations.md` before changing automation semantics or
 activating a rule. New rules default to observation; retain legacy configuration

@@ -6,6 +6,12 @@ en la [guía de continuidad](automation-handoff.md). Este documento define el
 comportamiento, los contratos, la migración y la prueba; no activa automatizaciones.
 Los comandos y campos nuevos que aparecen abajo son propuestas, no comandos actuales.
 
+La [investigación de Codex y Claude](provider-consultation-research.md) agrega una
+decisión al diseño: preferir sesiones nativas por trabajo/etapa para conservar
+contexto, manteniendo checkpoint y control de continuación propios. La estrategia
+concreta depende de las capacidades verificadas del proveedor; no equivale a
+que esta función ya esté disponible con los adaptadores actuales.
+
 ## Resultado buscado
 
 Una automatización puede detenerse cuando necesita información o una decisión
@@ -130,9 +136,12 @@ paso previsto y operaciones externas con evidencia de su resultado. Para código
 worktree, HEAD, inventario/huellas del diff y estado de procesos. No es necesario
 commitear trabajo incompleto, pero debe quedar aislado y verificable.
 
-La reanudación es una **nueva corrida del proveedor con ese contexto**. No depende
-de conservar una sesión interna de Codex/Claude ni de volver a ejecutar el prompt
-original desde cero. Se verifica el checkpoint antes de modificar o enviar algo.
+La reanudación es una **nueva corrida del proveedor con ese contexto**,
+preferentemente sobre su sesión nativa persistida. El motor conserva además un
+checkpoint independiente: si no se puede reanudar esa sesión, sólo reconstruye
+tras reconciliar los efectos y permisos. No vuelve a ejecutar el prompt original
+desde cero ni trata un ID de sesión como prueba de que es seguro continuar.
+Ver [estrategias por proveedor](provider-consultation-research.md#ajuste-concreto-del-diseño-común).
 
 ### Interpretar cada reply
 
@@ -225,6 +234,7 @@ No aplicar al diálogo pendiente la purga de siete días del mirror.
 | `dialogue_decisions` | Acción, evidencias, cursor y epochs usados, resumen y plan de continuación. |
 | `channel_outbox` | Publicación/confirmación/cierre, clave estable, hash del payload y aceptación/incertidumbre. |
 | `continuations` | Una entrada por decisión válida, checkpoint, claim, nuevo `runId` y resultado. |
+| `provider_sessions` | Proveedor/runtime, sesión por trabajo y etapa, herramienta pendiente si existe, estrategia de resume, huellas de prompt/política y checkpoint asociado. |
 
 Decisión y claim de continuación usan compare-and-swap sobre cursor, epochs y
 estado; índices únicos impiden duplicar una decisión o continuación al repetir
@@ -408,10 +418,11 @@ automática. Sólo una revisión factual puede reconciliar esos efectos.
 
 | Paso | Cambio concreto | Criterio de cierre |
 | --- | --- | --- |
+| 0. Compatibilidad de proveedor | Probar sesión/resume de Codex y suspensión nativa de Claude según la [investigación técnica](provider-consultation-research.md); ajustar runner y contrato de resultados en laboratorio. | Diferenciar suspensión de finalización; permisos renovados, sesión exacta y ningún efecto durante espera; documentar límites observados. |
 | 1. Store y migración | Introducir store transaccional para reglas, lotes, trabajo, checkpoint, diálogo, decisiones, outboxes y continuaciones; adaptar [prompt-automation-rules.js](../src/prompt-automation-rules.js) conservando su API donde sea posible. | Importación v1/v2/v3 conserva IDs/pausas; interrupción de migración no habilita dos escritores ni pierde cola. |
 | 2. Canal de diálogo | Extender `ops/drafts/service.py`, `client.py` y `scripts/cli/drafts.ts` del repo privado; añadir adaptador público de diálogo junto al [adaptador de drafts](../src/review-adapters/maspeak-drafts.js). | Mismo bot; root/follow-ups/replies/ediciones se asocian; idempotencia y v1 intactas; capacidades comprobables. |
 | 3. Suspensión | Implementar `human ask`, checkpoint y herramienta de contexto en [bin/wa.js](../bin/wa.js), [server.js](../src/server.js), [automation-capabilities.js](../src/automation-capabilities.js) y [automation-worker.js](../src/automation-worker.js). | La pregunta no se publica como espera segura hasta terminar la corrida; se retiran permisos y se libera el cupo IA. |
-| 4. Conversación y continuación | Coordinador `human-consultations.js`, etapa `clarify`, contexto del proveedor, decisiones, confirmación y reanudación con claim único. | Varios intercambios; confirmación aceptada antes de retomar; nuevos mensajes o feedback invalidan decisiones viejas. |
+| 4. Conversación y continuación | Coordinador `human-consultations.js`, etapa `clarify`, contexto/sesión del proveedor, decisiones, confirmación y reanudación con claim único. | Varios intercambios; confirmación aceptada antes de retomar; nuevos mensajes o feedback invalidan decisiones viejas; sesiones separadas por trabajo/etapa. |
 | 5. Operación | Bandeja de pendientes, inspección, cancelación, diagnóstico, retención/paginación y salud. | Identificar por qué espera cada tarea sin leer SQLite a mano; persistencia y bloqueo comprensibles. |
 | 6. UAT y entrega | Migración con backup, actualización del servicio antes del cliente, consultas opt-in y piloto expresamente acordado. | Evidencia real de los casos de abajo y pausa al cerrar; documentación de versión instalada. |
 
