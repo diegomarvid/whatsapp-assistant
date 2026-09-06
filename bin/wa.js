@@ -8,7 +8,7 @@ import path from 'node:path'
 import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import {
-  downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
+  bridgePost, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
   requireFreshCoverage, resolveMessageSelector, revokeMessage,
   sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
@@ -138,7 +138,7 @@ Comandos:
   wa schedule cancel <id>
   wa automation prompt add <nombre> --from <contacto> --to <contacto> --profile <perfil> [--from-me|--any] [--debounce <segundos>] --yes
   wa automation prompt list [--all] [--verbose]
-  wa automation prompt show|pause|resume|remove <nombre>
+  wa automation prompt show|pause|resume|human|release|remove <nombre>
   wa agents providers              # catálogo flexible: aliases útiles, no allow-list rígida
   wa agents profile set <nombre> --provider claude --model <id> --effort <nivel> --prompt-file <path> [--workspace <path>]
   wa agents profile set <nombre> --provider codex --model <id> --reasoning-effort <nivel> --prompt-file <path> [--workspace <path>]
@@ -303,7 +303,35 @@ Matching: palabras o frases completas, sin distinguir mayúsculas ni acentos. No
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa review contacto --date today --from incoming --any IP IPs dinámica dinámicas estática estáticas --context 4 --ids\n  wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nreview arma un paquete factual de una conversación: resuelve el LID actual, exige cobertura fresh, acota por fecha en America/Montevideo, busca palabras o frases completas ignorando mayúsculas y acentos, y agrega contexto sin duplicarlo. Cada match incluye su fecha y hora local. Después de descubrir cuándo se habló de un tema, repetí el comando sin términos y con --date, --start y --end para leer absolutamente todos los mensajes de ese tramo horario. --from incoming limita las coincidencias a lo que mandó el contacto, pero conserva ambos lados del diálogo como contexto; --from me hace lo inverso. --any acepta cualquier término; --all exige que todos aparezcan en el mismo mensaje. Las palabras se comparan completas: si importan singular y plural, indicá ambas variantes. --json conserva identidad, cobertura, ventana local, coincidencias con texto exacto y hora local, timeline y media cercana. Sin términos devuelve toda la ventana elegida; el default es hoy.\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>\n  wa schedule cancel <id>\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario antes de enviar. Ante un resultado ambiguo no reintenta: lo deja como uncertain para no duplicar mensajes. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
-    automation: `Automatizaciones guiadas por prompt:\n  wa automation prompt add diego-a-florencia --from diego --to florencia --profile diego-a-florencia-luna --from-me --debounce 300 --yes\n  wa automation prompt list\n  wa automation prompt list --verbose  # suma modelo, effort, prompt, workspace y timeout\n  wa automation prompt show diego-a-florencia\n  wa automation prompt pause|resume|remove diego-a-florencia\n\nEl worker sólo detecta mensajes nuevos del chat y los agrupa por el debounce: si no hay novedades, no llama ninguna IA. No lee, clasifica, reescribe ni extrae intención del texto. Cuando vence el debounce ejecuta el proveedor configurado en un directorio efímero; el prompt es quien usa \`wa history\`/\`wa message\` para analizar y \`wa send\` para enviar. La salida del modelo queda como auditoría y jamás se parsea para generar un envío. Por seguridad, la ejecución queda limitada al chat fuente y al único destinatario autorizado; los textos de WhatsApp son datos no confiables. Si el proveedor se interrumpe, el batch queda \`uncertain\` y no se reintenta automáticamente.\n\n\`automation forward\` fue retirado: las reglas deterministas anteriores no se ejecutan.`,
+    automation: `Conversaciones autónomas (eventos + espera + juez opcional):
+  wa automation prompt add prueba --from grupo@g.us --to grupo@g.us --profile charla --any --debounce 15 --max-wait 60 --mode live --human-takeover off --paused --yes
+  wa automation prompt add soporte --from cliente --to cliente --profile ejecutor --judge criterio --debounce 60 --max-wait 180 --mode observe --yes
+  wa automation prompt list [--all] [--verbose]
+  wa automation prompt mode <nombre> observe|live [--yes]
+  wa automation prompt show <nombre> [--json]
+  wa automation prompt preview <nombre> --ids <id,id,...>  # siempre observación; incluso pausada
+  wa automation prompt pause|resume|remove <nombre>
+  wa automation prompt human|release <nombre>            # control humano; release mira sólo novedades
+  wa automation prompt review <batch-id> --summary "verificación de trabajo y entrega"
+  wa automation prompt retry <batch-id> --yes            # sólo fallos sin efectos o previews
+
+Opciones add: --mode observe|live (default observe), --judge <perfil>, --debounce 0..3600,
+--max-wait <segundos> (>= debounce), --max-batch 1..500 (default 100),
+--max-replies-hour 1..100 (default 20), --human-takeover on|off, --paused, --from-me|--any.
+Sin novedades no hay llamadas a IA. Cada mensaje reinicia la espera hasta el máximo.
+Los mensajes propios de la automatización se excluyen antes de evaluar reglas.
+El juez sólo lee y registra ai/human/none; el ejecutor usa wa directamente.
+Observación bloquea envíos en el servidor y ejecuta sin workspace. La salida narrativa
+no se convierte en envíos. Pausa/control humano/novedades invalidan los envíos pendientes.
+Un envío ya iniciado no puede deshacerse. Los efectos inciertos no se reintentan.
+Los trabajos waiting continúan por tiempo; human requiere intervención explícita.
+
+Herramientas internas del agente (sólo con el permiso efímero de su corrida):
+  wa automation context
+  wa automation decision ai|human|none --reason "motivo"
+  wa automation result resolved|no_reply|needs_human|waiting --summary "resultado y pendientes" [--resume-after <segundos>]
+
+Guía completa: docs/autonomous-conversations.md. automation forward fue retirado.`,
     agents: `Perfiles de proveedores de IA:\n  Claude: wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md\n  Código acotado: wa agents profile set nelcor --provider claude --model opus --effort medium --prompt-file /ruta/prompt.md --workspace /ruta/absoluta/repo\n  Codex:  wa agents profile set seguimiento-codex --provider codex --model gpt-5.6-luna --reasoning-effort max --prompt-file /ruta/absoluta/prompt.md\n  wa agents profile list\n  wa agents profile show seguimiento\n  wa agents doctor seguimiento       # binario, versión y flags reales; no consume tokens\n  wa agents validate seguimiento     # prueba mínima neutra; sí puede consumir el proveedor\n  wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt real\n\nEstos comandos no crean reglas ni envían WhatsApps. El catálogo trae aliases útiles pero no bloquea modelos nuevos o IDs exactos: un perfil acepta el identificador que escribas. En Codex, “Luna Max” significa \`--model gpt-5.6-luna --reasoning-effort max\`. \`doctor\` detecta cambios del binario y \`validate\` prueba el proveedor, autenticación, modelo y flags elegidos. Claude usa \`--effort\`; Codex usa \`--reasoning-effort\`, que se traduce a su configuración \`model_reasoning_effort\`. \`--workspace\` agrega edición y Bash únicamente dentro de ese directorio local; sin él el agente queda WhatsApp-only. Los prompts se guardan como archivo privado referenciado por ruta, con huella y permisos seguros. Para una automatización, el prompt no devuelve una acción estructurada: usa el CLI \`wa\` directamente dentro del scope autorizado.`,
     data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
@@ -669,6 +697,23 @@ async function agentsCommand(args) {
 
 async function automationCommand(args) {
   const kind = args.shift()
+  if (kind === 'context') {
+    assertNoArguments(args, 'wa automation context')
+    return console.log(JSON.stringify(await request('/automation/context'), null, 2))
+  }
+  if (kind === 'decision') {
+    const route = args.shift()
+    const reason = extractOption(args, '--reason')
+    assertNoArguments(args, 'wa automation decision')
+    return console.log(JSON.stringify(await bridgePost('/automation/decision', { route, reason }, 'Could not record decision')))
+  }
+  if (kind === 'result') {
+    const outcome = args.shift()
+    const summary = extractOption(args, '--summary')
+    const resumeAfter = extractOption(args, '--resume-after')
+    assertNoArguments(args, 'wa automation result')
+    return console.log(JSON.stringify(await bridgePost('/automation/result', { outcome, summary, resumeAfter: resumeAfter === null ? null : Number(resumeAfter) }, 'Could not record result')))
+  }
   const action = args.shift()
   if (kind === 'forward') {
     throw new Error('`wa automation forward` was retired and is not executed. Use `wa automation prompt` so the configured AI prompt itself reads and sends with `wa`.')
@@ -680,6 +725,14 @@ async function automationCommand(args) {
     const destinationTarget = extractOption(args, '--to')
     const profileName = extractOption(args, '--profile')
     const debounce = extractOption(args, '--debounce')
+    const maxWait = extractOption(args, '--max-wait')
+    const maxBatch = extractOption(args, '--max-batch')
+    const judgeProfile = extractOption(args, '--judge')
+    const mode = extractOption(args, '--mode') || 'observe'
+    const humanTakeover = extractOption(args, '--human-takeover')
+    const maxReplies = extractOption(args, '--max-replies-hour')
+    const paused = args.includes('--paused')
+    if (paused) args.splice(args.indexOf('--paused'), 1)
     const fromMe = args.includes('--from-me')
     const any = args.includes('--any')
     const confirmed = args.includes('--yes')
@@ -697,10 +750,18 @@ async function automationCommand(args) {
     const provider = await probeProvider(profile.provider)
     if (provider.status !== 'available') throw new Error(`Cannot activate ${profile.name}: ${provider.detail || provider.issue}. Run \`wa agents doctor ${profile.name}\` after fixing it.`)
     const debounceSeconds = debounce === null ? 300 : Number(debounce)
-    if (!Number.isInteger(debounceSeconds) || debounceSeconds < 5 || debounceSeconds > 3600) throw new Error('Use --debounce with an integer from 5 to 3600 seconds.')
+    if (!Number.isInteger(debounceSeconds) || debounceSeconds < 0 || debounceSeconds > 3600) throw new Error('Use --debounce with an integer from 0 to 3600 seconds.')
+    if (humanTakeover !== null && !['on', 'off'].includes(humanTakeover)) throw new Error('Use --human-takeover on|off.')
+    if (judgeProfile) {
+      const judge = await agentProfiles.get(judgeProfile)
+      if (!judge || (await promptHealth(judge)).status !== 'unchanged') throw new Error('Judge profile is missing or its prompt changed.')
+      if (judge.workspace) throw new Error('The judge must use a profile without a workspace.')
+      const judgeProvider = await probeProvider(judge.provider)
+      if (judgeProvider.status !== 'available') throw new Error('Judge provider is unavailable; run wa agents doctor.')
+    }
     const [source, destination] = await Promise.all([resolve(sourceTarget), resolve(destinationTarget)])
-    const sourceOriginalJid = source.originalJid || (source.phone ? phoneToJid(source.phone) : source.jid)
-    const destinationOriginalJid = destination.originalJid || (destination.phone ? phoneToJid(destination.phone) : destination.jid)
+    const sourceOriginalJid = source.originalJid || source.jid
+    const destinationOriginalJid = destination.originalJid || destination.jid
     const rule = await promptAutomations.add({
       name,
       source: source.alias || source.name || sourceTarget,
@@ -713,9 +774,14 @@ async function automationCommand(args) {
       destinationOriginalJid,
       profile: profile.name,
       direction: fromMe ? 'from-me' : any ? 'any' : 'incoming',
-      debounceSeconds,
+      debounceSeconds, mode, judgeProfile,
+      ...(maxWait !== null ? { maxWaitSeconds: Number(maxWait) } : {}),
+      ...(maxBatch !== null ? { maxBatchMessages: Number(maxBatch) } : {}),
+      ...(maxReplies !== null ? { maxRepliesPerHour: Number(maxReplies) } : {}),
+      humanTakeover: humanTakeover === null ? !fromMe && !any && source.jid === destination.jid : humanTakeover === 'on',
+      status: paused ? 'paused' : 'active',
     })
-    return console.log(`Prompt automation ${rule.name} is active: ${rule.source} (${rule.sourceJid}) → ${rule.destination} (${rule.destinationJid}); profile ${rule.profile}; debounce ${rule.debounceSeconds}s. It only queues new live message IDs; the configured prompt uses wa to inspect and send.`)
+    return console.log(`Prompt automation ${rule.name} is ${rule.status} (${rule.mode}): ${rule.source} (${rule.sourceJid}) → ${rule.destination} (${rule.destinationJid}); profile ${rule.profile}; debounce ${rule.debounceSeconds}s. It only queues new live message IDs; the configured prompt uses wa to inspect and send.`)
   }
   if (action === 'list') {
     const all = args.includes('--all')
@@ -743,15 +809,56 @@ async function automationCommand(args) {
     }
     return
   }
+  if (action === 'mode') {
+    const name = args.shift()
+    const mode = args.shift()
+    const yes = args.includes('--yes')
+    if (yes) args.splice(args.indexOf('--yes'), 1)
+    assertNoArguments(args, 'wa automation prompt mode')
+    if (mode === 'live' && !yes) throw new Error('Enabling sends requires --yes after reviewing the scoped rule.')
+    const rule = await promptAutomations.setMode(name, mode)
+    return console.log(`${rule.name}: ${rule.mode}; ${rule.status}. New messages only.`)
+  }
+  if (action === 'preview') {
+    const name = args.shift()
+    const ids = extractOption(args, '--ids')
+    assertNoArguments(args, 'wa automation prompt preview')
+    if (!name || !ids) throw new Error('Use: wa automation prompt preview <name> --ids <id,id,...>')
+    return console.log(JSON.stringify(await bridgePost('/automation/preview', { name, messageIds: ids.split(',').map((id) => id.trim()) }, 'Could not queue observation'), null, 2))
+  }
+  if (action === 'review') {
+    const batchId = args.shift()
+    const summary = extractOption(args, '--summary')
+    assertNoArguments(args, 'wa automation prompt review')
+    return console.log(JSON.stringify(await promptAutomations.review(batchId, summary), null, 2))
+  }
+  if (action === 'retry') {
+    const batchId = args.shift()
+    const yes = args.includes('--yes')
+    if (yes) args.splice(args.indexOf('--yes'), 1)
+    assertNoArguments(args, 'wa automation prompt retry')
+    if (!yes) throw new Error('Review the failed batch, then retry with --yes.')
+    return console.log(JSON.stringify(await promptAutomations.retry(batchId), null, 2))
+  }
+  if (['human', 'release'].includes(action)) {
+    const name = args.shift()
+    assertNoArguments(args, `wa automation prompt ${action}`)
+    const rule = await promptAutomations.setHuman(name, action === 'human')
+    return console.log(`${rule.name}: ${rule.humanHold ? 'human control; automatic sends blocked' : 'human control released; future messages only'}.`)
+  }
   if (['show', 'pause', 'resume', 'remove'].includes(action)) {
     const name = args.shift()
     if (!name) return usage()
+    const asJson = args.includes('--json')
+    if (asJson) args.splice(args.indexOf('--json'), 1)
     assertNoArguments(args, `wa automation prompt ${action}`)
+    if (asJson && action !== 'show') throw new Error('--json is only available for show.')
     if (action === 'show') {
       const rule = await promptAutomations.get(name)
       if (!rule) throw new Error(`Unknown prompt automation: ${name}`)
       const batches = await promptAutomations.batchesFor(rule.id)
-      const detail = batches.slice(-20).map((batch) => `  - ${batch.id}: ${batch.status}; ${batch.messageIds.length} mensaje(s); vencía ${batch.dueAt}${batch.lastError ? `; detalle: ${batch.lastError}` : ''}`).join('\n')
+      if (asJson) return console.log(JSON.stringify({ rule, batches, outbound: (await promptAutomations.load()).outbound.filter((entry) => entry.ruleId === rule.id) }, null, 2))
+      const detail = batches.slice(-20).map((batch) => `  - ${batch.id}: ${batch.status}; ${batch.messageIds.length} mensaje(s); envíos ${batch.sendCount || 0}; vence ${batch.dueAt}${batch.decision ? `; juez: ${batch.decision.route} — ${batch.decision.reason}` : ''}${batch.summary ? `; resultado: ${batch.summary}` : ''}${batch.lastError ? `; detalle: ${batch.lastError}` : ''}`).join('\n')
       return console.log(`${formatPromptAutomation(rule, batches)}${detail ? `\n  Últimas ejecuciones:\n${detail}` : ''}`)
     }
     const status = action === 'pause' ? 'paused' : action === 'resume' ? 'active' : 'removed'

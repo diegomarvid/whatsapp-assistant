@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { AgentProfiles } from '../src/agent-providers.js'
 import { startStubBridge } from './helpers/stub-bridge.js'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -233,4 +234,23 @@ test('calls and group-events consult the events endpoint', async () => {
   const events = await wa('group-events', 'work@g.us')
   assert.equal(events.status, 0, events.stderr)
   assert.ok(bridge.reads.some((line) => line.includes('/events?kind=group')))
+})
+
+test('automation creation preserves numeric group JIDs instead of treating them as phone numbers', async () => {
+  const prompt = path.join(bridge.stateRoot, 'group-prompt.md')
+  await fs.writeFile(prompt, 'Reply to the authorized group.', { mode: 0o600 })
+  const profiles = new AgentProfiles(path.join(bridge.stateRoot, 'data', 'agent-profiles.json'))
+  await profiles.set({ name: 'group-profile', provider: 'claude', model: 'opus', promptFile: prompt })
+  const fakebin = path.join(bridge.stateRoot, 'fakebin')
+  await fs.mkdir(fakebin)
+  await fs.writeFile(path.join(fakebin, 'claude'), '#!/bin/sh\necho "--model --no-session-persistence --tools --strict-mcp-config --system-prompt-file --output-format --effort"\n', { mode: 0o700 })
+  const args = [cli, 'automation', 'prompt', 'add', 'numeric-group', '--from', '12345@g.us', '--to', '12345@g.us', '--profile', 'group-profile', '--any', '--mode', 'live', '--paused', '--yes']
+  const created = await new Promise((resolve) => execFile(process.execPath, args, { encoding: 'utf8', env: { ...bridge.env, PATH: `${fakebin}:${bridge.env.PATH}` } }, (error, stdout, stderr) => resolve({ error, stdout, stderr })))
+  assert.equal(created.error, null, created.stderr)
+  const shown = await wa('automation', 'prompt', 'show', 'numeric-group', '--json')
+  assert.equal(shown.status, 0, shown.stderr)
+  const { rule } = JSON.parse(shown.stdout)
+  assert.equal(rule.sourceOriginalJid, '12345@g.us')
+  assert.equal(rule.destinationOriginalJid, '12345@g.us')
+  assert.equal(rule.status, 'paused')
 })

@@ -63,7 +63,7 @@ function validIdentifier(value, label) {
 function validTimeout(value) {
   if (value === null || value === undefined) return 60000
   const parsed = Number(value)
-  if (!Number.isInteger(parsed) || parsed < 1000 || parsed > 300000) throw new Error('timeoutMs must be an integer between 1000 and 300000.')
+  if (!Number.isInteger(parsed) || parsed < 1000 || parsed > 3600000) throw new Error('timeoutMs must be an integer between 1000 and 3600000.')
   return parsed
 }
 

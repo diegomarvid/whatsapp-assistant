@@ -123,14 +123,8 @@ test('AI provider help separates free diagnostics from an explicit billable vali
   assert.match(result.stdout, /no crean reglas ni envían WhatsApps/)
 })
 
-test('automation help makes the provider prompt the only message decision-maker', () => {
+test('automation help documents observation, judge, human control and outcomes', () => {
   const result = spawnSync(process.execPath, [cli, 'help', 'automation'], { encoding: 'utf8' })
   assert.equal(result.status, 0)
-  assert.match(result.stdout, /wa automation prompt add diego-a-florencia/)
-  assert.match(result.stdout, /wa automation prompt list --verbose/)
-  assert.match(result.stdout, /no llama ninguna IA/)
-  assert.match(result.stdout, /wa history/)
-  assert.match(result.stdout, /wa send/)
-  assert.match(result.stdout, /jamás se parsea/)
-  assert.match(result.stdout, /uncertain/)
+  for (const term of ['wa automation prompt add', '--mode observe|live', '--judge', 'human|release', 'wa automation decision', 'wa automation result', 'no se convierte en envíos', 'inciertos no se reintentan']) assert.ok(result.stdout.includes(term), term)
 })
