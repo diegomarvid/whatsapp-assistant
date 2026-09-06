@@ -1,5 +1,9 @@
 # Conversaciones autónomas — v2
 
+Para revisión humana de borradores y disparos desde cualquier integración, ver
+[el patrón general de drafts](draft-review.md). Esa extensión usa schema v3 y
+conserva las reglas v1/v2 sin revisión. Los comandos del piloto siguen vigentes.
+
 Versión 0.10.0, 2026-09-06. El piloto se prepara para el grupo CLI CLI;
 no modifica las reglas de otros clientes ni procesa retrospectivamente el chat.
 
@@ -285,7 +289,6 @@ el proceso, y exige revisar el posible trabajo parcial. El ejecutor debe revisar
 novedades antes de nuevas operaciones externas y antes de responder.
 
 ### Ejecuciones sin límite de tiempo
-
 
 `wa agents profile set cli-cli-v2 --timeout-ms 0` desactiva el corte por duración de la ejecución completa (razonamiento y herramientas). Los límites finitos existentes conservan su valor. El permiso de WhatsApp conserva su alcance y se revoca al terminar o detener la ejecución; no caduca por reloj en este modo. Pausar la regla, reiniciar el daemon o los límites propios del proveedor pueden interrumpir una ejecución.
 

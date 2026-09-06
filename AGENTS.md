@@ -82,4 +82,11 @@ when migrating. The user may explicitly authorize a live pilot for one chat.
 Use the `wa automation` tools for judge decisions and executor outcomes. Never
 parse narrative model output into a send. Tests must cover server send guards,
 human takeover, outbound-origin exclusion, interrupted jobs and restart repair.
-Rule state is schema v2; keep a private snapshot before installing/downgrading.
+Rule state is schema v3 (reads v1/v2); keep a private snapshot before installing/downgrading.
+
+Read `docs/draft-review.md` before changing review semantics. Review is an optional,
+generic adapter contract, independent of business integrations. Keep real policies,
+reviewer identities, destinations and feedback outside the public repository.
+Interpret feedback in the AI layer; enforce revision, identity, cursor, exact text,
+destination, pause and expiry in the engine. Never resend ambiguous publications
+or deliveries, and never spend model calls merely waiting for human feedback.

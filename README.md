@@ -126,6 +126,13 @@ es un aislamiento de sistema operativo implementado por este CLI. Un perfil con
 `--workspace` debe definir expresamente el alcance de trabajo y releases.
 
 [Guía completa, recuperación y prueba del grupo CLI CLI](docs/autonomous-conversations.md).
+
+Para mensajes que necesitan aprobación, una regla puede usar una política de
+revisión: publica el borrador con contexto, espera feedback humano, permite
+corregir/cancelar y entrega únicamente la versión aprobada. El canal se conecta
+mediante un adaptador genérico; Maspeak/Mustpeak Drafts para Telegram es opcional.
+También admite disparos idempotentes desde Codex u otro scheduler, sin mantener
+un modelo activo durante la espera. [Contrato y configuración](docs/draft-review.md).
 Prompts reutilizables: [grupo dedicado a IA](docs/prompts/ai-group.md) y
 [juez de soporte](docs/prompts/platform-judge.md).
 
