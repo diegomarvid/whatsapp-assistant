@@ -189,6 +189,50 @@ New rules accept `--human-policy /private/human-policy.json` alongside an indepe
 `--review-policy`. The optional Maspeak adapter is just one implementation: core
 consultation code has no dependency on that CLI, service, bot or account.
 
+## Technical coordination versus owner decisions
+
+Configure this distinction in both the executor prompt and the human policy's
+`instructions`; enabling a Telegram adapter alone does not define when to ask.
+For an AI-operated technical group:
+
+- Perform authorized technical work with existing tools and access.
+- Ask the participant directly in the source WhatsApp group for commands, tests,
+  screenshots, configuration or actions on their own machine/account. Do not ask
+  the owner on Telegram to relay these requests.
+- After a technical question in WhatsApp, record a factual result and leave the
+  rule available for the participant's next message. Do not use `needs_human`
+  or `human ask` merely because an external technical response is pending.
+- Reserve Telegram consultations for important decisions that genuinely belong
+  to the configured owner: whether to continue, consequential alternatives, or
+  scope/commitments outside existing authorization. Explain the decision,
+  alternatives, recommendation and consequences. Missing technical access alone
+  is not automatically an owner decision.
+- For those owner decisions, use `human ask` with a checkpoint, exit immediately,
+  and let the durable consultation flow resume the executor after feedback.
+
+### Installing current repository code on another machine
+
+Check the installed package and registry version against the desired Git commit.
+The npm release can lag behind GitHub; a plain registry update may not contain
+this flow. Fetch the repository, preserve local changes and select a reviewed
+commit containing this guide and the consultation implementation. Read
+`docs/onboarding-and-recovery.md` before touching the running installation.
+Run `npm ci`, `npm run check` and `npm test` in that checkout. Before replacing
+binaries, safely pause/drain work, stop the old daemon using its actual service
+manager and create the coherent private backup described above. Install with
+`npm install -g /absolute/path/to/checkout`, then start the existing service and
+verify `wa doctor`, `wa status` and source-chat coverage. Preserve authentication,
+state directories and existing rules; do not initialize a second bridge.
+
+Create a separate interpreter profile without a workspace and a private policy
+using the actual operator's authorized Telegram identity and adapter credentials.
+Do not copy another user's secrets or assume draft creation credentials support
+consultations. Require `human-policy check` and `human-policy status` to confirm
+healthy transport and dialogue protocol 2. Configure the existing rule, preserving
+its provider/model and using `--timeout-ms 0` for unlimited execution. Validate
+with `wa automation human test` and a real authorized reply before claiming that
+resume works. Do not alter a profile or policy during an unresolved consultation.
+
 ## Agent tools and operator commands
 
 ```sh
