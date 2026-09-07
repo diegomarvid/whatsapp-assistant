@@ -76,6 +76,11 @@ clock window so the AI can notice context that no keyword query could match.
 
 ## Autonomous conversations
 
+Before configuring or activating any automation, follow
+[`docs/automation-channel-setup.md`](docs/automation-channel-setup.md). Explicitly
+record separate draft and human-help destinations per automation/operator; show
+the owner the configuration and distinguish legacy defaults from saved choices.
+
 Start with [`docs/automation-handoff.md`](docs/automation-handoff.md) when resuming
 automation work: it maps the code, current deployment snapshot, real pilot evidence,
 private operational context and remaining validation. Preserve recorded pauses;
