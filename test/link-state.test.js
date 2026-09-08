@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { LinkState, linkOptions, shouldReconnect } from '../src/link-state.js'
+import { LinkState, linkOptions, normalizedPairingPhone, shouldReconnect } from '../src/link-state.js'
 import { DisconnectReason } from 'baileys'
 
 test('full history remains enabled with a web browser descriptor', () => {
@@ -38,4 +38,13 @@ test('registration failures stop; pair success gets one restart; established aut
   assert.equal(shouldReconnect({ registered: false, statusCode: DisconnectReason.restartRequired, pairingRestarts: 1 }), false)
   assert.equal(shouldReconnect({ registered: true, statusCode: 428 }), true)
   assert.equal(shouldReconnect({ registered: true, statusCode: DisconnectReason.loggedOut }), false)
+})
+test('pairing accepts an international number in any human format and rejects local ones', () => {
+  for (const input of ['59894421953', '+598 94 421 953', '+598-94-421-953', '(598) 94421953', '598.94421953']) {
+    assert.equal(normalizedPairingPhone(input), '59894421953')
+  }
+  // A trunk prefix, a local number or a typo addresses no WhatsApp account.
+  for (const input of ['094421953', '0598 94421953', '94421953a', '1234567', '1234567890123456', '', null, undefined, {}]) {
+    assert.equal(normalizedPairingPhone(input), null, `${String(input)} must not reach the provider`)
+  }
 })

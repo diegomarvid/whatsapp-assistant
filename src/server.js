@@ -14,7 +14,7 @@ import makeWASocket, {
 } from 'baileys'
 import { Boom } from '@hapi/boom'
 import pino from 'pino'
-import { LinkState, linkOptions, shouldReconnect } from './link-state.js'
+import { LinkState, PAIRING_CODE_TTL_SECONDS, linkOptions, normalizedPairingPhone, shouldReconnect } from './link-state.js'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
@@ -1310,9 +1310,10 @@ async function main() {
     const isMessageRead = request.method === 'POST' && url.pathname === '/messages/read'
     const isDocumentSend = request.method === 'POST' && url.pathname === '/documents/send'
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
+    const isPairRequest = request.method === 'POST' && url.pathname === '/pair'
     const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision', '/automation/human/ask', '/automation/human/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite && !isPairRequest) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
@@ -1392,6 +1393,26 @@ async function main() {
       response.setHeader('Cache-Control', 'no-store')
       const pending = linkState.pending(connection)
       return json(response, pending ? 200 : 409, pending || { error: 'no_live_qr' })
+    }
+    // Pairing code is the same one-time link act as the QR, for a device that
+    // cannot scan one. It is owner-only: an automation token never links a
+    // session, and an already-linked session must go through recovery.
+    if (isPairRequest) {
+      response.setHeader('Cache-Control', 'no-store')
+      if (authorization.kind !== 'full') return capabilityForbidden(response)
+      if (authRegistered) return json(response, 409, { error: 'already_registered', message: 'This session is already linked. Follow docs/onboarding-and-recovery.md before re-linking.' })
+      if (!socket?.requestPairingCode) return json(response, 503, { error: 'whatsapp_not_connected', message: 'The bridge is not connected to WhatsApp yet. Check `wa status` and retry once it is connecting.' })
+      requestBody(request)
+        .then(async ({ phone }) => {
+          const digits = normalizedPairingPhone(phone)
+          if (!digits) return json(response, 400, { error: 'phone_required', message: 'A full international number is required, digits only and without "+".' })
+          const code = await socket.requestPairingCode(digits)
+          // The code itself is a live credential: never log it.
+          console.log(JSON.stringify({ event: 'link.pairing_code_requested' }))
+          return json(response, 200, { code, phone: digits, expiresInSeconds: PAIRING_CODE_TTL_SECONDS })
+        })
+        .catch((error) => json(response, 422, { error: 'pairing_request_failed', message: error.message }))
+      return
     }
     if (request.method === 'GET' && url.pathname === '/snapshot') return json(response, 200, cache)
     if (request.method === 'GET' && url.pathname === '/resolve') {

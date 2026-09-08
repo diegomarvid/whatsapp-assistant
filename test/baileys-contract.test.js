@@ -4,6 +4,7 @@
 // Keep it in sync with AGENTS.md ("Baileys upgrade playbook") and with any new
 // Baileys import added to src/.
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import makeWASocket, {
   Browsers,
@@ -24,6 +25,18 @@ test('exposes the socket factory and session helpers the bridge is built on', ()
   assert.equal(typeof makeCacheableSignalKeyStore, 'function')
   assert.equal(typeof fetchLatestBaileysVersion, 'function')
   assert.equal(typeof Browsers.macOS, 'function', 'extended history requests need a desktop browser profile')
+})
+
+test('keeps requestPairingCode in the socket API so a headless host can link without a QR', () => {
+  // Instantiating a socket would open a real connection, so this asserts the
+  // published type declaration instead: it is Baileys' own statement of the
+  // socket API, and a rename or signature change is exactly what must fail here.
+  const declaration = readFileSync(new URL('../node_modules/baileys/lib/Socket/socket.d.ts', import.meta.url), 'utf8')
+  assert.match(
+    declaration,
+    /requestPairingCode: \(phoneNumber: string[^)]*\) => Promise<string>/,
+    'requestPairingCode must still take the bare E.164 number the bridge sends and resolve to the code',
+  )
 })
 
 test('exposes the media, poll and key utilities the bridge calls', () => {
