@@ -119,7 +119,10 @@ local user, and is excluded from Git.
 
 4. Scan the QR shown by `wa qr` (or at `data/link-qr.png` in a development
    checkout) only if `auth/` has not been
-   created yet, or WhatsApp explicitly logged the device out.
+   created yet, or WhatsApp explicitly logged the device out. If that host's
+   screen cannot be scanned, `wa pair <international-number>` links the same
+   session with an eight-character code instead; the conditions for linking at
+   all are unchanged.
 5. Wait for `wa status` to report `"connection": "open"`. The cache count can
    rise for a little while after that as the recent sync arrives.
 
@@ -482,6 +485,34 @@ Before re-linking, back up `auth/` inside ignored `data/`, never delete it
 blindly. Preserve the current cache and aliases. Then show one fresh QR and
 wait for the user to scan it; do not cycle QRs or alter sync settings again
 while waiting.
+
+### Linking with a pairing code instead of the QR
+
+`wa pair <international-number>` links the **same** session as the QR for a host
+whose screen the phone cannot scan: an SSH-only VPS, a headless machine, a
+camera that will not focus. It is not a second device, not a wider scope and not
+a way around the conditions above — everything in this section still applies
+before asking for one.
+
+```bash
+wa pair 59894421953   # digits only, country code included, no '+'
+```
+
+The bridge accepts the request only from the owner token, only while the
+session is unregistered, and only while a socket is connecting. An automation
+credential is refused. The eight-character code is a live credential: it is
+returned over loopback to the caller and never written to the log, which
+records only `link.pairing_code_requested`.
+
+Open **Ajustes → Dispositivos vinculados → Vincular un dispositivo → Vincular
+con número de teléfono** on the phone *before* running the command; the code is
+valid for about two minutes. Baileys writes the requested number into `creds`
+as soon as the code is issued, so a wrong number needs the same `auth/` reset as
+any other failed link before retrying.
+
+After a successful pairing WhatsApp closes the socket once with
+`restartRequired` (515). That is the expected handshake, not a failure: the
+bridge reconnects itself and `wa status` reaches `"connection": "open"`.
 
 ## Explicit guardrails
 

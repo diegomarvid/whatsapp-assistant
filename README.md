@@ -156,8 +156,9 @@ activo ni una capa que “arregle” texto antes del prompt.
 
 ### 🧱 Dejarlo funcionando una vez
 
-- Escaneás un QR una vez; el servicio se reconecta luego de reinicios de macOS
-  o Linux/VPS sin un navegador.
+- Escaneás un QR una vez —o pedís un código de vinculación si no podés
+  escanear—; el servicio se reconecta luego de reinicios de macOS o Linux/VPS
+  sin un navegador.
 - En onboarding elegís 7 días (default) o una ventana mayor; el CLI explica
   que pedir full-history a WhatsApp no garantiza que el proveedor lo entregue.
 - Funciona como LaunchAgent en macOS o servicio `systemd --user` en Linux.
@@ -287,6 +288,28 @@ vínculo o sync extendido falla, volver a `wa history-policy set 7`, reiniciar e
 daemon y conservar `auth/`; no hace falta borrar estado ni escanear un QR de
 nuevo salvo que WhatsApp haya cerrado la sesión.
 
+### 🔢 Vincular con código en vez de QR
+
+Si el QR no se puede escanear —un VPS al que sólo llegás por SSH, una máquina
+sin pantalla accesible, una cámara que no enfoca— `wa pair` vincula **la misma
+sesión** con un código de ocho caracteres:
+
+```bash
+wa pair 59894421953   # sólo dígitos, con código de país y sin '+'
+```
+
+Abrí en el celular **Ajustes → Dispositivos vinculados → Vincular un
+dispositivo → Vincular con número de teléfono** *antes* de pedirlo: el código
+vale unos dos minutos. Después WhatsApp cierra la conexión una vez (`515`) y el
+bridge reconecta solo; verificá con `wa status` hasta ver `connection = open`.
+
+No es un dispositivo extra ni un permiso más amplio: es el mismo acto de
+vínculo que el QR. El bridge sólo lo acepta con el token del dueño, con la
+sesión sin registrar y mientras el socket está conectando; una credencial de
+automatización queda rechazada. El código nunca se escribe en el log. Si te
+equivocás de número, Baileys ya lo guardó en `creds`: hay que limpiar `auth/` y
+volver a empezar, igual que con cualquier vínculo fallido.
+
 Si una persona o un agente necesita orientación dentro del propio CLI:
 
 ```bash
@@ -337,6 +360,9 @@ sistema (root). La salida recomendada es instalar Node con `nvm` como el
 usuario final (arriba); alternativamente `sudo npm install -g …` funciona,
 pero el estado privado y el servicio siguen siendo del usuario que corre
 `wa setup`, nunca de root.
+
+Si el QR impreso en la terminal SSH no se puede escanear, vinculá con
+[código](#-vincular-con-código-en-vez-de-qr): `wa pair <numero>`.
 
 `wa setup` crea un servicio de usuario de systemd en
 `~/.config/systemd/user/whatsapp-assistant.service`, conserva el estado privado
@@ -484,6 +510,7 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa status` | Estado del bridge y cantidad de mensajes cacheados. |
 | `wa doctor` | Diagnóstico sin secretos: daemon, rutas privadas, SQLite, QR y health. |
 | `wa qr` | Abre el QR en macOS o lo imprime en la terminal (ideal por SSH). |
+| `wa pair <numero>` | Código de vinculación de 8 caracteres cuando no se puede escanear el QR. |
 | `wa find "Nombre"` | Busca aliases, identidad WhatsApp, mensajes recientes y Contactos de macOS opcionales. |
 | `wa recent 20` | Chats individuales recientes con identidad WhatsApp. |
 | `wa latest contacto` | Último evento del chat, entrante o saliente. |

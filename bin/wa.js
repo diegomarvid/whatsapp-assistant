@@ -23,6 +23,7 @@ import { validateProviderProfile } from '../src/agent-provider-runner.js'
 import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 import { launchAgentLabel } from '../src/launch-agent.js'
+import { normalizedPairingPhone } from '../src/link-state.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
 import { paths, projectRoot } from '../src/runtime-paths.js'
 import { PendingOutboundRequests } from '../src/pending-outbound-requests.js'
@@ -94,6 +95,7 @@ Comandos:
   wa doctor                         # estado, daemon, QR y rutas; no expone secretos
   wa setup
   wa qr                             # abre (macOS) o imprime (SSH) el QR pendiente
+  wa pair <numero>                  # código de 8 caracteres en vez del QR (número internacional, sin +)
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
   wa aliases
@@ -216,6 +218,7 @@ Estado, instalación y recuperación:
   wa doctor                         — ¿Por qué no funciona? Diagnóstico sin exponer secretos.
   wa setup                          — Primera instalación, daemon, política de historial y QR.
   wa qr                             — Mostrar el QR pendiente en macOS o SSH.
+  wa pair <numero>                  — Vincular con código de 8 caracteres cuando no se puede escanear el QR.
   wa daemon install|status|restart  — Gestionar el servicio local sin borrar la sesión.
   wa migrate-state <directorio>     — Adoptar estado privado de una instalación anterior.
 
@@ -304,7 +307,7 @@ Sin --any ni --all devuelve todos los mensajes de la ventana. Cada match y mensa
 Usá latest-incoming si sólo necesitás el último mensaje. Usá search-all si todavía no sabés en qué chat apareció el tema. Usá message o los comandos de media cuando ya tenés un ID concreto.
 
 Matching: palabras o frases completas, sin distinguir mayúsculas ni acentos. No infiere plurales ni sinónimos; pasá variantes explícitas. El CLI reúne evidencia factual y no interpreta intención ni valida afirmaciones técnicas.`,
-    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
+    setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nSi no se puede escanear el QR (host headless, cámara que no enfoca, pantalla sin acceso), pedir un código de vinculación con el número internacional sin '+': \`wa pair 59894421953\`. WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo → Vincular con número de teléfono. El código vale unos dos minutos; abrir esa pantalla antes de pedirlo. Vincula la misma sesión que el QR, no una segunda.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa review contacto --date today --from incoming --any IP IPs dinámica dinámicas estática estáticas --context 4 --ids\n  wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nreview arma un paquete factual de una conversación: resuelve el LID actual, exige cobertura fresh, acota por fecha en America/Montevideo, busca palabras o frases completas ignorando mayúsculas y acentos, y agrega contexto sin duplicarlo. Cada match incluye su fecha y hora local. Después de descubrir cuándo se habló de un tema, repetí el comando sin términos y con --date, --start y --end para leer absolutamente todos los mensajes de ese tramo horario. --from incoming limita las coincidencias a lo que mandó el contacto, pero conserva ambos lados del diálogo como contexto; --from me hace lo inverso. --any acepta cualquier término; --all exige que todos aparezcan en el mismo mensaje. Las palabras se comparan completas: si importan singular y plural, indicá ambas variantes. --json conserva identidad, cobertura, ventana local, coincidencias con texto exacto y hora local, timeline y media cercana. Sin términos devuelve toda la ventana elegida; el default es hoy.\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
     schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>\n  wa schedule cancel <id>\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario antes de enviar. Ante un resultado ambiguo no reintenta: lo deja como uncertain para no duplicar mensajes. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
     automation: `Conversaciones autónomas (eventos + espera + juez opcional):
@@ -448,6 +451,17 @@ async function showQr() {
   qrcodeTerminal.generate(current.code, { small: true })
   console.log(qrPath)
   if (process.platform === 'darwin') tryRun('open', [qrPath])
+}
+
+// Same one-time link act as `wa qr`, for a phone that cannot scan the screen
+// showing it (SSH-only VPS, headless host, a camera that will not focus).
+async function pairWithCode(phone) {
+  const digits = normalizedPairingPhone(phone)
+  if (!digits) throw new Error('Se necesita el número completo en formato internacional, sólo dígitos y sin el "+". Ejemplo: wa pair 59894421953')
+  const { code, expiresInSeconds } = await bridgePost('/pair', { phone: digits }, 'No se pudo pedir el código de vinculación')
+  console.log(`Código de vinculación: ${code}`)
+  console.log(`Válido ~${Math.round((expiresInSeconds || 120) / 60)} min. En WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo → Vincular con número de teléfono.`)
+  console.log('Verificar con: wa status (hasta ver connection = open)')
 }
 
 async function installedBaileysVersion() {
@@ -1041,6 +1055,7 @@ async function main() {
   if (command === '__daemon') return import('../src/server.js')
   if (command === 'doctor') return doctor()
   if (command === 'qr') return showQr()
+  if (command === 'pair') return pairWithCode(args[0])
   if (command === 'setup') return setup()
   if (command === 'history-policy') return historyPolicyCommand(args)
   if (command === 'schedule') {
