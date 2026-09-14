@@ -412,6 +412,15 @@ cannot receive while the computer sleeps — messages queue and land on wake.
 
 ## Recovery checklist — before ever asking for a QR
 
+If the bridge log reports `(updates || []) is not iterable` while processing
+`group-participants.update`, update the bridge adapter: Baileys sends a single
+object for this event, with participant objects carrying their JID in `id`.
+This is a local ingestion bug, not a reason to reset authentication. The
+adapter regression lives in `test/group-events.test.js`. After applying the
+fix and passing the quality gates, restart once and verify connection,
+ingestion health and the actual expected messages; `fresh` coverage alone is
+not proof that every message seen on another linked device was recovered.
+
 1. Check the daemon and cache:
 
    ```bash

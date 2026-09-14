@@ -17,6 +17,7 @@ import pino from 'pino'
 import { LinkState, linkOptions, shouldReconnect } from './link-state.js'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
+import { applyGroupParticipantUpdates } from './group-events.js'
 import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from './message-engagement.js'
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
@@ -951,16 +952,6 @@ function appendGroupEvent(event) {
   return true
 }
 
-function applyGroupParticipantUpdates(updates) {
-  let changed = false
-  for (const update of updates || []) {
-    for (const participant of update.participants || []) {
-      changed = appendGroupEvent({ groupJid: update.id, kind: 'participant', action: update.action || null, participant, author: update.author || null }) || changed
-    }
-  }
-  return changed
-}
-
 function applyGroupMetadataUpdates(updates, kind) {
   let changed = false
   for (const update of updates || []) {
@@ -1204,7 +1195,7 @@ async function connect() {
         }
       }
       if (events['group-participants.update']) {
-        if (applyGroupParticipantUpdates(events['group-participants.update'])) await saveCache()
+        if (applyGroupParticipantUpdates(events['group-participants.update'], appendGroupEvent)) await saveCache()
       }
       if (events['groups.update']) {
         if (applyGroupMetadataUpdates(events['groups.update'], 'metadata_update')) await saveCache()
