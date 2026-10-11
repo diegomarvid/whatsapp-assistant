@@ -14,7 +14,7 @@ import makeWASocket, {
 } from 'baileys'
 import { Boom } from '@hapi/boom'
 import pino from 'pino'
-import { LinkState, linkOptions, shouldReconnect } from './link-state.js'
+import { LinkState, hasEstablishedSession, linkOptions, shouldReconnect } from './link-state.js'
 import { mimeTypeForFile } from './file-mime.js'
 import { safeMessage } from './message-normalizer.js'
 import { applyGroupParticipantUpdates } from './group-events.js'
@@ -1117,7 +1117,7 @@ async function connect() {
   await clearQrFiles()
   connection = 'connecting'
   const { state, saveCreds } = await useMultiFileAuthState(authDir)
-  authRegistered = Boolean(state.creds.registered)
+  authRegistered = hasEstablishedSession(state.creds)
   if (!chatNamesRepaired) {
     chatNamesRepaired = true
     const repairs = repairedChatNames({ chats: cache.chats, messages: cache.messages, contacts: cache.contacts, ownName: state.creds.me?.name || null })

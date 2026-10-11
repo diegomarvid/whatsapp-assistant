@@ -19,6 +19,13 @@ export class LinkState {
   }
 }
 
+// Baileys logs in, instead of registering, whenever creds.me exists. Its
+// creds.registered flag is only set by the pairing-code flow, so a QR-linked
+// session never has it and cannot be used to tell an established link apart.
+export function hasEstablishedSession(creds) {
+  return Boolean(creds?.me?.id)
+}
+
 export function shouldReconnect({ registered, statusCode, pairingRestarts }) {
   if (statusCode === DisconnectReason.loggedOut) return false
   // Pair-success needs one restart (515). Failed registration is manual only.

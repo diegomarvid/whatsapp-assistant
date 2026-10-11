@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { LinkState, linkOptions, shouldReconnect } from '../src/link-state.js'
+import { LinkState, hasEstablishedSession, linkOptions, shouldReconnect } from '../src/link-state.js'
 import { DisconnectReason } from 'baileys'
 
 test('full history remains enabled with a web browser descriptor', () => {
@@ -38,4 +38,12 @@ test('registration failures stop; pair success gets one restart; established aut
   assert.equal(shouldReconnect({ registered: false, statusCode: DisconnectReason.restartRequired, pairingRestarts: 1 }), false)
   assert.equal(shouldReconnect({ registered: true, statusCode: 428 }), true)
   assert.equal(shouldReconnect({ registered: true, statusCode: DisconnectReason.loggedOut }), false)
+})
+test('a QR-linked session is established even though Baileys never sets registered', () => {
+  const qrLinked = { registered: false, me: { id: '59800000000:12@s.whatsapp.net' } }
+  assert.equal(hasEstablishedSession(qrLinked), true)
+  for (const creds of [{ registered: false }, { registered: false, me: {} }, undefined]) assert.equal(hasEstablishedSession(creds), false)
+  // A reconnect attempt that times out before opening must keep retrying.
+  for (const statusCode of [408, 428, 503]) assert.equal(shouldReconnect({ registered: hasEstablishedSession(qrLinked), statusCode, pairingRestarts: 0 }), true)
+  assert.equal(shouldReconnect({ registered: hasEstablishedSession(qrLinked), statusCode: DisconnectReason.loggedOut, pairingRestarts: 0 }), false)
 })

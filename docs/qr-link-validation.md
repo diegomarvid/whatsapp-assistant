@@ -27,7 +27,10 @@ replacement, and are rechecked after image rendering. Setup and doctor consult
 live status instead of trusting old files. A displayed image cannot be revoked
 from Preview; its printed deadline still applies. Run `wa qr` for a current one.
 Failed initial registration stops automatically. One 515 pair-success restart is
-allowed; established sessions retain their normal reconnect behavior. Auth files
+allowed; established sessions retain their normal reconnect behavior. A session
+is established when its creds carry `me`, the same test Baileys uses to log in
+instead of registering; `creds.registered` is never set by QR linking, so a
+reconnect timing out before `open` must not be read as a failed registration. Auth files
 and cache are never deleted. QR values are not written to daemon logs.
 
 ## Update on the affected Mac
