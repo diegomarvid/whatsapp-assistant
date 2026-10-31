@@ -34,7 +34,7 @@ import { MirrorStore, messageKey } from './mirror-store.js'
 import { processEventBatch } from './event-batch.js'
 import { HistoryBackfill } from './history-backfill.js'
 import { ftsQuery } from './search-query.js'
-import { resolveWaVersion } from './wa-version.js'
+import { VERSION_TIMEOUT_MS, resolveWaVersion } from './wa-version.js'
 import { paths } from './runtime-paths.js'
 import { AgentProfiles } from './agent-providers.js'
 import { runPromptAutomation } from './agent-provider-runner.js'
@@ -83,6 +83,7 @@ let lastError = null
 let socket = null
 let reconnectTimer = null
 let historyBackfill = null
+let linkVersion = null
 let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], callEvents: [], sync: {} }
 let cacheSaveQueue = Promise.resolve()
 // O(1) message lookups and a bounded persist write set. Every code path that
@@ -377,8 +378,9 @@ async function chatAliases(jid) {
 
 function isUndecryptedPlaceholder(message) {
   if (message.deleted) return false
-  if (message.undecrypted) return true
-  // Placeholders stored before the undecrypted flag existed.
+  if (message.undecrypted !== undefined) return message.undecrypted === true
+  // Stored before 0.12 recorded the flag: an empty unknown message is the best
+  // available signal (it can also be a system event the phone will ignore).
   return message.type === 'unknown' && !message.text && !message.reactionText && !message.call && !message.location && !message.poll
 }
 
@@ -489,8 +491,13 @@ function applyDecodedPollUpdates(message, updates) {
 
 async function ingestMessages(messages, source = 'history') {
   let changed = false
+  // Full history can reach far past the window: never store content or media
+  // envelopes for messages retention would delete right away.
+  const cutoff = nowSeconds() - (RETENTION_DAYS * 24 * 60 * 60)
   for (const raw of messages) {
     try {
+      const sentAt = Number(raw?.messageTimestamp || 0)
+      if (sentAt && sentAt < cutoff) continue
       auditMessageEvent(raw, `messages.${source}`)
       const pollChanged = applyIncomingPollVote(raw)
       if (raw?.message?.pollUpdateMessage) {
@@ -581,12 +588,14 @@ async function ingestMessages(messages, source = 'history') {
       messageIndex.set(messageKey(message.jid, message.id), message)
       touchMessage(message)
       const previousChat = cache.chats[message.jid] || {}
+      // History pages arrive oldest-last; the chat summary only moves forward.
+      const newest = !Number(previousChat.lastTimestamp) || message.timestamp >= Number(previousChat.lastTimestamp)
       cache.chats[message.jid] = {
         ...previousChat,
         jid: message.jid,
         name: chatNameFromMessage(message) || cache.contacts[message.jid]?.name || previousChat.name || null,
-        lastTimestamp: message.timestamp,
-        lastMessage: message.text.slice(0, 240),
+        lastTimestamp: newest ? message.timestamp : previousChat.lastTimestamp,
+        lastMessage: newest ? message.text.slice(0, 240) : previousChat.lastMessage,
         remoteLastTimestamp: Math.max(Number(previousChat.remoteLastTimestamp || 0), message.timestamp),
         lastObservedLiveAt: source === 'live' ? nowSeconds() : previousChat.lastObservedLiveAt || null,
         lastObservedLiveMessageId: source === 'live' ? message.id : previousChat.lastObservedLiveMessageId || null,
@@ -1059,7 +1068,7 @@ function mergeContact(contact) {
   return true
 }
 
-async function handleHistorySet({ messages, chats, contacts, syncType }) {
+async function handleHistorySet({ messages, chats, contacts, syncType, peerDataRequestSessionId }) {
   for (const chat of chats || []) mergeChat(chat)
   for (const contact of contacts || []) mergeContact(contact)
   cache.sync.lastHistorySyncAt = nowSeconds()
@@ -1068,7 +1077,10 @@ async function handleHistorySet({ messages, chats, contacts, syncType }) {
   cache.sync.lastPersistedAt = nowSeconds()
   await saveCache()
   // An on-demand set answers the single request wa backfill has in flight.
-  if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) historyBackfill?.notifyOnDemand()
+  if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) {
+    const jids = new Set([...(messages || []).map((raw) => raw?.key?.remoteJid), ...(chats || []).map((chat) => chat?.id)].filter(Boolean).map((jid) => jidNormalizedUser(jid)))
+    historyBackfill?.notifyOnDemand({ sessionId: peerDataRequestSessionId || null, jids: [...jids] })
+  }
 }
 
 // WhatsApp suppresses phone push notifications while a companion looks like
@@ -1177,11 +1189,16 @@ async function connect() {
       await saveCache()
     }
   }
-  const { version, source: versionSource, failures: versionFailures } = await resolveWaVersion({
-    fetchWeb: () => fetchLatestWaWebVersion({}),
-    fetchBaileys: () => fetchLatestBaileysVersion(),
-    bundled: DEFAULT_CONNECTION_CONFIG.version,
-  })
+  // Resolved once per process and refreshed every six hours: reconnects
+  // (including the restart right after a QR scan) do not wait on the network.
+  if (!linkVersion || linkVersion.resolvedAt < Date.now() - (6 * 60 * 60 * 1000)) {
+    linkVersion = { ...await resolveWaVersion({
+      fetchWeb: () => fetchLatestWaWebVersion({ signal: AbortSignal.timeout(VERSION_TIMEOUT_MS) }),
+      fetchBaileys: () => fetchLatestBaileysVersion({ signal: AbortSignal.timeout(VERSION_TIMEOUT_MS) }),
+      bundled: DEFAULT_CONNECTION_CONFIG.version,
+    }), resolvedAt: Date.now() }
+  }
+  const { version, source: versionSource, failures: versionFailures } = linkVersion
   cache.sync.linkVersion = { version, source: versionSource }
   console.log(JSON.stringify({ event: 'link.start', node: process.version, version, versionSource, versionFailures: versionFailures.length ? versionFailures : undefined, browser: 'macOS/Chrome', registered: authRegistered, syncFullHistory: historyPolicy.syncFullHistory }))
   socket = makeWASocket({
@@ -1214,9 +1231,13 @@ async function connect() {
     ['contacts.update', async (contacts) => { if (contacts.map(mergeContact).some(Boolean)) await saveCache() }],
     ['messages.upsert', async (upsert) => {
       lastLiveMessageAt = nowSeconds()
-      // A placeholder resend answers a past message (it carries requestId):
-      // merge its content without treating it as new live activity.
-      const changed = await ingestMessages(upsert.messages || [], upsert.requestId ? 'repair' : 'live')
+      // Only answers to resends that wa backfill requested are past messages.
+      // Baileys also asks the phone to resend fresh live messages it could not
+      // decrypt; those answers carry a requestId too and must stay live.
+      const messages = upsert.messages || []
+      const repaired = upsert.requestId ? messages.filter((raw) => historyBackfill?.takeResendAnswer(raw?.key?.id)) : []
+      const live = repaired.length ? messages.filter((raw) => !repaired.includes(raw)) : messages
+      const changed = (repaired.length ? await ingestMessages(repaired, 'repair') : false) | (await ingestMessages(live, 'live'))
       cache.sync.ingestionHealthy = true
       cache.sync.lastIngestError = null
       cache.sync.lastPersistedAt = nowSeconds()
@@ -1269,6 +1290,8 @@ async function main() {
   historyBackfill = new HistoryBackfill({
     fetchHistory: (count, key, timestampMs) => {
       if (connection !== 'open' || !socket?.fetchMessageHistory) throw new Error('not_connected')
+      // Resolves to the request's message ID, matched against the answer's
+      // peerDataRequestSessionId.
       return socket.fetchMessageHistory(count, key, timestampMs)
     },
     requestResend: (key, data) => {
@@ -1285,6 +1308,7 @@ async function main() {
       return cache.messages.filter((message) => aliases.has(message.jid))
     },
     undecrypted: () => cache.messages.filter(isUndecryptedPlaceholder),
+    aliasesFor: (jid) => chatAliases(jid),
     logger,
   })
   msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
@@ -1722,7 +1746,8 @@ async function main() {
         if (connection !== 'open') return json(response, 409, { error: 'not_connected' })
         const jids = jid ? await chatAliases(jid) : null
         try {
-          return json(response, 202, historyBackfill.start({ days: days || RETENTION_DAYS, jids, repair: repair !== false }))
+          // Older pages would be pruned right away: never ask beyond retention.
+          return json(response, 202, historyBackfill.start({ days: Math.min(Number(days) || RETENTION_DAYS, RETENTION_DAYS), jids, repair: repair !== false }))
         } catch (error) {
           return json(response, 409, { error: error.message })
         }

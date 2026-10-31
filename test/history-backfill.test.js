@@ -35,7 +35,7 @@ function harness({ phone, mirror, stubs = [], answers = true }) {
 }
 
 function day(jid, days, id = `${jid}-${days}`) {
-  return { jid, id, timestamp: NOW - (days * DAY), fromMe: false }
+  return { jid, id, timestamp: NOW - (days * DAY), fromMe: false, type: 'conversation' }
 }
 
 async function finish(backfill) {
@@ -101,4 +101,45 @@ test('an explicit chat list skips broadcast and newsletter JIDs', async () => {
   const status = await finish(backfill)
   assert.equal(status.chats.total, 1)
   assert.equal(requests.length, 0, 'a chat already covering the window needs no request')
+})
+
+test('the anchor is the oldest visible message, never a placeholder, reaction or protocol event', async () => {
+  const mirror = { 'a@lid': [
+    { ...day('a@lid', 9, 'STUB'), type: 'unknown', undecrypted: true },
+    { ...day('a@lid', 8, 'KEYS'), type: 'senderKeyDistributionMessage' },
+    { ...day('a@lid', 7, 'REACT'), type: 'reactionMessage' },
+    day('a@lid', 5, 'REAL'),
+  ] }
+  const { backfill, requests } = harness({ phone: {}, mirror })
+  backfill.start({ days: 90, repair: false })
+  await finish(backfill)
+  assert.deepEqual(requests[0].slice(0, 2), ['a@lid', 'REAL'])
+})
+
+test('a late answer to an earlier request is not credited to the next chat', () => {
+  const backfill = new HistoryBackfill({ fetchHistory: async () => {}, requestResend: async () => {}, chats: () => [], messagesFor: async () => [], undecrypted: () => [] })
+  backfill.pastRequests = new Set(['REQ-1', 'REQ-2'])
+  let answered = null
+  backfill.waitForResponse(['b@lid']).then((value) => { answered = value })
+  backfill.waiter.requestId = 'REQ-2'
+  backfill.notifyOnDemand({ sessionId: 'REQ-1', jids: [] })
+  assert.ok(backfill.waiter, 'an answer to REQ-1 must not resolve the wait for REQ-2')
+  backfill.notifyOnDemand({ sessionId: null, jids: ['a@lid'] })
+  assert.ok(backfill.waiter, 'an answer about another chat must not resolve it either')
+  backfill.notifyOnDemand({ sessionId: 'REQ-2', jids: [] })
+  assert.equal(backfill.waiter, null, 'the matching session resolves it even when the phone had nothing older')
+  return Promise.resolve().then(() => assert.equal(answered, true))
+})
+
+test('repair is limited to recent placeholders, newest first, and only those answers are past messages', async () => {
+  const stubs = Array.from({ length: 5 }, (_, index) => ({ ...day('g@g.us', index + 1, `S${index}`), type: 'unknown', undecrypted: true }))
+  stubs.push({ ...day('g@g.us', 20, 'OLD'), type: 'unknown', undecrypted: true })
+  const { backfill, resends } = harness({ phone: {}, mirror: {}, stubs })
+  backfill.maxRepairsPerRun = 3
+  backfill.start({ days: 90 })
+  await finish(backfill)
+  assert.deepEqual(resends, ['S0', 'S1', 'S2'], 'newest first, capped, nothing older than 14 days')
+  assert.equal(backfill.takeResendAnswer('S1'), true)
+  assert.equal(backfill.takeResendAnswer('S1'), false, 'each requested ID is consumed once')
+  assert.equal(backfill.takeResendAnswer('LIVE-STUB'), false, 'resends Baileys requested by itself stay live')
 })

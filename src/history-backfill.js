@@ -14,15 +14,27 @@
 // always the oldest stored message, so running it again resumes where the
 // mirror stands. It never sends anything to a contact.
 const SKIPPED_SUFFIXES = ['@broadcast', '@newsletter']
+// Pruning removes everything older than the cutoff, so the oldest stored
+// message lands just inside it: a chat within a day of the cutoff is covered.
+const WINDOW_SLACK_SECONDS = 86400
 
 function skipped(jid) {
   return !jid || SKIPPED_SUFFIXES.some((suffix) => jid.endsWith(suffix))
 }
 
+// The phone looks the anchor up among the chat's visible messages, so the
+// anchor is never a placeholder, a protocol or key-distribution message, a
+// reaction or a call stub: those exist only in the mirror's event stream.
+const NON_ANCHOR_TYPES = new Set(['unknown', 'protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo', 'reactionMessage', 'pollUpdateMessage', 'encReactionMessage', 'call'])
+
+function anchorable(message) {
+  return Boolean(message?.id) && Number.isFinite(Number(message.timestamp)) && !message.undecrypted && !message.deleted && !NON_ANCHOR_TYPES.has(message.type)
+}
+
 function oldestOf(messages) {
   let oldest = null
   for (const message of messages || []) {
-    if (!message?.id || !Number.isFinite(Number(message.timestamp))) continue
+    if (!anchorable(message)) continue
     if (!oldest || Number(message.timestamp) < Number(oldest.timestamp)) oldest = message
   }
   return oldest
@@ -56,16 +68,21 @@ export class HistoryBackfill {
     now = () => Math.floor(Date.now() / 1000),
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     logger = null,
+    aliasesFor = async (jid) => [jid],
     pageSize = 50,
-    pauseMs = 2000,
-    repairPauseMs = 250,
+    pauseMs = 4000,
+    repairPauseMs = 1000,
     responseTimeoutMs = 45_000,
     maxConsecutiveTimeouts = 3,
     maxPagesPerChat = 200,
-    maxRequests = 5000,
+    maxRequests = 2000,
+    // WhatsApp Web only asks the phone to resend placeholders up to 14 days old.
+    repairMaxAgeSeconds = 14 * 86400,
+    maxRepairsPerRun = 100,
   }) {
-    Object.assign(this, { fetchHistory, requestResend, chats, messagesFor, undecrypted, now, sleep, logger, pageSize, pauseMs, repairPauseMs, responseTimeoutMs, maxConsecutiveTimeouts, maxPagesPerChat, maxRequests })
+    Object.assign(this, { fetchHistory, requestResend, chats, messagesFor, undecrypted, aliasesFor, now, sleep, logger, pageSize, pauseMs, repairPauseMs, responseTimeoutMs, maxConsecutiveTimeouts, maxPagesPerChat, maxRequests, repairMaxAgeSeconds, maxRepairsPerRun })
     this.state = emptyState()
+    this.resendRequested = new Set()
     this.waiter = null
     this.stopRequested = false
     this.job = null
@@ -80,6 +97,7 @@ export class HistoryBackfill {
     const windowDays = Number.parseInt(days, 10)
     if (!Number.isFinite(windowDays) || windowDays < 1) throw new Error('backfill_invalid_days')
     this.stopRequested = false
+    this.pastRequests = new Set()
     this.state = { ...emptyState(), running: true, phase: 'starting', startedAt: this.now(), days: windowDays, cutoff: this.now() - (windowDays * 86400) }
     this.job = this.run({ jids, repair }).catch(() => {})
     return this.status()
@@ -91,9 +109,29 @@ export class HistoryBackfill {
     return this.status()
   }
 
-  // Called by the bridge for every ON_DEMAND history set it ingests.
-  notifyOnDemand() {
-    if (this.waiter) this.state.responses++
+  // True once for a message ID whose resend this job requested: only those
+  // answers are past messages. Baileys also requests resends on its own for
+  // fresh live messages, and those must stay live.
+  takeResendAnswer(id) {
+    return this.resendRequested.delete(id)
+  }
+
+  // Called by the bridge for every ON_DEMAND history set it ingests. A set
+  // answers the waiting request when its session ID is that request's ID, or
+  // when it carries messages of the waiting chat; a late answer to an earlier
+  // request is ignored instead of being credited to the next chat.
+  notifyOnDemand({ sessionId = null, jids = [] } = {}) {
+    const waiter = this.waiter
+    if (!waiter) return
+    const answersCurrent = Boolean(sessionId && waiter.requestId && sessionId === waiter.requestId)
+    if (!answersCurrent) {
+      // A late answer to an earlier request of this job.
+      if (sessionId && this.pastRequests.has(sessionId)) return
+      // Without a usable session ID, accept an empty answer or one that
+      // carries the waiting chat; reject one about another chat.
+      if (jids.length && !jids.some((jid) => waiter.aliases.has(jid))) return
+    }
+    this.state.responses++
     this.resolveWaiter(true)
   }
 
@@ -106,12 +144,12 @@ export class HistoryBackfill {
     }
   }
 
-  waitForResponse() {
+  waitForResponse(aliases) {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         if (this.waiter?.timer === timer) this.resolveWaiter(false)
       }, this.responseTimeoutMs)
-      this.waiter = { resolve, timer }
+      this.waiter = { resolve, timer, aliases: new Set(aliases), requestId: null }
     })
   }
 
@@ -135,11 +173,16 @@ export class HistoryBackfill {
 
   async repairPhase() {
     this.state.phase = 'repair'
-    const candidates = (this.undecrypted() || []).filter((message) => Number(message.timestamp) >= this.state.cutoff && !skipped(message.jid))
+    const oldest = Math.max(this.state.cutoff, this.now() - this.repairMaxAgeSeconds)
+    const candidates = (this.undecrypted() || [])
+      .filter((message) => Number(message.timestamp) >= oldest && !skipped(message.jid))
+      .sort((a, b) => Number(b.timestamp) - Number(a.timestamp))
+      .slice(0, this.maxRepairsPerRun)
     this.state.repair.candidates = candidates.length
     for (const message of candidates) {
       if (this.stopRequested) return
       const key = { remoteJid: message.jid, fromMe: Boolean(message.fromMe), id: message.id, participant: message.participant || undefined }
+      this.resendRequested.add(message.id)
       try {
         await this.requestResend(key, { key, messageTimestamp: message.timestamp, pushName: message.pushName || undefined, participant: message.participant || undefined })
         this.state.repair.requested++
@@ -170,14 +213,18 @@ export class HistoryBackfill {
         if (this.stopRequested) return
         const oldest = oldestOf(await this.messagesFor(jid))
         if (!oldest) { this.state.chats.noAnchor++; break }
-        if (Number(oldest.timestamp) <= cutoff) { this.state.chats.reachedWindow++; break }
+        if (Number(oldest.timestamp) <= cutoff + WINDOW_SLACK_SECONDS) { this.state.chats.reachedWindow++; break }
         if (pages >= this.maxPagesPerChat) { this.state.chats.pageLimit++; break }
         if (this.state.requests >= this.maxRequests) throw new Error('backfill_request_limit')
-        const response = this.waitForResponse()
+        const response = this.waitForResponse(await this.aliasesFor(jid))
         try {
           // The anchor keeps the JID the message was stored under: a chat can
           // hold messages under both its phone and its LID alias.
-          await this.fetchHistory(this.pageSize, { remoteJid: oldest.jid || jid, id: oldest.id, fromMe: Boolean(oldest.fromMe) }, Number(oldest.timestamp) * 1000)
+          const requestId = await this.fetchHistory(this.pageSize, { remoteJid: oldest.jid || jid, id: oldest.id, fromMe: Boolean(oldest.fromMe) }, Number(oldest.timestamp) * 1000)
+          if (requestId) {
+            this.pastRequests.add(requestId)
+            if (this.waiter) this.waiter.requestId = requestId
+          }
         } catch (error) {
           this.resolveWaiter(false)
           throw error
