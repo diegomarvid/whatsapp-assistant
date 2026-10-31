@@ -33,6 +33,26 @@ instead of registering; `creds.registered` is never set by QR linking, so a
 reconnect timing out before `open` must not be read as a failed registration. Auth files
 and cache are never deleted. QR values are not written to daemon logs.
 
+## "Can't link new devices right now" (2026-10-31)
+
+Until 0.12 every connection announced the WhatsApp Web version from Baileys'
+repository file (`fetchLatestBaileysVersion`). On 2026-10-31 it was
+`2.3000.1043857760` while web.whatsapp.com served `2.3000.1052536159`; the
+bridge log showed that same stale version on all 1000 recorded connections.
+Registering a companion with an outdated client version is a known trigger of
+the phone-side "Can't link new devices right now" rejection; logins of an
+already linked device tolerate it, which is why the daemon kept reconnecting.
+
+0.12 resolves the version in order: the live service worker of
+web.whatsapp.com (`fetchLatestWaWebVersion`), Baileys' repository file, and the
+version bundled with Baileys; each lookup has an 8-second limit. `link.start`
+logs `versionSource`, and `wa doctor` shows `health.linkVersion`.
+
+The rejection is also WhatsApp's rate limit after repeated attempts, and the
+bridge never receives the reason. `wa qr` prints the operator steps: no repeated
+scans, update WhatsApp, stable network without VPN, close stale linked sessions,
+wait at least an hour, then one fresh `wa daemon restart && wa qr`.
+
 ## Update on the affected Mac
 
 Keep the daemon stopped during installation. In the affected checkout, preserve

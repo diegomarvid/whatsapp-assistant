@@ -1,13 +1,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { LinkState, hasEstablishedSession, linkOptions, shouldReconnect } from '../src/link-state.js'
-import { DisconnectReason } from 'baileys'
+import { DEFAULT_CONNECTION_CONFIG, DisconnectReason, proto } from 'baileys'
 
 test('full history remains enabled with a web browser descriptor', () => {
   const options = linkOptions({ syncFullHistory: true })
   assert.equal(options.browser[1], 'Chrome')
   assert.equal(options.syncFullHistory, true)
   assert.equal(linkOptions({ syncFullHistory: false }).syncFullHistory, false)
+})
+
+test('extended history processes the FULL chunks it requested', () => {
+  const { FULL, RECENT, ON_DEMAND } = proto.HistorySync.HistorySyncType
+  // Baileys' own default drops FULL even when syncFullHistory asked for it.
+  assert.equal(DEFAULT_CONNECTION_CONFIG.shouldSyncHistoryMessage({ syncType: FULL }), false)
+  const extended = linkOptions({ syncFullHistory: true })
+  for (const syncType of [FULL, RECENT, ON_DEMAND]) assert.equal(extended.shouldSyncHistoryMessage({ syncType }), true)
+  // Recent mode must not override Baileys: an explicit undefined would replace its default.
+  assert.equal('shouldSyncHistoryMessage' in linkOptions({ syncFullHistory: false }), false)
 })
 test('QR expires and is rejected outside the connecting socket', () => {
   let now = 1000

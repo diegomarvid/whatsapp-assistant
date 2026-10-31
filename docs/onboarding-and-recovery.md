@@ -147,7 +147,17 @@ The mirror cannot fill in older history that WhatsApp did not return, a message'
 reaction/receipt timelines, poll votes whose creation key and encrypted update
 were not observed, or past group changes, call events and deletion sequences.
 The user may explicitly request extended sync through `wa history-policy`, but
-the provider can still decline or limit what it returns.
+the provider can still decline or limit what it returns. With an extended
+policy the bridge processes every history-sync type it receives, including
+`FULL` chunks that Baileys discards by default.
+
+Inside the configured window, `wa backfill` fills older history without a QR:
+for each chat it asks the phone for the page before the oldest stored message
+(WhatsApp Web's on-demand history request) until the window is covered, the
+chat has nothing older or the phone stops answering. It first asks the phone to
+resend messages that reached this companion undecryptable. It needs the phone
+online, never sends to a contact, keeps no state of its own and can be re-run;
+`wa backfill status` and `wa backfill stop` follow it.
 
 ### Facts observed while the bridge is active
 
@@ -391,9 +401,12 @@ session: the connection stays `open`, but new messages either arrive as
 `type: unknown` with empty text (decryption failures — the bridge log shows
 `SessionCipher.decryptWithSessions` errors) or stop arriving entirely.
 
-Diagnosis: `unknownTypeMessages` in `wa status` climbing while the sender's
-messages are visible on the phone. The retry protocol usually cannot heal
-this. This is one of the few legitimate reasons to re-link: stop the daemon,
+Diagnosis: `undecryptedMessages` (and `unknownTypeMessages`) in `wa status`
+climbing while the sender's messages are visible on the phone. First run
+`wa backfill --days 7 --wait`: it asks the phone to resend each undecryptable
+placeholder, and recovered content replaces the placeholder under the same
+message ID (`recoveredMessages` in `wa status`). Only if new messages keep
+arriving undecryptable is this one of the few legitimate reasons to re-link: stop the daemon,
 delete `auth/` only (mirror, aliases and config are untouched), run
 `wa setup` and scan the new QR. Messages sent during the broken window stay
 unreadable in the mirror (they were encrypted for the dead session) but are
@@ -491,6 +504,16 @@ Before re-linking, back up `auth/` inside ignored `data/`, never delete it
 blindly. Preserve the current cache and aliases. Then show one fresh QR and
 wait for the user to scan it; do not cycle QRs or alter sync settings again
 while waiting.
+
+If the phone answers **“Can't link new devices right now”**, WhatsApp is
+temporarily refusing new links for that account; every extra scan prolongs it.
+Stop, update WhatsApp on the phone, keep it on a stable connection without VPN,
+close stale sessions of this bridge in Linked devices (the limit is four), and
+wait at least an hour before one new `wa daemon restart && wa qr`. `wa doctor`
+shows `health.linkVersion`: the bridge announces the live WhatsApp Web version
+from `web.whatsapp.com` (falling back to Baileys' file, then its bundled
+version); a stale version is a known cause of this rejection. See
+`docs/qr-link-validation.md`.
 
 ## Explicit guardrails
 

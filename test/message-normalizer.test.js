@@ -273,3 +273,11 @@ test('detects common outgoing document MIME types', () => {
   assert.equal(mimeTypeForFile('/tmp/demo.mp4'), 'video/mp4')
   assert.equal(mimeTypeForFile('/tmp/nota.ogg'), 'audio/ogg; codecs=opus')
 })
+
+test('marks a message the companion could not decrypt so it can be recovered later', () => {
+  const stub = safeMessage({ key: { id: 'AC42', remoteJid: 'work@g.us', participant: 'ana@lid' }, messageStubType: 2, messageStubParameters: ['No session found to decrypt message'], messageTimestamp: 1792699549 })
+  assert.equal(stub.type, 'unknown')
+  assert.equal(stub.text, '')
+  assert.equal(stub.undecrypted, true)
+  assert.equal(safeMessage({ key: { id: 'ok', remoteJid: 'chat@lid' }, message: { conversation: 'hola' } }).undecrypted, false)
+})

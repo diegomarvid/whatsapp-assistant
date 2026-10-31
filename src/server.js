@@ -4,12 +4,16 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { deserialize, serialize } from 'node:v8'
 import makeWASocket, {
+  DEFAULT_CONNECTION_CONFIG,
   DisconnectReason,
   decryptPollVote,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   getKeyAuthor,
+  jidNormalizedUser,
   makeCacheableSignalKeyStore,
+  proto,
   useMultiFileAuthState,
 } from 'baileys'
 import { Boom } from '@hapi/boom'
@@ -27,6 +31,10 @@ import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
 import { loadHistoryPolicy } from './history-policy.js'
 import { MirrorStore, messageKey } from './mirror-store.js'
+import { processEventBatch } from './event-batch.js'
+import { HistoryBackfill } from './history-backfill.js'
+import { ftsQuery } from './search-query.js'
+import { resolveWaVersion } from './wa-version.js'
 import { paths } from './runtime-paths.js'
 import { AgentProfiles } from './agent-providers.js'
 import { runPromptAutomation } from './agent-provider-runner.js'
@@ -74,6 +82,7 @@ let connection = 'starting'
 let lastError = null
 let socket = null
 let reconnectTimer = null
+let historyBackfill = null
 let cache = { messages: [], chats: {}, contacts: {}, groupEvents: [], callEvents: [], sync: {} }
 let cacheSaveQueue = Promise.resolve()
 // O(1) message lookups and a bounded persist write set. Every code path that
@@ -346,6 +355,33 @@ async function getMessageFromMirror(key) {
   }
 }
 
+// A direct chat can hold messages under its phone JID and under its LID (for
+// example history delivered before Baileys learned the mapping). Owner reads
+// merge both aliases so older messages stored under the other one are found.
+async function chatAliases(jid) {
+  const aliases = new Set([jid])
+  const mapping = socket?.signalRepository?.lidMapping
+  try {
+    if (jid?.endsWith('@lid') && mapping?.getPNForLID) {
+      const phone = await mapping.getPNForLID(jid)
+      if (phone) aliases.add(jidNormalizedUser(phone))
+    } else if (jid?.endsWith('@s.whatsapp.net') && mapping?.getLIDForPN) {
+      const lid = await mapping.getLIDForPN(jid)
+      if (lid) aliases.add(jidNormalizedUser(lid))
+    }
+  } catch (error) {
+    logger.warn({ err: error, jid }, 'Could not resolve the other alias of a chat')
+  }
+  return [...aliases]
+}
+
+function isUndecryptedPlaceholder(message) {
+  if (message.deleted) return false
+  if (message.undecrypted) return true
+  // Placeholders stored before the undecrypted flag existed.
+  return message.type === 'unknown' && !message.text && !message.reactionText && !message.call && !message.location && !message.poll
+}
+
 async function resolveCurrentJid(jid) {
   if (!jid || !jid.endsWith('@s.whatsapp.net')) return jid
   const mapping = socket?.signalRepository?.lidMapping
@@ -468,8 +504,16 @@ async function ingestMessages(messages, source = 'history') {
       rememberIdentity(message.participant || (!message.fromMe ? message.jid : null), message.pushName)
       const existing = findMessage(message.jid, message.id)
       if (existing) {
+      const wasUndecrypted = existing.undecrypted || (existing.type === 'unknown' && !existing.text)
       mergeIncomingMessage(existing, message)
       touchMessage(existing)
+      if (wasUndecrypted && (existing.type !== 'unknown' || existing.text)) {
+        // A resend or a history page delivered the content of a placeholder.
+        existing.undecrypted = false
+        cache.sync.recoveredMessages = Number(cache.sync.recoveredMessages || 0) + 1
+        auditMessageEvent(raw, 'message.recovered', { source })
+        changed = true
+      }
       if (message.pushName && !existing.pushName) {
         existing.pushName = message.pushName
         const previousChat = cache.chats[message.jid] || { jid: message.jid }
@@ -1015,13 +1059,16 @@ function mergeContact(contact) {
   return true
 }
 
-async function handleHistorySet({ messages, chats, contacts }) {
+async function handleHistorySet({ messages, chats, contacts, syncType }) {
   for (const chat of chats || []) mergeChat(chat)
   for (const contact of contacts || []) mergeContact(contact)
   cache.sync.lastHistorySyncAt = nowSeconds()
+  cache.sync.lastHistorySyncType = syncType ?? null
   await ingestMessages(messages || [], 'history')
   cache.sync.lastPersistedAt = nowSeconds()
   await saveCache()
+  // An on-demand set answers the single request wa backfill has in flight.
+  if (syncType === proto.HistorySync.HistorySyncType.ON_DEMAND) historyBackfill?.notifyOnDemand()
 }
 
 // WhatsApp suppresses phone push notifications while a companion looks like
@@ -1130,8 +1177,13 @@ async function connect() {
       await saveCache()
     }
   }
-  const { version } = await fetchLatestBaileysVersion()
-  console.log(JSON.stringify({ event: 'link.start', node: process.version, version, browser: 'macOS/Chrome', registered: authRegistered, syncFullHistory: historyPolicy.syncFullHistory }))
+  const { version, source: versionSource, failures: versionFailures } = await resolveWaVersion({
+    fetchWeb: () => fetchLatestWaWebVersion({}),
+    fetchBaileys: () => fetchLatestBaileysVersion(),
+    bundled: DEFAULT_CONNECTION_CONFIG.version,
+  })
+  cache.sync.linkVersion = { version, source: versionSource }
+  console.log(JSON.stringify({ event: 'link.start', node: process.version, version, versionSource, versionFailures: versionFailures.length ? versionFailures : undefined, browser: 'macOS/Chrome', registered: authRegistered, syncFullHistory: historyPolicy.syncFullHistory }))
   socket = makeWASocket({
     version,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
@@ -1143,81 +1195,57 @@ async function connect() {
     msgRetryCounterCache,
   })
 
+  const persistIf = async (changed) => {
+    if (!changed) return
+    cache.sync.lastPersistedAt = nowSeconds()
+    await saveCache()
+  }
+  const handlers = [
+    ['creds.update', () => saveCreds()],
+    ['connection.update', (update) => handleConnectionUpdate(update)],
+    ['messaging-history.set', (history) => handleHistorySet(history)],
+    ['messaging-history.status', async (status) => {
+      cache.sync.historySync = { ...status, observedAt: nowSeconds() }
+      await saveCache()
+    }],
+    ['chats.upsert', async (chats) => { if (chats.map(mergeChat).some(Boolean)) await saveCache() }],
+    ['chats.update', async (chats) => { if (chats.map(mergeChat).some(Boolean)) await saveCache() }],
+    ['contacts.upsert', async (contacts) => { if (contacts.map(mergeContact).some(Boolean)) await saveCache() }],
+    ['contacts.update', async (contacts) => { if (contacts.map(mergeContact).some(Boolean)) await saveCache() }],
+    ['messages.upsert', async (upsert) => {
+      lastLiveMessageAt = nowSeconds()
+      // A placeholder resend answers a past message (it carries requestId):
+      // merge its content without treating it as new live activity.
+      const changed = await ingestMessages(upsert.messages || [], upsert.requestId ? 'repair' : 'live')
+      cache.sync.ingestionHealthy = true
+      cache.sync.lastIngestError = null
+      cache.sync.lastPersistedAt = nowSeconds()
+      if (changed) await saveCache()
+    }],
+    ['messages.update', async (updates) => persistIf(await applyMessageUpdates(updates))],
+    ['message-receipt.update', async (updates) => persistIf(await applyReceiptUpdates(updates))],
+    ['messages.reaction', async (reactions) => persistIf(await applyReactionUpdates(reactions))],
+    ['messages.delete', async (deletion) => persistIf(await applyMessageDeletes(deletion))],
+    ['group-participants.update', async (update) => { if (applyGroupParticipantUpdates(update, appendGroupEvent)) await saveCache() }],
+    ['groups.update', async (updates) => { if (applyGroupMetadataUpdates(updates, 'metadata_update')) await saveCache() }],
+    ['groups.upsert', async (groups) => { if (applyGroupMetadataUpdates(groups, 'metadata_upsert')) await saveCache() }],
+    ['group.join-request', async (update) => {
+      if (appendGroupEvent({ groupJid: update.id, kind: 'join_request', action: update.action || null, participant: update.participant || null, author: update.author || null })) await saveCache()
+    }],
+    ['group.member-tag.update', async (update) => {
+      if (appendGroupEvent({ groupJid: update.groupId, kind: 'member_tag', action: update.label || null, participant: update.participant || null })) await saveCache()
+    }],
+    ['call', async (calls) => { if (recordCalls(calls)) await saveCache() }],
+  ]
+
   socket.ev.process(async (events) => {
     if (generation !== linkState.generation) return
-    try {
-      if (events['creds.update']) await saveCreds()
-      if (events['connection.update']) await handleConnectionUpdate(events['connection.update'])
-      if (events['messaging-history.set']) await handleHistorySet(events['messaging-history.set'])
-      if (events['messaging-history.status']) {
-        cache.sync.historySync = { ...events['messaging-history.status'], observedAt: nowSeconds() }
-        await saveCache()
-      }
-      if (events['chats.upsert']?.map(mergeChat).some(Boolean)) await saveCache()
-      if (events['chats.update']?.map(mergeChat).some(Boolean)) await saveCache()
-      if (events['contacts.upsert']?.map(mergeContact).some(Boolean)) await saveCache()
-      if (events['contacts.update']?.map(mergeContact).some(Boolean)) await saveCache()
-      if (events['messages.upsert']) {
-        const { messages } = events['messages.upsert']
-        lastLiveMessageAt = nowSeconds()
-        const changed = await ingestMessages(messages, 'live')
-        cache.sync.ingestionHealthy = true
-        cache.sync.lastIngestError = null
-        cache.sync.lastPersistedAt = nowSeconds()
-        if (changed) await saveCache()
-      }
-      if (events['messages.update']) {
-        const changed = await applyMessageUpdates(events['messages.update'])
-        if (changed) {
-          cache.sync.lastPersistedAt = nowSeconds()
-          await saveCache()
-        }
-      }
-      if (events['message-receipt.update']) {
-        const changed = await applyReceiptUpdates(events['message-receipt.update'])
-        if (changed) {
-          cache.sync.lastPersistedAt = nowSeconds()
-          await saveCache()
-        }
-      }
-      if (events['messages.reaction']) {
-        const changed = await applyReactionUpdates(events['messages.reaction'])
-        if (changed) {
-          cache.sync.lastPersistedAt = nowSeconds()
-          await saveCache()
-        }
-      }
-      if (events['messages.delete']) {
-        const changed = await applyMessageDeletes(events['messages.delete'])
-        if (changed) {
-          cache.sync.lastPersistedAt = nowSeconds()
-          await saveCache()
-        }
-      }
-      if (events['group-participants.update']) {
-        if (applyGroupParticipantUpdates(events['group-participants.update'], appendGroupEvent)) await saveCache()
-      }
-      if (events['groups.update']) {
-        if (applyGroupMetadataUpdates(events['groups.update'], 'metadata_update')) await saveCache()
-      }
-      if (events['groups.upsert']) {
-        if (applyGroupMetadataUpdates(events['groups.upsert'], 'metadata_upsert')) await saveCache()
-      }
-      if (events['group.join-request']) {
-        const update = events['group.join-request']
-        if (appendGroupEvent({ groupJid: update.id, kind: 'join_request', action: update.action || null, participant: update.participant || null, author: update.author || null })) await saveCache()
-      }
-      if (events['group.member-tag.update']) {
-        const update = events['group.member-tag.update']
-        if (appendGroupEvent({ groupJid: update.groupId, kind: 'member_tag', action: update.label || null, participant: update.participant || null })) await saveCache()
-      }
-      if (events.call && recordCalls(events.call)) await saveCache()
-    } catch (error) {
+    await processEventBatch(events, handlers, async (event, error) => {
       cache.sync.ingestionHealthy = false
-      cache.sync.lastIngestError = error.message
+      cache.sync.lastIngestError = `${event}: ${error.message}`
       await saveCache().catch(() => {})
-      logger.error({ err: error }, 'Could not process WhatsApp event batch; bridge remains connected')
-    }
+      logger.error({ err: error, event }, 'Could not process a WhatsApp event; the rest of the batch continues')
+    })
   })
 }
 
@@ -1238,6 +1266,27 @@ async function main() {
   await ensurePrivateDir(stickerEnvelopeDir)
   await ensurePrivateDir(downloadedStickerDir)
   mirrorStore = new MirrorStore(mirrorPath, { retentionDays: RETENTION_DAYS })
+  historyBackfill = new HistoryBackfill({
+    fetchHistory: (count, key, timestampMs) => {
+      if (connection !== 'open' || !socket?.fetchMessageHistory) throw new Error('not_connected')
+      return socket.fetchMessageHistory(count, key, timestampMs)
+    },
+    requestResend: (key, data) => {
+      if (connection !== 'open' || !socket?.requestPlaceholderResend) throw new Error('not_connected')
+      return socket.requestPlaceholderResend(key, data)
+    },
+    chats: () => {
+      const latest = new Map()
+      for (const message of cache.messages) latest.set(message.jid, Math.max(latest.get(message.jid) || 0, Number(message.timestamp) || 0))
+      return [...latest].map(([jid, latestAt]) => ({ jid, latestAt }))
+    },
+    messagesFor: async (jid) => {
+      const aliases = new Set(await chatAliases(jid))
+      return cache.messages.filter((message) => aliases.has(message.jid))
+    },
+    undecrypted: () => cache.messages.filter(isUndecryptedPlaceholder),
+    logger,
+  })
   msgRetryCounterCache = mirrorStore.createRetryCache('message-retry', { ttlSeconds: 60 * 60 })
   outboundRetryStore = mirrorStore.createRetryCache('outbound-send', { ttlSeconds: 24 * 60 * 60 })
   outboundSender = new IdempotentSender({ store: outboundRetryStore })
@@ -1303,14 +1352,19 @@ async function main() {
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
     const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision', '/automation/human/ask', '/automation/human/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite) return json(response, 405, { error: 'method_not_allowed' })
+    const isBackfillWrite = ['POST', 'DELETE'].includes(request.method) && url.pathname === '/history/backfill'
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
       const unknownTypeMessages = cache.messages.reduce((count, message) => count + (message.type === 'unknown' ? 1 : 0), 0)
+      const undecryptedMessages = cache.messages.reduce((count, message) => count + (isUndecryptedPlaceholder(message) ? 1 : 0), 0)
+      const backfill = historyBackfill?.status()
       return json(response, 200, {
-        connection, lastError, qrPending: Boolean(linkState.pending(connection)), allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages,
+        connection, lastError, qrPending: Boolean(linkState.pending(connection)), allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages, undecryptedMessages,
         ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite',
+        mirror: mirrorStore?.stats() || null,
+        backfill: backfill ? { running: backfill.running, phase: backfill.phase, result: backfill.result, error: backfill.error, requests: backfill.requests, chatsDone: backfill.chats.done, chatsTotal: backfill.chats.total, finishedAt: backfill.finishedAt } : null,
         automation: { promptAutomations: promptAutomations ? 'ready' : 'disabled', detail: promptAutomationDisabledReason },
       })
     }
@@ -1646,11 +1700,72 @@ async function main() {
       if (!jid) return json(response, 400, { error: 'missing_jid' })
       if (!automationCapabilities.canRead(authorization, jid)) return capabilityForbidden(response)
       const messageLimit = normalizeLimit(url.searchParams.get('limit'), 50, 10_000)
-      const messages = cache.messages
-        .filter((message) => message.jid === jid)
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .slice(0, messageLimit)
-      return json(response, 200, { jid, messages })
+      const since = Number.parseInt(url.searchParams.get('since') || '', 10)
+      const until = Number.parseInt(url.searchParams.get('until') || '', 10)
+      Promise.resolve(authorization.kind === 'full' ? chatAliases(jid) : [jid]).then((aliases) => {
+        const accepted = new Set(aliases)
+        const messages = cache.messages
+          .filter((message) => accepted.has(message.jid)
+            && (!Number.isFinite(since) || message.timestamp >= since)
+            && (!Number.isFinite(until) || message.timestamp < until))
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, messageLimit)
+        json(response, 200, { jid, aliases, messages })
+      }).catch((error) => json(response, 500, { error: 'messages_failed', message: error.message }))
+      return
+    }
+    if (url.pathname === '/history/backfill') {
+      if (authorization.kind !== 'full') return capabilityForbidden(response)
+      if (request.method === 'GET') return json(response, 200, historyBackfill.status())
+      if (request.method === 'DELETE') return json(response, 200, historyBackfill.stop())
+      requestBody(request).then(async ({ days, jid, repair } = {}) => {
+        if (connection !== 'open') return json(response, 409, { error: 'not_connected' })
+        const jids = jid ? await chatAliases(jid) : null
+        try {
+          return json(response, 202, historyBackfill.start({ days: days || RETENTION_DAYS, jids, repair: repair !== false }))
+        } catch (error) {
+          return json(response, 409, { error: error.message })
+        }
+      }).catch((error) => json(response, 400, { error: 'invalid_request', message: error.message }))
+      return
+    }
+    if (url.pathname === '/search' && url.searchParams.getAll('t').length) {
+      const parameters = url.searchParams
+      const raw = parameters.get('raw') === '1'
+      let match
+      try {
+        match = ftsQuery(parameters.getAll('t'), { any: parameters.get('any') === '1', prefix: parameters.get('prefix') === '1', raw })
+      } catch (error) {
+        return json(response, 400, { error: 'invalid_query', message: error.message })
+      }
+      const number = (name) => {
+        const value = Number.parseInt(parameters.get(name) || '', 10)
+        return Number.isFinite(value) ? value : null
+      }
+      const relative = number('since')
+      const after = number('after')
+      const since = [relative == null ? null : nowSeconds() - relative, after].filter((value) => value != null)
+      const requestedScope = parameters.get('scope')
+      const direction = parameters.get('direction')
+      Promise.resolve().then(async () => {
+        const chat = parameters.get('jid')
+        const jids = chat ? await chatAliases(chat) : (parameters.get('jids')?.split(',').filter(Boolean) || null)
+        const sender = parameters.get('sender')
+        const messages = mirrorStore.searchMessages({
+          match,
+          jids,
+          scope: ['direct', 'groups'].includes(requestedScope) ? requestedScope : 'all',
+          since: since.length ? Math.max(...since) : null,
+          until: number('before'),
+          from: ['me', 'incoming'].includes(direction) ? direction : 'any',
+          senders: sender ? await chatAliases(sender) : null,
+          types: parameters.get('types')?.split(',').filter(Boolean) || null,
+          order: parameters.get('order') === 'relevance' ? 'relevance' : 'recent',
+          limit: normalizeLimit(parameters.get('limit'), 50, 1000),
+        })
+        json(response, 200, { query: parameters.getAll('t'), match, messages })
+      }).catch((error) => json(response, raw ? 400 : 500, { error: raw ? 'invalid_query' : 'search_failed', message: error.message }))
+      return
     }
     if (url.pathname === '/search') {
       const query = url.searchParams.get('q')?.trim()

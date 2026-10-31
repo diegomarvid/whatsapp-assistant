@@ -8,7 +8,7 @@ import path from 'node:path'
 import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import {
-  bridgePost, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
+  bridgePost, bridgeRequest, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
   requireFreshCoverage, resolveMessageSelector, revokeMessage,
   sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
@@ -32,7 +32,7 @@ import { AutomationHuman, runHumanAdapter } from '../src/automation-human.js'
 import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
 import { validateReviewPolicy, runReviewAdapter, withReviewDefaults } from '../src/review-adapter.js'
 import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
-import { parseSince } from '../src/search-scope.js'
+import { parseSearchArguments, searchParameters } from '../src/search-cli.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
 import { configureTranscription, pullTranscriptionModel, setupTranscription, transcribe, transcriptionDoctor } from '../src/transcription.js'
 
@@ -110,9 +110,10 @@ Comandos:
   wa coverage <alias or phone>
   wa history-policy show|set <days|all>
   wa help data                       # qué datos recientes son históricos y cuáles requieren observación activa
-  wa history <alias or phone> [limit] [--ids]
-  wa search <alias or phone> <text>
-  wa search-all <text> [--since 7d] [--direct|--groups <list>] [--ids]
+  wa history <alias or phone> [limit] [--before|--after|--date YYYY-MM-DD] [--ids]
+  wa search <alias or phone> <term...> [search options]
+  wa search-all <term...> [--chat <alias>] [--from me|incoming|<alias>] [--since 30d|--after|--before|--date YYYY-MM-DD] [--type text|image|audio|video|document] [--any] [--prefix] [--raw] [--rank] [--limit N] [--direct|--groups <list>] [--ids|--json]
+  wa backfill [--days N] [--chat <alias>] [--no-repair] [--wait] | status | stop
   wa review <alias or phone> [--date today|yesterday|YYYY-MM-DD [--start HH:MM] [--end HH:MM] | --since 12h|7d [--until now|YYYY-MM-DD]] [--from incoming|me|any] [--any term...|--all term...] [--context 4] [--ids|--json]
   wa transcribe <alias or phone> latest
   wa transcribe setup                # instala sólo el runtime Python privado
@@ -185,6 +186,9 @@ Elegí el comando según la situación:
   “¿En qué chat se habló de Oracle esta semana?”
     wa search-all "Oracle" --since 7d --ids
 
+  “¿Qué dijo Ana del presupuesto en septiembre?” (toda la ventana retenida, sin tope de 200)
+    wa search-all presupuesto presupuestos --any --from ana --after 2026-09-01 --before 2026-10-01 --json
+
   “Necesito inspeccionar exactamente este mensaje.”
     wa message tomi <message-id>
 
@@ -231,12 +235,13 @@ Lectura y búsqueda:
   wa latest-incoming <contacto>     — Último mensaje recibido; usar para “qué me mandó X”.
   wa latest <contacto>              — Evento más nuevo sin importar quién lo envió.
   wa coverage <contacto>            — Comprobar que la lectura está fresh.
-  wa history <contacto> 20 --ids    — Leer una cantidad concreta de mensajes recientes.
+  wa history <contacto> 20 --ids    — Leer una cantidad concreta de mensajes; --before/--date para ir atrás.
   wa review <contacto> ...          — Investigar un tema/fecha y ampliar por horas; wa help review.
-  wa search <contacto> <texto>      — Búsqueda rápida dentro de un chat.
-  wa search-all <texto> ...         — Encontrar el chat donde apareció un texto.
+  wa search <contacto> <términos>   — Buscar dentro de un chat en toda la ventana (sin tildes ni mayúsculas).
+  wa search-all <términos> ...      — Buscar en todos los chats: --from, --after/--before, --type, --any, --prefix, --rank, --json.
   wa message <contacto> <id>        — Inspeccionar el evento exacto y todos sus hechos guardados.
   wa history-policy show|set        — Ver o cambiar retención; una ventana mayor no garantiza backfill.
+  wa backfill [--days N] [--wait]   — Pedirle al teléfono historial viejo y mensajes sin descifrar, sin QR.
 
 Hechos estructurados reportados por WhatsApp:
   wa delivery <contacto> <id>       — Estado agregado de un mensaje propio directo.
@@ -355,7 +360,7 @@ Herramientas internas del agente (sólo con el permiso efímero de su corrida):
 
 Guías: docs/autonomous-conversations.md y docs/draft-review.md. automation forward fue retirado.`,
     agents: `Perfiles de proveedores de IA:\n  Claude: wa agents profile set seguimiento --provider claude --model opus --effort xhigh --prompt-file /ruta/absoluta/prompt.md\n  Código acotado: wa agents profile set nelcor --provider claude --model opus --effort medium --prompt-file /ruta/prompt.md --workspace /ruta/absoluta/repo\n  Codex:  wa agents profile set seguimiento-codex --provider codex --model gpt-5.6-luna --reasoning-effort max --prompt-file /ruta/absoluta/prompt.md\n  wa agents profile list\n  wa agents profile show seguimiento\n  wa agents doctor seguimiento       # binario, versión y flags reales; no consume tokens\n  wa agents validate seguimiento     # prueba mínima neutra; sí puede consumir el proveedor\n  wa agents validate seguimiento --with-prompt  # prueba explícita incluyendo el prompt real\n\nEstos comandos no crean reglas ni envían WhatsApps. El catálogo trae aliases útiles pero no bloquea modelos nuevos o IDs exactos: un perfil acepta el identificador que escribas. En Codex, “Luna Max” significa \`--model gpt-5.6-luna --reasoning-effort max\`. \`doctor\` detecta cambios del binario y \`validate\` prueba el proveedor, autenticación, modelo y flags elegidos. Claude usa \`--effort\`; Codex usa \`--reasoning-effort\`, que se traduce a su configuración \`model_reasoning_effort\`. \`--workspace\` agrega edición y Bash únicamente dentro de ese directorio local; sin él el agente queda WhatsApp-only. Los prompts se guardan como archivo privado referenciado por ruta, con huella y permisos seguros. Para una automatización, el prompt no devuelve una acción estructurada: usa el CLI \`wa\` directamente dentro del scope autorizado.`,
-    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
+    data: `Disponibilidad de datos (leer antes de sacar conclusiones):\n\nVentana y sincronización:\n  - El default local es 7 días; ver o cambiar la ventana con wa history-policy show|set <days|all>.\n  - Más de 7 días pide full-history a WhatsApp con perfil desktop. El proveedor decide cuánto entrega y puede limitarlo o fallar; no es un archivo garantizado.\n  - wa backfill le pide al teléfono, sin QR, los mensajes anteriores de cada chat hasta cubrir la ventana y el reenvío de mensajes que llegaron sin poder descifrarse. Necesita el teléfono prendido; el teléfono decide qué devuelve.\n  - Usar wa coverage <contacto> antes de decir que “último” está actualizado.\n\nSe puede consultar de antes de instalar, sólo si WhatsApp lo incluyó en el sync y permanece dentro de la ventana configurada:\n  - texto, hora, remitente, citas, tipo de mensaje y adjuntos disponibles;\n  - el contenido actual de mensajes editados o efímeros que haya llegado en el sync;\n  - reacciones o receipts únicamente si llegaron dentro de ese mensaje sincronizado.\n\nNo se puede reconstruir retroactivamente:\n  - historial que WhatsApp no devolvió, ni el texto original de una edición;\n  - quién leyó, entregó o reaccionó antes de que el bridge recibiera ese dato;\n  - votos de encuestas anteriores si no se observó su clave y su actualización;\n  - cambios de grupo, llamadas perdidas, borrados y la secuencia histórica de eventos previos.\n\nDesde que el bridge está conectado y sano:\n  - entran mensajes nuevos, cambios de edición/borrado y adjuntos de la ventana;\n  - se guardan receipts, delivery, reacciones, votos de encuestas, llamadas y eventos de grupo que WhatsApp entregue;\n  - cada mensaje nuevo incluye preview factual de link, cita, menciones, forwarding y metadatos de media cuando WhatsApp los trae;\n  - estas señales siguen siendo reportes de WhatsApp, no prueba de intención humana.\n\nLímites que nunca se infieren:\n  - sin read receipt no significa “no lo vio” ni “me está ignorando”;\n  - receipts individuales de grupo aplican a mensajes propios;\n  - mensajes view-once no se exponen ni descargan;\n  - canales/newsletters, comunidades y estados no se espejan: sólo chats directos y grupos.\n\nComandos útiles: wa history-policy show, wa coverage <contacto>, wa history <contacto> 20 --ids, wa message <contacto> <id>.`,
     media: `Adjuntos:\n  wa audios contacto / wa audio contacto <message-id>\n  wa images contacto / wa image contacto <message-id>\n  wa videos contacto / wa video contacto <message-id>\n  wa stickers contacto / wa sticker contacto <message-id>\n  wa files contacto / wa file contacto <message-id>\n  wa send-image contacto /ruta/foto.jpg [caption]\n  wa send-video contacto /ruta/video.mp4 [caption]\n  wa send-audio contacto /ruta/audio.ogg [--voice]\n\nEl CLI descarga sólo el adjunto seleccionado y devuelve un path absoluto para que la IA lo abra con sus propias capacidades. La transcripción es opcional y local; nunca descarga un modelo sin aprobación explícita.`,
     daemon: `Servicio local:\n  wa daemon status\n  wa daemon restart\n  wa doctor\n\nEn macOS, setup instala un LaunchAgent. En Linux con systemd, instala un servicio de usuario. En ambos casos, mantenerlo activo permite recibir eventos nuevos. Un restart normal conserva auth y no necesita QR.\n\nEn un VPS Linux, habilitá linger una vez para que sobreviva al logout y reboot:\n  sudo loginctl enable-linger "$USER"\n\nNo ejecutar wa con sudo: el daemon debe correr con el mismo usuario que escaneó el QR.`,
     privacy: `Privacidad y límites:\n  - API sólo en 127.0.0.1.\n  - Retención default: 7 días; una ventana mayor requiere una elección explícita con wa history-policy.\n  - auth, SQLite, token y aliases no entran a Git ni Homebrew.\n  - No resetear auth ni pedir QR por un mensaje aparentemente viejo: usar doctor, status y coverage primero.`,
@@ -372,7 +377,7 @@ function historyPolicyReport(policy, { configured = true } = {}) {
     providerRequest: policy.syncFullHistory
       ? 'Solicita full-history a WhatsApp con perfil desktop. WhatsApp puede entregar menos historial o rechazar/fallar el sync.'
       : 'Solicita sólo sync reciente de WhatsApp.',
-    apply: 'Después de cambiarla, ejecutar `wa daemon restart` (o `wa setup` en una instalación nueva). No borra auth ni garantiza recuperar mensajes que WhatsApp no entregue.',
+    apply: 'Después de cambiarla, ejecutar `wa daemon restart` (o `wa setup` en una instalación nueva). No borra auth ni garantiza recuperar mensajes que WhatsApp no entregue. Para llenar la ventana hacia atrás sin QR: `wa backfill`.',
   }
 }
 
@@ -447,7 +452,27 @@ async function showQr() {
   console.log(`Scan in WhatsApp → Linked devices. Expires ${new Date(current.expiresAt).toISOString()}`)
   qrcodeTerminal.generate(current.code, { small: true })
   console.log(qrPath)
+  console.log(QR_REJECTED_HINT)
   if (process.platform === 'darwin') tryRun('open', [qrPath])
+}
+
+// "Can't link new devices right now" is decided by WhatsApp on the phone; the
+// bridge never sees the reason. Repeating scans makes the temporary block longer.
+const QR_REJECTED_HINT = `Si el teléfono dice «Can't link new devices right now» / «No se pueden vincular dispositivos nuevos ahora»:
+  1. No escanees de nuevo en loop: WhatsApp está frenando vinculaciones nuevas en esa cuenta y cada intento lo alarga.
+  2. Actualizá WhatsApp en el teléfono y dejalo con internet estable (sin VPN ni modo ahorro de datos).
+  3. En Dispositivos vinculados cerrá sesiones viejas de este bridge (el límite es 4 dispositivos).
+  4. Esperá al menos una hora y recién ahí: wa daemon restart && wa qr
+  wa doctor muestra la versión de WhatsApp Web anunciada (health.linkVersion); debe venir de web.whatsapp.com.`
+
+async function bridgePostOrReport(body) {
+  try {
+    return await bridgeRequest('/history/backfill', { method: 'POST', body })
+  } catch (error) {
+    if (error.message === 'backfill_running') throw new Error('Ya hay un backfill corriendo. Ver: wa backfill status · cortar: wa backfill stop')
+    if (error.message === 'not_connected') throw new Error('El bridge no está conectado a WhatsApp. Ver: wa status / wa doctor')
+    throw error
+  }
 }
 
 async function installedBaileysVersion() {
@@ -1400,34 +1425,104 @@ async function main() {
     if (selected.media.length) console.log(`Media cercana: ${selected.media.map((item) => `${item.type}:${item.id}`).join(', ')}`)
     return
   }
-  if (command === 'search-all') {
-    const query = args.shift()?.trim()
-    if (!query) return usage()
-    let sinceSeconds = null
-    let scope = 'all'
-    let groupList = null
-    let ids = false
-    while (args.length) {
-      const option = args.shift()
-      if (option === '--since') sinceSeconds = parseSince(args.shift())
-      else if (option === '--direct') scope = 'direct'
-      else if (option === '--groups') { scope = 'groups'; groupList = args.shift() || null }
-      else if (option === '--ids') ids = true
-      else throw new Error(`Unknown option: ${option}`)
-    }
-    const allowedGroups = groupList ? ((await loadGroupLists()).lists[groupList]?.groups?.map((group) => group.jid) || []) : null
-    const parameters = new URLSearchParams({ q: query, limit: '100' })
-    if (sinceSeconds) parameters.set('since', String(sinceSeconds))
-    if (scope !== 'all') parameters.set('scope', scope)
-    if (allowedGroups?.length) parameters.set('jids', allowedGroups.join(','))
-    const [{ messages: matches }, identities] = await Promise.all([
-      request(`/search?${parameters.toString()}`),
+  if (command === 'search-all' || command === 'search') {
+    const target = command === 'search' ? args.shift() : null
+    if (command === 'search' && !target) return usage()
+    const options = parseSearchArguments(args, { allowChat: command === 'search-all' })
+    const chatTarget = target || options.chat
+    const contact = chatTarget ? await resolve(chatTarget) : null
+    const sender = options.from && !['me', 'incoming', 'any'].includes(options.from) ? (await resolve(options.from)).jid : null
+    const groupJids = options.groupList ? ((await loadGroupLists()).lists[options.groupList]?.groups?.map((group) => group.jid) || []) : null
+    if (options.groupList && !groupJids.length) throw new Error(`The group list ${options.groupList} has no confirmed groups.`)
+    const parameters = searchParameters(options, { jid: contact?.jid, sender, groupJids })
+    const [result, identities] = await Promise.all([
+      request(`/search?${parameters.toString()}`, { timeoutMs: 15_000 }),
       readIdentities(),
     ])
     const cache = { chats: Object.fromEntries(identities.chats.map((chat) => [chat.jid, chat])), contacts: identities.contacts }
-    return printMessages(matches, { ids, cache, empty: 'Sin coincidencias en la ventana local retenida.' })
+    if (options.json) {
+      return console.log(JSON.stringify({
+        schema: 'wa-search.v1',
+        terms: options.terms,
+        match: result.match,
+        count: result.messages.length,
+        messages: result.messages.map((message) => ({
+          id: message.id,
+          chat: message.jid,
+          chatName: cache.contacts[message.jid]?.name || cache.chats[message.jid]?.name || null,
+          fromMe: message.fromMe,
+          sender: message.fromMe ? null : (message.participant || message.jid),
+          pushName: message.pushName || null,
+          timestamp: message.timestamp,
+          localTimestamp: formatReviewLocalTimestamp(message.timestamp),
+          type: message.type,
+          text: message.text,
+          snippet: message.snippet,
+        })),
+      }, null, 2))
+    }
+    return printMessages(result.messages, { ids: options.ids, cache: contact ? null : cache, empty: 'Sin coincidencias en la ventana local retenida.' })
   }
-  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'history' || command === 'search' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'links' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
+  if (command === 'history') {
+    const target = args.shift()
+    if (!target) return usage()
+    const contact = await resolve(target)
+    let limit = 20
+    let ids = false
+    let since = null
+    let until = null
+    while (args.length) {
+      const option = args.shift()
+      const day = () => {
+        const value = args.shift()
+        if (!value) throw new Error(`${option} needs a date.`)
+        return reviewWindow({ date: value, timeZone: REVIEW_TIME_ZONE })
+      }
+      if (option === '--ids') ids = true
+      else if (option === '--before') until = day().since
+      else if (option === '--after') since = day().since
+      else if (option === '--date') ({ since, until } = day())
+      else if (/^\d+$/.test(option)) limit = Math.min(Number.parseInt(option, 10), 10_000)
+      else throw new Error(`Unknown option: ${option}`)
+    }
+    // A window in the past does not depend on the live connection.
+    if (until == null) await requireFreshCoverage(contact)
+    const parameters = new URLSearchParams({ jid: contact.jid, limit: String(limit) })
+    if (since != null) parameters.set('since', String(since))
+    if (until != null) parameters.set('until', String(until))
+    const { messages } = await request(`/messages?${parameters.toString()}`, { timeoutMs: 10_000 })
+    return printMessages(messages, { ids })
+  }
+  if (command === 'backfill') {
+    if (args[0] === 'status') return console.log(JSON.stringify(await bridgeRequest('/history/backfill'), null, 2))
+    if (args[0] === 'stop') return console.log(JSON.stringify(await bridgeRequest('/history/backfill', { method: 'DELETE' }), null, 2))
+    const body = { repair: true }
+    let wait = false
+    while (args.length) {
+      const option = args.shift()
+      if (option === '--days') body.days = Number.parseInt(args.shift() || '', 10)
+      else if (option === '--chat') body.jid = (await resolve(args.shift() || '')).jid
+      else if (option === '--no-repair') body.repair = false
+      else if (option === '--wait') wait = true
+      else throw new Error(`Unknown option: ${option}`)
+    }
+    if (body.days !== undefined && (!Number.isFinite(body.days) || body.days < 1)) throw new Error('--days must be a positive number of days.')
+    const started = await bridgePostOrReport(body)
+    console.log(`Backfill iniciado: ${started.days} días (hasta ${formatReviewLocalTimestamp(started.cutoff)}). El teléfono tiene que estar prendido y con internet.`)
+    if (!wait) return console.log('Sigue en segundo plano. Progreso: wa backfill status · cortar: wa backfill stop')
+    let last = ''
+    while (true) {
+      await new Promise((resolveTimer) => setTimeout(resolveTimer, 5000))
+      const status = await bridgeRequest('/history/backfill')
+      const line = status.phase === 'repair'
+        ? `reparando mensajes sin descifrar: ${status.repair.requested}/${status.repair.candidates}`
+        : `chats ${status.chats.done}/${status.chats.total} · pedidos ${status.requests} · respuestas ${status.responses} · timeouts ${status.timeouts}`
+      if (line !== last) console.log(`[${new Date().toLocaleTimeString('es-UY')}] ${line}`)
+      last = line
+      if (!status.running) return console.log(JSON.stringify(status, null, 2))
+    }
+  }
+  if (command === 'latest' || command === 'latest-incoming' || command === 'coverage' || command === 'transcribe' || command === 'audios' || command === 'audio' || command === 'images' || command === 'image' || command === 'videos' || command === 'video' || command === 'stickers' || command === 'sticker' || command === 'files' || command === 'file' || command === 'locations' || command === 'contacts' || command === 'polls' || command === 'poll' || command === 'calls' || command === 'links' || command === 'group-events' || command === 'message' || command === 'delivery' || command === 'receipts' || command === 'unread-by' || command === 'reactions' || command === 'react') {
     const target = args.shift()
     if (!target) return usage()
     const contact = await resolve(target)
@@ -1443,11 +1538,6 @@ async function main() {
       const latest = command === 'latest-incoming' ? messages.find((message) => !message.fromMe) : messages[0]
       if (!latest) return console.log(command === 'latest-incoming' ? 'No hay mensajes entrantes cacheados para este chat.' : 'No hay mensajes cacheados para este chat.')
       return printMessages([latest], { ids: args.includes('--ids') })
-    }
-    if (command === 'history') {
-      await requireFreshCoverage(contact)
-      const limit = Number.parseInt(args.find((argument) => argument !== '--ids') || '20', 10)
-      return printMessages(messages.slice(0, limit), { ids: args.includes('--ids') })
     }
     if (command === 'transcribe' || command === 'audio') {
       const audioId = args[0] || 'latest'
@@ -1592,9 +1682,6 @@ async function main() {
       await reactToMessage(contact.jid, message.id, emoji)
       return console.log('Reaction sent.')
     }
-    const query = args.join(' ').trim().toLocaleLowerCase()
-    if (!query) return usage()
-    return printMessages(messages.filter((message) => message.text.toLocaleLowerCase().includes(query)))
   }
   usage()
 }

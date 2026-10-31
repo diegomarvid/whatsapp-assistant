@@ -1,8 +1,14 @@
 import { randomUUID } from 'node:crypto'
 import { Browsers, DisconnectReason } from 'baileys'
 
+// syncFullHistory only asks WhatsApp for the full history. Baileys' default
+// shouldSyncHistoryMessage then discards every HistorySyncType.FULL chunk, so
+// an extended policy must also opt in to processing what it asked for.
+// Recent mode keeps Baileys' default untouched.
 export function linkOptions(policy) {
-  return { browser: Browsers.macOS('Chrome'), syncFullHistory: policy.syncFullHistory }
+  const options = { browser: Browsers.macOS('Chrome'), syncFullHistory: policy.syncFullHistory }
+  if (policy.syncFullHistory) options.shouldSyncHistoryMessage = () => true
+  return options
 }
 
 // Runtime-only lease: a file left by a dead process can never authorize a QR.

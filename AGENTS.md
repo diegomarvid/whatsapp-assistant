@@ -8,6 +8,13 @@ local retention in the durable SQLite mirror, no autonomous sending unless an ex
 Do not reset `auth/`, change history-sync settings, or ask for another QR
 without first following the recovery checks in that document.
 
+Missing or undecryptable messages inside the configured window are recovered
+with `wa backfill` (on-demand history and placeholder resend from the linked
+phone), never with a re-link. An extended policy also opts in to processing
+`FULL` history chunks (`linkOptions`), which Baileys drops by default. Search
+goes through the SQLite FTS5 index in `mirror.sqlite`; keep its filters
+structural.
+
 ## Baileys upgrade playbook
 
 This project is a deliberately thin wrapper over Baileys: one socket factory,

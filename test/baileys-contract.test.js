@@ -5,14 +5,18 @@
 // Baileys import added to src/.
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import makeWASocket, {
   Browsers,
+  DEFAULT_CONNECTION_CONFIG,
   DisconnectReason,
   decryptPollVote,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   getKeyAuthor,
   generateWAMessageFromContent,
+  jidNormalizedUser,
   makeCacheableSignalKeyStore,
   proto,
   useMultiFileAuthState,
@@ -47,4 +51,24 @@ test('keeps the protobuf stub types used to normalize missed calls', () => {
 test('reserved automation message IDs survive Baileys message generation', () => {
   const message = generateWAMessageFromContent('test@g.us', { conversation: 'Test' }, { userJid: '123@s.whatsapp.net', messageId: '3EB0RESERVED', timestamp: new Date() })
   assert.equal(message.key.id, '3EB0RESERVED')
+})
+
+test('keeps the history-sync and recovery surface the mirror depends on', () => {
+  const types = proto.HistorySync.HistorySyncType
+  for (const name of ['FULL', 'RECENT', 'ON_DEMAND']) assert.equal(typeof types[name], 'number', `HistorySyncType.${name} must exist`)
+  assert.equal(typeof DEFAULT_CONNECTION_CONFIG.shouldSyncHistoryMessage, 'function', 'linkOptions overrides this hook for extended retention')
+  assert.equal(typeof proto.WebMessageInfo.StubType.CIPHERTEXT, 'number', 'undecryptable placeholders are marked by this stub type')
+  assert.equal(typeof jidNormalizedUser, 'function', 'LID and phone aliases are normalized before merging a chat')
+})
+
+test('the socket exposes on-demand history and placeholder resend', async () => {
+  // Building a socket opens a WebSocket, so check the factory's returned surface
+  // in the installed source instead. wa backfill calls both methods.
+  const { readFile } = await import('node:fs/promises')
+  const entry = fileURLToPath(import.meta.resolve('baileys'))
+  const source = await readFile(path.join(path.dirname(entry), 'Socket', 'messages-recv.js'), 'utf8')
+  for (const method of ['fetchMessageHistory', 'requestPlaceholderResend']) {
+    assert.match(source, new RegExp(`const ${method} = async \\(`), `${method} must still be defined by the messages socket`)
+    assert.match(source, new RegExp(`\\b${method},`), `${method} must still be returned by the messages socket`)
+  }
 })

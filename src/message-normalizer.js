@@ -207,6 +207,9 @@ export function safeMessage(message, { source = 'history', capturedAt = Math.flo
     links,
     linkPreview: linkPreviewOf(content, links),
     type: contentTypeOf(content) || 'unknown',
+    // WhatsApp delivered the message but this companion could not decrypt it.
+    // The phone still has the content: `wa backfill` asks it to resend.
+    undecrypted: Number(message.messageStubType) === proto.WebMessageInfo.StubType.CIPHERTEXT,
     pushName: message.pushName || null,
     audioRef: null,
     imageRef: null,

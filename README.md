@@ -287,6 +287,23 @@ vínculo o sync extendido falla, volver a `wa history-policy set 7`, reiniciar e
 daemon y conservar `auth/`; no hace falta borrar estado ni escanear un QR de
 nuevo salvo que WhatsApp haya cerrado la sesión.
 
+Con una ventana extendida el bridge también **procesa** los bloques `FULL` de
+historial que pidió (Baileys los descarta por defecto). Para llenar la ventana
+hacia atrás sin volver a vincular:
+
+```bash
+wa backfill --days 90 --wait   # pide al teléfono, chat por chat, lo anterior al mensaje más viejo guardado
+wa backfill status             # progreso; wa backfill stop lo corta
+```
+
+`wa backfill` primero le pide al teléfono que reenvíe los mensajes que llegaron
+sin poder descifrarse (`undecryptedMessages` en `wa status`) y después pagina
+cada chat hacia atrás, de a 50 mensajes, hasta cubrir la ventana. Es lo mismo
+que hace WhatsApp Web al subir en un chat: necesita el teléfono prendido y con
+internet, nunca escribe a un contacto y se puede repetir: siempre retoma desde
+el mensaje más viejo que ya está guardado. Un chat sin ningún mensaje guardado
+no tiene ancla y queda afuera.
+
 Si una persona o un agente necesita orientación dentro del propio CLI:
 
 ```bash
@@ -500,8 +517,10 @@ Contactos como complemento. No copia la agenda al mirror.
 | `wa calls contacto` | Eventos de llamada que WhatsApp entregó mientras el bridge estaba activo, más mensajes de llamada perdida cuando existan. |
 | `wa links contacto` | URLs HTTP(S) literales del chat, con ID, autor, hora y cobertura del mirror; no abre ni resume destinos. |
 | `wa group-events grupo` | Cambios de participantes y metadatos de grupo observados por el bridge. |
-| `wa search contacto "presupuesto"` | Busca texto dentro de un chat. |
-| `wa search-all "Oracle" [--since 7d] [--ids]` | Busca texto en todos los chats de la ventana retenida (toda la ventana si no se acota) e indica de qué chat es cada resultado. |
+| `wa search contacto presupuesto "precio final"` | Busca dentro de un chat en **toda** la ventana retenida, con índice full-text (SQLite FTS5): sin distinguir tildes ni mayúsculas, cada argumento es una palabra entera y uno entre comillas es una frase. Acepta las mismas opciones que `search-all` salvo `--chat`. |
+| `wa search-all "Oracle" [--since 7d] [--ids]` | Busca en todos los chats e indica de qué chat es cada resultado. Filtros estructurales: `--chat <contacto>`, `--from me\|incoming\|<contacto>`, `--after/--before/--date YYYY-MM-DD` (hora local de Montevideo), `--since 30d`, `--type text\|image\|audio\|video\|document`, `--direct`, `--groups <lista>`. Operadores: `--any` (OR), `--prefix` (`reserv` → reserva/reservas), `--raw` (sintaxis FTS5: `OR`, `NOT`, `NEAR`, `"frase"`, `prefijo*`). `--rank` ordena por relevancia, `--limit` hasta 1000 y `--json` devuelve `wa-search.v1` con fragmento resaltado. |
+| `wa history contacto 500 --before 2026-10-01` | Lee mensajes de cualquier tramo de la ventana (`--before`, `--after`, `--date`), sin el tope fijo de 200. |
+| `wa backfill [--days 90] [--chat contacto] [--wait]` | Le pide al teléfono, sin QR, el historial anterior de cada chat y el reenvío de mensajes sin descifrar. `status` y `stop` para seguirlo. |
 | `wa review contacto --date today --from incoming --any término... --context 4 --ids` | Arma evidencia contextual de un tema: identidad canónica, cobertura fresca, hora local de cada match, diálogo cercano y media disponible. |
 | `wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids` | Devuelve todos los mensajes del tramo horario local, sin depender de que contengan un término. |
 

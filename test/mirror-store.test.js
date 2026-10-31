@@ -122,3 +122,47 @@ test('a dirty-key persist only rewrites the touched messages but still prunes by
   store.close()
   fs.rmSync(directory, { recursive: true, force: true })
 })
+
+test('full-text search folds accents, follows upserts and retention, and filters structurally', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-mirror-'))
+  const filename = path.join(directory, 'mirror.sqlite')
+  const store = new MirrorStore(filename, { retentionDays: 90 })
+  const now = 10_000_000
+  const base = { chats: {}, contacts: {}, groupEvents: [], callEvents: [], sync: {} }
+  const messages = [
+    { jid: 'tomi@lid', id: 'a', timestamp: now - 100, fromMe: false, participant: null, type: 'conversation', text: 'Mañana vemos la reunión con Tomás' },
+    { jid: 'tomi@lid', id: 'b', timestamp: now - 50, fromMe: true, participant: null, type: 'conversation', text: 'Dale, reunion confirmada' },
+    { jid: 'work@g.us', id: 'c', timestamp: now - 10, fromMe: false, participant: 'ana@lid', type: 'documentMessage', text: '', documentName: 'Presupuesto final.pdf' },
+    { jid: 'old@lid', id: 'd', timestamp: now - (91 * 86400), fromMe: false, participant: null, type: 'conversation', text: 'reunión vieja' },
+  ]
+  store.persist({ ...base, messages }, now)
+
+  const ids = (result) => result.map((message) => message.id)
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion"' })), ['b', 'a'], 'accent-folded, newest first, retention applied')
+  assert.deepEqual(ids(store.searchMessages({ match: '"presupuesto"' })), ['c'], 'document names are searchable')
+  assert.match(store.searchMessages({ match: '"tomas"' })[0].snippet, /«Tomás»/)
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion"', from: 'incoming' })), ['a'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion"', from: 'me' })), ['b'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion" OR "presupuesto"', scope: 'groups' })), ['c'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion" OR "presupuesto"', senders: ['ana@lid'] })), ['c'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion" OR "presupuesto"', senders: ['tomi@lid'] })), ['a'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion"', jids: ['tomi@lid'], since: now - 60, until: now })), ['b'])
+
+  // An edit rewrites the payload; the index follows the upsert.
+  messages[1].text = 'Dale, la llamada está confirmada'
+  store.persist({ ...base, messages }, now, { dirtyMessageKeys: new Set([messageKey('tomi@lid', 'b')]) })
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion"' })), ['a'])
+  assert.deepEqual(ids(store.searchMessages({ match: '"llamada"' })), ['b'])
+
+  // Retention removes rows and their index entries.
+  store.persist({ ...base, messages }, now + (90 * 86400) - 75)
+  assert.deepEqual(ids(store.searchMessages({ match: '"reunion" OR "llamada"' })), ['b'])
+  assert.deepEqual(store.stats(), { messages: 2, chats: 2, oldestAt: now - 50, newestAt: now - 10 })
+  store.close()
+
+  // Reopening rebuilds the index from the stored rows.
+  const reopened = new MirrorStore(filename, { retentionDays: 90 })
+  assert.deepEqual(ids(reopened.searchMessages({ match: '"llamada"' })), ['b'])
+  reopened.close()
+  fs.rmSync(directory, { recursive: true, force: true })
+})

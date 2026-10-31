@@ -25,6 +25,25 @@ export async function request(endpoint, { timeoutMs = 5000 } = {}) {
   return response.json()
 }
 
+// Owner-only endpoints that answer with a JSON error body ({ error, message }).
+export async function bridgeRequest(pathname, { method = 'GET', body = undefined, timeoutMs = 10_000 } = {}) {
+  const token = await bearerToken()
+  let response
+  try {
+    response = await fetch(`${baseUrl}${pathname}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (error) {
+    throw new Error(`WhatsApp observer unavailable: ${error.name === 'TimeoutError' ? 'request timed out' : error.message}`)
+  }
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.message || payload.error || `Bridge request failed (${response.status})`)
+  return payload
+}
+
 export async function bridgePost(pathname, body, failureMessage) {
   const token = await bearerToken()
   const response = await fetch(`${baseUrl}${pathname}`, {

@@ -112,11 +112,31 @@ test('search-all queries the bridge with scope and group list', async () => {
   const result = await wa('search-all', 'presupuesto', '--since', '2d', '--groups', 'maspeak')
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /\[Equipo Maspeak \(work@g\.us\)\] .*presupuesto del grupo/)
-  const searchRead = bridge.reads.find((line) => line.includes('/search?q=presupuesto'))
-  assert.ok(searchRead, 'the CLI must delegate search-all to the bridge')
+  const searchRead = bridge.reads.find((line) => line.includes('/search?t=presupuesto'))
+  assert.ok(searchRead, 'the CLI must delegate search-all to the bridge full-text index')
   assert.match(searchRead, /scope=groups/)
   assert.match(searchRead, /jids=work%40g\.us/)
   assert.match(searchRead, /since=172800/)
+})
+
+test('search inside a chat delegates terms, direction and window to the bridge index', async () => {
+  const result = await wa('search', 'flor', 'precio final', 'hotel', '--from', 'incoming', '--date', '2026-10-01', '--json')
+  assert.equal(result.status, 0, result.stderr)
+  const searchRead = bridge.reads.filter((line) => line.startsWith('GET /search?')).at(-1)
+  const parameters = new URL(`http://bridge${searchRead.slice(4)}`).searchParams
+  assert.deepEqual(parameters.getAll('t'), ['precio final', 'hotel'])
+  assert.equal(parameters.get('direction'), 'incoming')
+  assert.ok(parameters.get('jid'), 'the chat is resolved before searching')
+  assert.equal(Number(parameters.get('before')) - Number(parameters.get('after')), 86400)
+  assert.equal(JSON.parse(result.stdout).schema, 'wa-search.v1')
+})
+
+test('history reads a past window without the fixed 200-message cap', async () => {
+  const result = await wa('history', 'flor', '500', '--before', '2026-10-01')
+  assert.equal(result.status, 0, result.stderr)
+  const messagesRead = bridge.reads.filter((line) => line.startsWith('GET /messages?')).at(-1)
+  assert.match(messagesRead, /limit=500/)
+  assert.match(messagesRead, /until=\d+/)
 })
 
 test('review returns a fresh, bounded, contextual evidence packet with canonical identity', async () => {
