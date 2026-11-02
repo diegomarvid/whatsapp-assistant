@@ -43,8 +43,10 @@ import { PromptAutomationRules } from './prompt-automation-rules.js'
 import { AutomationWorker } from './automation-worker.js'
 import { AutomationHuman } from './automation-human.js'
 import { AutomationReviews } from './automation-reviews.js'
-import { dispatchScheduledMessages } from './scheduled-dispatch.js'
-import { ScheduledMessages } from './scheduled-messages.js'
+import { dispatchScheduledMessages, scheduledRecipient } from './scheduled-dispatch.js'
+import { RECEIPT_STATUS, ScheduledMessages } from './scheduled-messages.js'
+import { DeliveryAlerts } from './delivery-alerts.js'
+import { verifiedSend } from './verified-send.js'
 
 const { authDir, dataDir, stateRoot } = paths
 const cachePath = path.join(dataDir, 'messages.json')
@@ -70,6 +72,8 @@ const videoEnvelopeDir = path.join(dataDir, 'video-envelopes')
 const downloadedVideoDir = path.join(dataDir, 'videos')
 const stickerEnvelopeDir = path.join(dataDir, 'sticker-envelopes')
 const scheduledMessagesPath = path.join(dataDir, 'scheduled-messages.json')
+const aliasesPath = path.join(dataDir, 'aliases.json')
+const deliveryAlerts = new DeliveryAlerts(path.join(dataDir, 'delivery-alerts.json'))
 const promptAutomationsPath = path.join(dataDir, 'prompt-automations.json')
 const downloadedStickerDir = path.join(dataDir, 'stickers')
 // Keep a bounded local context. Seven days is the privacy-safe default; a user
@@ -99,6 +103,9 @@ let outboundSender = null
 let outboundRetryStore = null
 let scheduledMessages = null
 let scheduledDispatchRunning = false
+// WhatsApp IDs of sent scheduled messages, so a delivery/read receipt can be
+// recorded on the queue entry without reading the queue for every receipt.
+const scheduledSentIds = new Set()
 let promptAutomations = null
 let automationWorker = null
 let promptAutomationDisabledReason = null
@@ -743,30 +750,72 @@ function json(response, status, body) {
   response.end(JSON.stringify(body, null, 2))
 }
 
+// Every new outbound message (send, reply, files, media, scheduled and
+// automation sends) goes through this one verified path: the recipient must
+// have a WhatsApp device (falling back to its equivalent phone/LID) and the
+// server must ack the exact message ID. See verified-send.js.
+function deliver(jid, content, options = {}) {
+  return verifiedSend({ socket, jid, content, options, logger })
+}
+
+function sendFailure(response, error, code) {
+  return json(response, 422, { error: code, code: error.code || null, ambiguous: Boolean(error.ambiguous), message: error.message })
+}
+
 async function sendIdempotently({ requestId, send }) {
   if (requestId != null && !validOutboundRequestId(requestId)) throw new Error('invalid_send_request_id')
   const outcome = await outboundSender.execute(requestId || null, send)
   if (outcome.pending) return { pending: true, requestId: outcome.requestId }
-  return { sent: true, id: outcome.result?.key?.id || null, replayed: outcome.replayed }
+  return { sent: true, id: outcome.result?.key?.id || null, replayed: outcome.replayed, delivery: outcome.result?.delivery || null }
+}
+
+async function loadAliasesForDelivery() {
+  try {
+    return JSON.parse(await fs.readFile(aliasesPath, 'utf8'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') logger.warn({ err: error }, 'Could not read aliases; scheduled messages use their stored identity')
+    return {}
+  }
+}
+
+async function resolveScheduledJid(message) {
+  const recipient = scheduledRecipient(message, message.alias ? await loadAliasesForDelivery() : {})
+  return recipient.phoneJid ? resolveCurrentJid(recipient.phoneJid) : recipient.jid
 }
 
 async function processScheduledMessages() {
   if (!scheduledMessages || scheduledDispatchRunning) return
   scheduledDispatchRunning = true
   try {
-    return await dispatchScheduledMessages({
+    const result = await dispatchScheduledMessages({
       queue: scheduledMessages,
       canSend: () => connection === 'open' && Boolean(socket?.sendMessage),
-      resolveJid: resolveCurrentJid,
+      resolveRecipient: resolveScheduledJid,
       send: (message, jid) => sendIdempotently({
         requestId: message.requestId,
-        send: () => socket.sendMessage(jid, { text: message.text }),
+        send: () => deliver(jid, { text: message.text }),
       }),
+      notify: (message) => deliveryAlerts.notify(message),
       logger,
     })
+    for (const message of result.sent) {
+      if (!message.messageId) continue
+      scheduledSentIds.add(message.messageId)
+      // A receipt can arrive between the server ack and the queue update;
+      // carry over whatever the mirror already observed for this message.
+      const mirrored = findMessage(message.deliveredJid, message.messageId)
+      if (mirrored?.status) recordScheduledReceipt(message.messageId, mirrored.status, mirrored.statusAt)
+    }
+    return result
   } finally {
     scheduledDispatchRunning = false
   }
+}
+
+function recordScheduledReceipt(messageId, status, at) {
+  if (!scheduledMessages || !scheduledSentIds.has(messageId)) return
+  scheduledMessages.recordReceipt(messageId, status, at)
+    .catch((error) => logger.warn({ err: error, messageId }, 'Could not record a receipt for a scheduled message'))
 }
 
 async function enqueuePromptAutomation(message) {
@@ -883,6 +932,7 @@ async function applyMessageUpdates(updates) {
           status: update?.status ?? null,
         },
       })
+      if (update?.status !== undefined && key.fromMe) recordScheduledReceipt(id, update.status, update.messageTimestamp)
       const existing = findMessage(jid, id)
       if (existing && update?.status !== undefined) {
         // Baileys forwards WhatsApp's receipt timestamp in messageTimestamp for
@@ -921,6 +971,8 @@ async function applyReceiptUpdates(updates) {
     if (!jid || !id) continue
     try {
       mirrorStore?.recordEvent({ event: 'message-receipt.update', jid, messageId: id, detail: { participant: receipt?.userJid || null, receiptTimestamp: Number(receipt?.receiptTimestamp || 0) || null, readTimestamp: Number(receipt?.readTimestamp || 0) || null, playedTimestamp: Number(receipt?.playedTimestamp || 0) || null } })
+      if (receipt?.readTimestamp || receipt?.playedTimestamp) recordScheduledReceipt(id, receipt.playedTimestamp ? RECEIPT_STATUS.PLAYED : RECEIPT_STATUS.READ, receipt.playedTimestamp || receipt.readTimestamp)
+      else if (receipt?.receiptTimestamp) recordScheduledReceipt(id, RECEIPT_STATUS.DELIVERY_ACK, receipt.receiptTimestamp)
       const message = findMessage(jid, id)
       const applied = applyReceipt(message, receipt)
       if (applied) touchMessage(message)
@@ -1316,7 +1368,11 @@ async function main() {
   outboundSender = new IdempotentSender({ store: outboundRetryStore })
   scheduledMessages = new ScheduledMessages(scheduledMessagesPath)
   const recoveredScheduledMessages = await scheduledMessages.recoverInterrupted((requestId) => outboundRetryStore.get(requestId))
-  for (const message of recoveredScheduledMessages) logger.warn({ scheduledMessageId: message.id, status: message.status }, 'Recovered scheduled message after an interrupted bridge shutdown')
+  for (const message of recoveredScheduledMessages) {
+    logger.warn({ scheduledMessageId: message.id, status: message.status }, 'Recovered scheduled message after an interrupted bridge shutdown')
+    if (message.status === 'uncertain') deliveryAlerts.notify(message).catch((error) => logger.error({ err: error, scheduledMessageId: message.id }, 'Could not deliver a scheduled-message alert'))
+  }
+  for (const messageId of await scheduledMessages.sentMessageIds()) scheduledSentIds.add(messageId)
   try {
     promptAutomations = new PromptAutomationRules(promptAutomationsPath)
     agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
@@ -1324,7 +1380,7 @@ async function main() {
     automationReviews = new AutomationReviews(promptAutomations, {
       connected: () => connection === 'open' && cache.sync.ingestionHealthy !== false && Boolean(socket?.sendMessage),
       coverage: chatCoverage, resolveJid: resolveCurrentJid,
-      transport: (jid, text, messageId) => socket.sendMessage(jid, { text }, { messageId }), logger,
+      transport: (jid, text, messageId) => deliver(jid, { text }, { messageId }), logger,
     })
     await automationReviews.recover()
     automationHuman = new AutomationHuman(promptAutomations, { logger })
@@ -1516,11 +1572,11 @@ async function main() {
         const content = { text: text.trim(), mentions: mentions?.length ? mentions : undefined }
         const result = authorization.kind === 'automation'
           ? await promptAutomations.send({ batchId: authorization.batchId, runId: authorization.runId, jid, text: JSON.stringify([content, replyToMessageId || null]) },
-            (messageId) => socket.sendMessage(jid, content, { ...options, messageId }),
+            (messageId) => deliver(jid, content, { ...options, messageId }),
             (_rule, batch) => connection === 'open' && cache.sync.ingestionHealthy !== false && chatCoverage(batch.sourceJid).fresh)
-          : await sendIdempotently({ requestId, send: () => socket.sendMessage(jid, content, options) })
+          : await sendIdempotently({ requestId, send: () => deliver(jid, content, options) })
         json(response, result.pending ? 202 : 200, result)
-      }).catch((error) => json(response, 422, { error: 'send_failed', message: error.message }))
+      }).catch((error) => sendFailure(response, error, 'send_failed'))
       return
     }
     if (isMessageEdit) {
@@ -1570,7 +1626,7 @@ async function main() {
         const document = await fs.readFile(filePath)
         const result = await sendIdempotently({
           requestId,
-          send: () => socket.sendMessage(jid, {
+          send: () => deliver(jid, {
             document,
             fileName: path.basename(filePath),
             mimetype: mimeTypeForFile(filePath),
@@ -1578,7 +1634,7 @@ async function main() {
           }, options),
         })
         json(response, result.pending ? 202 : 200, result)
-      }).catch((error) => json(response, 422, { error: 'document_send_failed', message: error.message }))
+      }).catch((error) => sendFailure(response, error, 'document_send_failed'))
       return
     }
     if (isMediaSend) {
@@ -1599,9 +1655,9 @@ async function main() {
           mentions: mentions?.length ? mentions : undefined,
           ptt: kind === 'audio' && Boolean(voice),
         }
-        const result = await sendIdempotently({ requestId, send: () => socket.sendMessage(jid, content, options) })
+        const result = await sendIdempotently({ requestId, send: () => deliver(jid, content, options) })
         json(response, result.pending ? 202 : 200, result)
-      }).catch((error) => json(response, 422, { error: 'media_send_failed', message: error.message }))
+      }).catch((error) => sendFailure(response, error, 'media_send_failed'))
       return
     }
     if (isMessageReaction) {

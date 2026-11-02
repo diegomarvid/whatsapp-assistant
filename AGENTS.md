@@ -81,6 +81,16 @@ without search terms using
 This second pass must return every message in that local
 clock window so the AI can notice context that no keyword query could match.
 
+## Outbound delivery
+
+Every new outbound message (send, reply, files, media, scheduled, automation and
+reviewed-draft sends) goes through `src/verified-send.js`. Baileys resolves a
+send even when it was encrypted for zero recipient devices, so a send only
+counts after the recipient has at least one device (falling back to its
+equivalent phone/LID through Baileys' mapping) and WhatsApp's server acked the
+exact message ID. Never re-encode a LID or group's digits as a phone JID, and
+never mark a send as sent from `sendMessage` resolving alone.
+
 ## Autonomous conversations
 
 Before configuring or activating any automation, follow

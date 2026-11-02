@@ -15,7 +15,9 @@ import makeWASocket, {
   downloadMediaMessage,
   fetchLatestBaileysVersion,
   getKeyAuthor,
+  generateMessageIDV2,
   generateWAMessageFromContent,
+  jidDecode,
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   proto,
@@ -71,4 +73,25 @@ test('the socket exposes on-demand history and placeholder resend', async () => 
     assert.match(source, new RegExp(`const ${method} = async \\(`), `${method} must still be defined by the messages socket`)
     assert.match(source, new RegExp(`\\b${method},`), `${method} must still be returned by the messages socket`)
   }
+})
+
+test('keeps the surface verified sends depend on', async () => {
+  // A send only counts when the recipient has a device and the server acked
+  // the exact message ID (src/verified-send.js).
+  assert.equal(typeof generateMessageIDV2, 'function', 'a reserved message ID is registered before sending')
+  assert.equal(jidDecode('100000000000001:3@lid').user, '100000000000001')
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const send = await readFile(path.join(lib, 'Socket', 'messages-send.js'), 'utf8')
+  assert.match(send, /const getUSyncDevices = async \(jids, useCache, ignoreZeroDevices\)/, 'getUSyncDevices(jids, useCache, ignoreZeroDevices) enumerates recipient devices')
+  assert.match(send, /\bgetUSyncDevices,/, 'getUSyncDevices must still be returned by the messages socket')
+  assert.match(send, /messageId: generateMessageIDV2\(sock\.user\?\.id\),\s*\.\.\.options/, 'sendMessage must honor a caller-provided messageId')
+  const recv = await readFile(path.join(lib, 'Socket', 'messages-recv.js'), 'utf8')
+  assert.match(recv, /ws\.on\('CB:ack,class:message'/, 'server acks for sent messages arrive as CB:ack,class:message frames')
+  const socket = await readFile(path.join(lib, 'Socket', 'socket.js'), 'utf8')
+  assert.match(socket, /return \{\s*type: 'md',\s*ws,\s*ev,/, 'the socket exposes its frame emitter as ws')
+  assert.match(socket, /get user\(\) \{\s*return authState\.creds\.me;/, 'socket.user carries the own PN and LID')
+  assert.match(socket, /ws\.emit\(`\$\{DEF_CALLBACK_PREFIX\}\$\{l0\},\$\{key\}:\$\{l1\[key\]\}`, frame\)/, 'the socket emits tag,attr:value callback events for every frame')
+  const mapping = await readFile(path.join(lib, 'Signal', 'lid-mapping.js'), 'utf8')
+  for (const method of ['getPNForLID', 'getLIDForPN']) assert.match(mapping, new RegExp(`async ${method}\\(`), `${method} resolves LID ↔ phone equivalents`)
 })

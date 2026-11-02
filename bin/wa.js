@@ -31,7 +31,8 @@ import { withHumanDefaults, validateHumanPolicy, HUMAN_WAITING } from '../src/hu
 import { AutomationHuman, runHumanAdapter } from '../src/automation-human.js'
 import { formatPromptAutomation, PromptAutomationRules } from '../src/prompt-automation-rules.js'
 import { validateReviewPolicy, runReviewAdapter, withReviewDefaults } from '../src/review-adapter.js'
-import { formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
+import { describeScheduledMessage, formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
+import { DeliveryAlerts } from '../src/delivery-alerts.js'
 import { parseSearchArguments, searchParameters } from '../src/search-cli.js'
 import { ensureRuntimeDirectories, fileExists } from '../src/state-dirs.js'
 import { configureTranscription, pullTranscriptionModel, setupTranscription, transcribe, transcriptionDoctor } from '../src/transcription.js'
@@ -41,6 +42,7 @@ const npmInstallCommand = `npm install -g ${packageInfo.name}`
 const { dataDir, stateRoot } = paths
 const pendingOutboundRequests = new PendingOutboundRequests(path.join(dataDir, 'pending-outbound-requests.json'))
 const scheduledMessages = new ScheduledMessages(path.join(dataDir, 'scheduled-messages.json'))
+const deliveryAlerts = new DeliveryAlerts(path.join(dataDir, 'delivery-alerts.json'))
 const promptAutomations = new PromptAutomationRules(path.join(dataDir, 'prompt-automations.json'))
 const agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
 const providerDetections = new ProviderDetections(path.join(dataDir, 'agent-provider-detections.json'))
@@ -57,6 +59,14 @@ async function sendOnce(operation, send) {
   }
   await pendingOutboundRequests.complete(pending.fingerprint)
   return result
+}
+
+// What WhatsApp confirmed for an explicit send: the server ack, and the
+// equivalent identity actually used when the requested one had no device.
+function deliveryNote(result) {
+  const delivery = result?.delivery
+  if (!delivery) return ''
+  return `${delivery.fallbackFrom ? ` to ${delivery.jid} (equivalent of ${delivery.fallbackFrom}, which had no WhatsApp device)` : ''}${delivery.serverAckAt ? '; WhatsApp server ack received' : ''}`
 }
 
 function usage() {
@@ -141,6 +151,7 @@ Comandos:
   wa schedule list [--all]
   wa schedule show <id>
   wa schedule cancel <id>
+  wa schedule alerts [show|set <abs-exe> [args...]|clear|test]
   wa automation prompt add <nombre> --from <contacto> --to <contacto> --profile <perfil> [--from-me|--any] [--debounce <segundos>] --yes
   wa automation prompt list [--all] [--verbose]
   wa automation prompt show|pause|resume|human|release|remove <nombre>
@@ -270,7 +281,7 @@ Acciones; requieren pedido explícito:
   wa send-file|send-image|send-video|send-audio ... — Enviar el archivo elegido.
 
 Trabajo futuro y automatización:
-  wa schedule add|list|show|cancel  — Gestionar textos programados explícitamente.
+  wa schedule add|list|show|cancel|alerts  — Gestionar textos programados explícitamente y sus avisos de falla.
   wa agents providers|profile ...  — Configurar el proveedor que ejecutará un prompt.
   wa agents doctor|validate         — Diagnosticar gratis o validar explícitamente con consumo.
   wa automation prompt ...         — Crear o administrar una regla guiada por prompt.
@@ -311,7 +322,7 @@ Usá latest-incoming si sólo necesitás el último mensaje. Usá search-all si 
 Matching: palabras o frases completas, sin distinguir mayúsculas ni acentos. No infiere plurales ni sinónimos; pasá variantes explícitas. El CLI reúne evidencia factual y no interpreta intención ni valida afirmaciones técnicas.`,
     setup: `Instalación nueva:\n  macOS:\n    brew tap diegomarvid/tap && brew install whatsapp-assistant\n    wa setup                       # pregunta 7 días o retención extendida\n\n  Linux / VPS (requiere systemd):\n    # Si falta Node 22+, instalarlo como el usuario final (sin sudo):\n    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash\n    . "$HOME/.nvm/nvm.sh" && nvm install 22\n    node --version                 # debe mostrar v22 o superior\n    ${npmInstallCommand}\n    wa setup                       # pregunta retención e imprime el QR en SSH\n    sudo loginctl enable-linger "$USER"  # una vez, para sobrevivir logout/reboot\n    wa doctor\n\nRetención: 7 días es el default privado. Elegir más días activa el pedido de full-history de Baileys con perfil desktop y conserva esa ventana localmente. WhatsApp decide cuánto historial entrega; una petición grande puede tardar, consumir disco o fallar durante el vínculo. Si ocurre, volver a 7 días con \`wa history-policy set 7\`, reiniciar el daemon y no borrar auth.\n\nEscanear el QR que el comando abre (macOS) o imprime en la terminal (SSH) desde WhatsApp móvil: Ajustes → Dispositivos vinculados → Vincular un dispositivo. Verificar con wa status hasta ver connection = open.\n\nNo ejecutar wa con sudo: el servicio y el estado privado pertenecen al usuario que vincula WhatsApp. No hace falta navegador. El bridge es un cliente vinculado de WhatsApp y conserva la sesión localmente.`,
     messages: `Lectura segura:\n  wa find "Nombre"\n  wa latest-incoming contacto --ids\n  wa history contacto 20 --ids\n  wa review contacto --date today --from incoming --any IP IPs dinámica dinámicas estática estáticas --context 4 --ids\n  wa review contacto --date 2026-09-02 --start 09:00 --end 11:00 --ids\n  wa coverage contacto\n  wa delivery contacto <id>             # estado agregado de un chat directo\n  wa receipts grupo <id>                # receipts individuales reportados por WhatsApp\n  wa unread-by grupo <id>               # participantes sin read receipt reportado\n  wa reactions contacto-o-grupo <id>    # reacciones actuales al mensaje\n  wa links contacto                     # URLs literales recientes, con ID y cobertura\n  wa polls contacto / wa poll contacto <id>\n  wa calls contacto\n  wa group-events grupo\n\nreview arma un paquete factual de una conversación: resuelve el LID actual, exige cobertura fresh, acota por fecha en America/Montevideo, busca palabras o frases completas ignorando mayúsculas y acentos, y agrega contexto sin duplicarlo. Cada match incluye su fecha y hora local. Después de descubrir cuándo se habló de un tema, repetí el comando sin términos y con --date, --start y --end para leer absolutamente todos los mensajes de ese tramo horario. --from incoming limita las coincidencias a lo que mandó el contacto, pero conserva ambos lados del diálogo como contexto; --from me hace lo inverso. --any acepta cualquier término; --all exige que todos aparezcan en el mismo mensaje. Las palabras se comparan completas: si importan singular y plural, indicá ambas variantes. --json conserva identidad, cobertura, ventana local, coincidencias con texto exacto y hora local, timeline y media cercana. Sin términos devuelve toda la ventana elegida; el default es hoy.\n\nEnvíos explícitos (send, reply y adjuntos): si la respuesta se pierde, repetir exactamente el comando recupera la confirmación original sin mandar un duplicado. Si informa que el envío anterior sigue sin confirmar, no reintentar a ciegas: verificar primero el chat o destinatario.\n\nlinks extrae únicamente URLs http(s) literales; no abre, resume ni clasifica sitios. La IA que invoca el CLI puede abrir cada URL con su herramienta web. latest incluye mensajes propios; latest-incoming sólo los recibidos. Para chats directos el CLI resuelve PN → LID actual antes de consultar. La ausencia de read receipt nunca se interpreta como que una persona no leyó el mensaje. Los mensajes view-once no se exponen ni se descargan.`,
-    schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>\n  wa schedule cancel <id>\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario antes de enviar. Ante un resultado ambiguo no reintenta: lo deja como uncertain para no duplicar mensajes. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
+    schedule: `Mensajes programados:\n  wa schedule add --at 2026-08-03T21:00:00-03:00 sister "Traeme la computadora a Punta del Este"\n  wa schedule list                 # sólo pendientes/atención requerida\n  wa schedule list --all           # también enviados, cancelados y vencidos\n  wa schedule show <id>             # destino usado, ack del servidor, entregado/leído\n  wa schedule cancel <id>\n  wa schedule alerts               # cómo se avisa una falla\n  wa schedule alerts set /ruta/absoluta/comando [args...]\n  wa schedule alerts test          # prueba el aviso sin tocar WhatsApp\n\nLa cola queda privada e imprime la hora local junto a su timezone y offset (por ejemplo, America/Montevideo, UTC-03:00). El bridge re-resuelve el destinatario al enviar: un alias se vuelve a buscar, un número pasa a su LID actual y un LID o grupo se usa tal cual (nunca se reinterpreta como número). Sólo cuenta como sent lo que WhatsApp confirmó con su ack de servidor, después de verificar que el destinatario tiene al menos un dispositivo; si un LID no tiene dispositivos se prueba su número equivalente. Si no salió nada, reintenta hasta 3 veces dentro de la hora y después queda failed con el motivo; si WhatsApp lo rechaza queda failed; ante un resultado ambiguo no reintenta y queda uncertain. Cada failed, uncertain o expired se avisa (comando configurado o notificación de macOS). list y show muestran delivered/read cuando llega el receipt. Un mensaje que no pudo salir dentro de una hora queda expired, no se envía tarde.`,
     automation: `Conversaciones autónomas (eventos + espera + juez opcional):
   wa automation prompt add prueba --from grupo@g.us --to grupo@g.us --profile charla --any --debounce 15 --max-wait 60 --mode live --human-takeover off --paused --yes
   wa automation prompt add soporte --from cliente --to cliente --profile ejecutor --judge criterio --debounce 60 --max-wait 180 --mode observe --yes
@@ -1058,6 +1069,31 @@ async function automationCommand(args) {
   return usage()
 }
 
+async function scheduleAlertsCommand(args) {
+  const action = args.shift() || 'show'
+  if (action === 'show') {
+    const config = await deliveryAlerts.load()
+    if (config) return console.log(`Alertas de mensajes programados: ${JSON.stringify(config.command)} (recibe un resumen como último argumento y JSON por stdin).`)
+    return console.log(process.platform === 'darwin'
+      ? 'Alertas de mensajes programados: notificación local de macOS (sin comando configurado).'
+      : 'Alertas de mensajes programados: sólo log y `wa schedule list` (sin comando configurado).')
+  }
+  if (action === 'set') {
+    const config = await deliveryAlerts.save(args)
+    return console.log(`Alertas configuradas: ${JSON.stringify(config.command)}.`)
+  }
+  if (action === 'clear') {
+    await deliveryAlerts.clear()
+    return console.log('Comando de alertas eliminado.')
+  }
+  if (action === 'test') {
+    // A synthetic entry: exercises the alert channel without touching WhatsApp.
+    const channel = await deliveryAlerts.notify({ id: '00000000000000000000000000000000', target: 'prueba', status: 'failed', lastError: 'Alerta de prueba; no se envió nada por WhatsApp.', dueAt: new Date().toISOString(), attempts: 0 })
+    return console.log(`Alerta de prueba enviada por: ${channel}.`)
+  }
+  return usage()
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2)
   if (!command || command === '--help' || command === '-h') return usage()
@@ -1082,21 +1118,24 @@ async function main() {
     if (action === 'show') {
       const message = await scheduledMessages.get(args.shift())
       if (!message) throw new Error('Unknown scheduled message.')
-      console.log(`ID: ${message.id}\nEstado: ${message.status}\nProgramado: ${formatScheduledMessage(message).split(' — ').slice(2, 3)[0]}\nDestinatario: ${message.target}\nMensaje: ${message.text}${message.lastError ? `\nDetalle: ${message.lastError}` : ''}`)
+      console.log(describeScheduledMessage(message))
       return
     }
     if (action === 'cancel') {
       const message = await scheduledMessages.cancel(args.shift())
       return console.log(`Canceled scheduled message ${message.id}.`)
     }
+    if (action === 'alerts') return scheduleAlertsCommand(args)
     if (action === 'add') {
       const at = extractOption(args, '--at')
       const target = args.shift()
       const text = args.join(' ').trim()
       if (!at || !target || !text) return usage()
       const contact = await resolve(target)
-      const originalJid = contact.originalJid || (contact.phone ? phoneToJid(contact.phone) : contact.jid)
-      const message = await scheduledMessages.add({ target: contact.alias || contact.name || target, jid: contact.jid, phone: contact.phone || null, originalJid, text, at })
+      // Only a real phone JID is kept as the re-resolvable identity; a LID or
+      // group is stored as is and never re-encoded as a phone number.
+      const originalJid = contact.originalJid || (contact.phone ? phoneToJid(contact.phone) : null)
+      const message = await scheduledMessages.add({ target: contact.alias || contact.name || target, jid: contact.jid, alias: contact.alias || null, phone: contact.phone || null, originalJid, text, at })
       return console.log(`Scheduled ${message.id} for ${formatScheduledMessage(message).split(' — ').slice(2, 3)[0]} (${message.target}).`)
     }
     return usage()
@@ -1245,7 +1284,7 @@ async function main() {
       { kind: 'text', to: outboundDestination(contact), text, mentions, replyToMessageId: null },
       (requestId) => sendMessage(contact.jid, text, null, mentions, requestId),
     )
-    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}${deliveryNote(result)}.`)
   }
   if (command === 'reply') {
     const target = args.shift()
@@ -1258,7 +1297,7 @@ async function main() {
       { kind: 'reply', to: outboundDestination(contact), text, mentions: [], replyToMessageId: quoted.id },
       (requestId) => sendMessage(contact.jid, text, quoted.id, [], requestId),
     )
-    return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
+    return console.log(`Reply sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}${deliveryNote(result)}.`)
   }
   if (command === 'send-file') {
     const target = args.shift()
@@ -1275,7 +1314,7 @@ async function main() {
       { kind: 'document', to: outboundDestination(contact), file: { path: file, size: stat.size, modifiedAt: stat.mtimeMs }, caption, replyToMessageId: replyTo },
       (requestId) => sendFile(contact.jid, file, caption, replyTo, requestId),
     )
-    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
+    return console.log(`Sent${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}${deliveryNote(result)}.`)
   }
   if (command === 'send-image' || command === 'send-video' || command === 'send-audio') {
     const target = args.shift()
@@ -1299,7 +1338,7 @@ async function main() {
       { kind, to: outboundDestination(contact), file: { path: file, size: stat.size, modifiedAt: stat.mtimeMs }, caption, mentions, voice, replyToMessageId: replyTo },
       (requestId) => sendMedia(contact.jid, kind, file, caption, mentions, voice, replyTo, requestId),
     )
-    return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}.`)
+    return console.log(`Sent ${kind}${result.id ? ` (${result.id})` : ''}${result.replayed ? ' (confirmed from an earlier request)' : ''}${deliveryNote(result)}.`)
   }
   if (command === 'edit') {
     const target = args.shift()

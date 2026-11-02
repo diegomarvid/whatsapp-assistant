@@ -30,7 +30,8 @@ the checkout by default; use `wa doctor` to identify the active installation.
 | `data/aliases.json` | Personal aliases, names and phone-number mappings. |
 | `data/mirror.sqlite` (and WAL files) | Durable seven-day mirror: normalized messages, raw recovery envelopes, retry counters and redacted technical event audit. |
 | `data/pending-outbound-requests.json` | Private 24-hour fingerprints for unconfirmed outbound requests; prevents a lost response from producing a duplicate send. It contains no message text, caption, number, or file path. |
-| `data/scheduled-messages.json` | Explicitly scheduled outbound messages and delivery audit. |
+| `data/scheduled-messages.json` | Explicitly scheduled outbound messages and delivery audit (identity used, server ack, delivery/read receipts, failure reason). |
+| `data/delivery-alerts.json` | Optional owner-configured command that announces failed, uncertain or expired scheduled messages. |
 | `data/prompt-automations.json` | Schema-v4 SQLite storage marker; old binaries must not overwrite it. |
 | `data/prompt-automations.json.sqlite3` and WAL/SHM | Rules, batches, drafts, consultations, source/reply journal, decisions, provider sessions and outbound audit. Use SQLite backup API for a coherent snapshot. |
 | `data/prompt-automations.json.pre-sqlite` | Private legacy JSON preserved during migration. |

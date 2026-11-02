@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { DEFAULT_MAX_DELIVERY_DELAY_MS, formatScheduledMessage, ScheduledMessages } from '../src/scheduled-messages.js'
+import { DEFAULT_MAX_DELIVERY_DELAY_MS, formatScheduledMessage, ScheduledMessages, trustedPhoneIdentity } from '../src/scheduled-messages.js'
 
 async function queueFor(context, { now = Date.parse('2026-08-01T12:00:00-03:00') } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wa-scheduled-'))
@@ -86,4 +86,51 @@ test('does not silently replace a malformed queue with an empty one', async (con
   await fs.writeFile(filename, JSON.stringify({ version: 2, messages: {} }))
   await assert.rejects(queue.list(), /malformed/)
   assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')), { version: 2, messages: {} })
+})
+
+test('a LID or group is never stored as a phone identity', async (context) => {
+  const { queue } = await queueFor(context)
+  const lid = await queue.add({ target: 'Ana', jid: '100000000000001@lid', phone: '100000000000001', originalJid: '100000000000001@s.whatsapp.net', text: 'Hola', at: '2026-08-03T21:00:00-03:00' })
+  assert.equal(lid.phone, null)
+  assert.equal(lid.originalJid, null)
+  const group = await queue.add({ target: 'Grupo', jid: '120363000000000001@g.us', phone: '120363000000000001', originalJid: '120363000000000001@s.whatsapp.net', text: 'Hola', at: '2026-08-03T21:00:00-03:00' })
+  assert.equal(group.originalJid, null)
+  const alias = await queue.add({ target: 'ana', alias: 'ana', jid: '100000000000001@lid', phone: '59800000002', originalJid: '59800000002@s.whatsapp.net', text: 'Hola', at: '2026-08-03T21:00:00-03:00' })
+  assert.deepEqual([alias.alias, alias.phone, alias.originalJid], ['ana', '59800000002', '59800000002@s.whatsapp.net'])
+  assert.deepEqual(trustedPhoneIdentity({ jid: '59800000002@s.whatsapp.net', originalJid: '59800000002@s.whatsapp.net' }), { phone: '59800000002', originalJid: '59800000002@s.whatsapp.net' })
+})
+
+test('pending entries with a fabricated phone are repaired; final entries keep their audit trail', async (context) => {
+  const { filename, queue } = await queueFor(context)
+  const legacy = (id, status) => ({
+    id, requestId: `${id}request0000`, target: 'Ana', jid: '100000000000001@lid', phone: '100000000000001', originalJid: '100000000000001@s.whatsapp.net',
+    dueAt: '2026-08-03T00:00:00.000Z', status, attempts: status === 'sent' ? 1 : 0, text: 'Hola',
+  })
+  await fs.writeFile(filename, JSON.stringify({ version: 2, messages: [legacy('pending', 'scheduled'), legacy('final', 'sent')] }))
+  const [pending, final] = await queue.list({ all: true })
+  assert.equal(pending.originalJid, null)
+  assert.equal(final.originalJid, '100000000000001@s.whatsapp.net')
+})
+
+test('an attempted message that leaves its window becomes failed with its last reason', async (context) => {
+  const { queue, setNow } = await queueFor(context)
+  const created = await queue.add({ target: 'Ana', jid: 'ana@lid', text: 'Hola', at: '2026-08-01T12:01:00-03:00' })
+  setNow(Date.parse('2026-08-01T12:02:00-03:00'))
+  await queue.claimDue()
+  const retrying = await queue.failAttempt(created.id, Object.assign(new Error('no device'), { code: 'no_recipient_devices' }), { retryable: true })
+  assert.equal(retrying.status, 'scheduled')
+  assert.ok(retrying.nextAttemptAt)
+  setNow(Date.parse('2026-08-01T13:30:00-03:00'))
+  const [expired] = await queue.expireOverdue()
+  assert.equal(expired.status, 'failed')
+  assert.match(expired.lastError, /Delivery window expired.*Last attempt: no device/)
+})
+
+test('a retry is never scheduled past the delivery window', async (context) => {
+  const { queue, setNow } = await queueFor(context)
+  const created = await queue.add({ target: 'Ana', jid: 'ana@lid', text: 'Hola', at: '2026-08-01T12:01:00-03:00' })
+  setNow(Date.parse('2026-08-01T13:00:00-03:00'))
+  await queue.claimDue()
+  const result = await queue.failAttempt(created.id, new Error('no device'), { retryable: true })
+  assert.equal(result.status, 'failed')
 })
