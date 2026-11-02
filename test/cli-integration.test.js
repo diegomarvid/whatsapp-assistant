@@ -332,3 +332,20 @@ test('an explicit send reports the WhatsApp server ack and an equivalent-identit
     fixtures.postResponses['/messages/send'] = { sent: true, id: 'NEW-ID' }
   }
 })
+
+test('a request recorded before the upgrade keeps its request ID for LID and group targets', async () => {
+  // 0.12.1 fingerprinted a LID or group contact by its numeric user part.
+  const { PendingOutboundRequests } = await import('../src/pending-outbound-requests.js')
+  const pending = new PendingOutboundRequests(path.join(bridge.stateRoot, 'data', 'pending-outbound-requests.json'))
+  const lidText = 'respuesta perdida antes de actualizar'
+  const before = await pending.claim({ kind: 'text', to: '111', text: lidText, mentions: [], replyToMessageId: null })
+  const sent = await wa('send', 'Gisell', lidText)
+  assert.equal(sent.status, 0, sent.stderr)
+  assert.equal(lastWrite().body.requestId, before.requestId)
+
+  const groupText = 'mensaje de grupo perdido'
+  const groupBefore = await pending.claim({ kind: 'text', to: '120363000000000001', text: groupText, mentions: [], replyToMessageId: null })
+  const groupSent = await wa('send', '120363000000000001@g.us', groupText)
+  assert.equal(groupSent.status, 0, groupSent.stderr)
+  assert.equal(lastWrite().body.requestId, groupBefore.requestId)
+})

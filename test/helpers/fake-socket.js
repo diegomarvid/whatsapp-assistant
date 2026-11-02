@@ -7,7 +7,11 @@ import { EventEmitter } from 'node:events'
 // devices: { [jid]: number } recipient devices returned by getUSyncDevices
 // mapping: { [jid]: jid } LID ↔ PN equivalents known to Baileys
 // ack: 'ok' | 'error' | 'none' | 'close' server response to each send
-export function fakeSocket({ devices = {}, mapping = {}, ack = 'ok', ackError = '479', ackAt = 1793620804 } = {}) {
+// uploadMs / uploadError: attachment upload, which Baileys runs before relaying
+// failBeforeSend / failAfterSend: an error thrown before the stanza is written,
+//   or after it was written (for example, persisting Signal keys)
+// ackDelayMs: server ack latency after the stanza is written
+export function fakeSocket({ devices = {}, mapping = {}, ack = 'ok', ackError = '479', ackAt = 1793620804, uploadMs = 0, uploadError = null, failBeforeSend = null, failAfterSend = null, ackDelayMs = 0 } = {}) {
   const ws = new EventEmitter()
   const sends = []
   const deviceQueries = []
@@ -29,14 +33,25 @@ export function fakeSocket({ devices = {}, mapping = {}, ack = 'ok', ackError = 
         return Array.from({ length: devices[jid] || 0 }, (_, device) => ({ user, device, jid: `${user}:${device}@${jid.split('@')[1]}` }))
       })
     },
+    uploads: 0,
+    waUploadToServer: async () => {
+      socket.uploads += 1
+      await new Promise((resolve) => setTimeout(resolve, uploadMs))
+      if (uploadError) throw new Error(uploadError)
+      return { mediaUrl: 'https://example.invalid/media', directPath: '/media' }
+    },
     sendMessage: async (jid, content, options = {}) => {
       const id = options.messageId || `3EB0FAKE${sends.length}`
+      // Like generateWAMessage: media is uploaded through options.upload first.
+      if (content.document || content.image || content.video || content.audio) await (options.upload || socket.waUploadToServer)('/tmp/encrypted-media', { mediaType: 'document' })
+      if (failBeforeSend) throw new Error(failBeforeSend)
       sends.push({ jid, content, options: { ...options, messageId: id } })
-      setImmediate(() => {
+      setTimeout(() => {
         if (ack === 'ok') ws.emit('CB:ack,class:message', { tag: 'ack', attrs: { class: 'message', id, from: jid, t: String(ackAt) } })
         if (ack === 'error') ws.emit('CB:ack,class:message', { tag: 'ack', attrs: { class: 'message', id, from: jid, error: ackError } })
         if (ack === 'close') ws.emit('close')
-      })
+      }, ackDelayMs)
+      if (failAfterSend) throw new Error(failAfterSend)
       return { key: { remoteJid: jid, id, fromMe: true }, message: content }
     },
   }

@@ -86,6 +86,8 @@ test('keeps the surface verified sends depend on', async () => {
   assert.match(send, /const getUSyncDevices = async \(jids, useCache, ignoreZeroDevices\)/, 'getUSyncDevices(jids, useCache, ignoreZeroDevices) enumerates recipient devices')
   assert.match(send, /\bgetUSyncDevices,/, 'getUSyncDevices must still be returned by the messages socket')
   assert.match(send, /messageId: generateMessageIDV2\(sock\.user\?\.id\),\s*\.\.\.options/, 'sendMessage must honor a caller-provided messageId')
+  assert.match(send, /upload: waUploadToServer,[\s\S]{0,200}\.\.\.options\s*\}\);/, 'per-call options must override the uploader, so an upload failure is known to precede the relay')
+  assert.match(send, /\bwaUploadToServer,/, 'waUploadToServer must still be returned by the messages socket')
   const recv = await readFile(path.join(lib, 'Socket', 'messages-recv.js'), 'utf8')
   assert.match(recv, /ws\.on\('CB:ack,class:message'/, 'server acks for sent messages arrive as CB:ack,class:message frames')
   const socket = await readFile(path.join(lib, 'Socket', 'socket.js'), 'utf8')

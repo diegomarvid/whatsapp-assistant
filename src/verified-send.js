@@ -11,8 +11,9 @@ import { generateMessageIDV2, jidDecode, jidNormalizedUser } from 'baileys'
 //    With none, try the equivalent phone/LID identity from Baileys' own
 //    LID↔PN mapping. With none there either, fail without sending anything.
 // 2. Send with a reserved message ID and wait for WhatsApp's server ack for
-//    exactly that ID. An error ack is a definitive failure; a missing ack is
-//    ambiguous and must never be retried automatically.
+//    exactly that ID. An error ack is a definitive failure; a missing ack, or
+//    an error that may have come after the stanza was written, is ambiguous
+//    and must never be retried automatically.
 //
 // It uses only public Baileys surface (pinned in baileys-contract.test.js):
 // getUSyncDevices, the LID mapping store and the socket's frame events.
@@ -107,42 +108,82 @@ export async function deliverableRecipient(socket, jid, { logger } = {}) {
   )
 }
 
-function waitForServerAck(socket, messageId, timeoutMs) {
+// The ack listener is registered before calling sendMessage so an early ack is
+// never missed, but its countdown only starts once sendMessage has settled:
+// preparing and uploading an attachment can take longer than the ack window,
+// and that time must not count against WhatsApp's answer to the real send.
+function watchServerAck(socket, messageId) {
   const ws = socket.ws
-  let cleanup = () => {}
-  const promise = new Promise((resolve) => {
-    const finish = (outcome) => { cleanup(); resolve(outcome) }
-    const onAck = (node) => {
-      if (node?.attrs?.id !== messageId) return
-      finish({ status: node.attrs.error ? 'error' : 'ack', error: node.attrs.error || null, at: Number(node.attrs.t) || null })
-    }
-    const onClose = () => finish({ status: 'closed' })
-    const timer = setTimeout(() => finish({ status: 'timeout' }), timeoutMs)
-    cleanup = () => {
-      clearTimeout(timer)
-      ws.off(ACK_EVENT, onAck)
-      ws.off('close', onClose)
-    }
-    ws.on(ACK_EVENT, onAck)
-    ws.on('close', onClose)
-  })
-  return { promise, cancel: () => cleanup() }
+  let settled = null
+  let timer = null
+  let resolveOutcome
+  const outcome = new Promise((resolve) => { resolveOutcome = resolve })
+  const cleanup = () => {
+    clearTimeout(timer)
+    ws.off(ACK_EVENT, onAck)
+    ws.off('close', onClose)
+  }
+  const finish = (value) => {
+    if (settled) return
+    settled = value
+    cleanup()
+    resolveOutcome(value)
+  }
+  function onAck(node) {
+    if (node?.attrs?.id !== messageId) return
+    finish({ status: node.attrs.error ? 'error' : 'ack', error: node.attrs.error || null, at: Number(node.attrs.t) || null })
+  }
+  function onClose() { finish({ status: 'closed' }) }
+  ws.on(ACK_EVENT, onAck)
+  ws.on('close', onClose)
+  return {
+    wait(timeoutMs) {
+      if (!settled) timer = setTimeout(() => finish({ status: 'timeout' }), timeoutMs)
+      return outcome
+    },
+    cancel() { finish({ status: 'cancelled' }) },
+  }
 }
 
 // Returns a compact, JSON-safe confirmation: { key, delivery }. The key keeps
 // the shape every caller already reads (result.key.id).
+//
+// Only two failures prove that nothing left this device: the recipient check
+// above and an attachment upload that failed (Baileys uploads before it
+// relays). Any other error from sendMessage may have happened after the
+// stanza was written (for example, persisting Signal keys after the send), so
+// the outcome is decided by WhatsApp's ack: an ack means it was sent, an
+// error ack means it was rejected, and no ack is ambiguous. An ambiguous
+// result never releases a retry.
 export async function verifiedSend({ socket, jid, content, options = {}, ackTimeoutMs = SERVER_ACK_TIMEOUT_MS, logger, now = () => Date.now() }) {
   const recipient = await deliverableRecipient(socket, jid, { logger })
   const messageId = options.messageId || generateMessageIDV2(socket.user?.id)
-  const ack = waitForServerAck(socket, messageId, ackTimeoutMs)
-  let message
+  const ack = watchServerAck(socket, messageId)
+  let uploadFailed = false
+  // Wraps Baileys' own uploader (sendMessage forwards per-call options to
+  // message generation) only to learn that a failure happened during upload.
+  const upload = typeof socket.waUploadToServer === 'function'
+    ? async (...args) => {
+      try {
+        return await socket.waUploadToServer(...args)
+      } catch (error) {
+        uploadFailed = true
+        throw error
+      }
+    }
+    : undefined
+  let message = null
+  let sendError = null
   try {
-    message = await socket.sendMessage(recipient.jid, content, { ...options, messageId })
+    message = await socket.sendMessage(recipient.jid, content, { ...options, ...(upload ? { upload } : {}), messageId })
   } catch (error) {
-    ack.cancel()
-    throw error
+    sendError = error
   }
-  const outcome = await ack.promise
+  if (sendError && uploadFailed) {
+    ack.cancel()
+    throw new DeliveryError('upload_failed', `Could not upload the attachment (${sendError.message}); nothing was sent.`, { retryable: true, details: { jid: recipient.jid } })
+  }
+  const outcome = await ack.wait(ackTimeoutMs)
   const delivery = {
     jid: recipient.jid,
     requestedJid: jid,
@@ -156,11 +197,14 @@ export async function verifiedSend({ socket, jid, content, options = {}, ackTime
     })
   }
   if (outcome.status !== 'ack') {
-    throw new DeliveryError('no_server_ack', `WhatsApp did not acknowledge message ${messageId}${outcome.status === 'closed' ? ' before the connection closed' : ` within ${Math.round(ackTimeoutMs / 1000)} s`}; it may or may not have been delivered and was not retried.`, {
+    const waited = outcome.status === 'closed' ? ' before the connection closed' : ` within ${Math.round(ackTimeoutMs / 1000)} s`
+    const cause = sendError ? `Sending message ${messageId} failed after it may have left this device (${sendError.message}) and WhatsApp did not acknowledge it${waited}` : `WhatsApp did not acknowledge message ${messageId}${waited}`
+    throw new DeliveryError(sendError ? 'send_interrupted' : 'no_server_ack', `${cause}; it may or may not have been delivered and was not retried.`, {
       ambiguous: true,
       details: { ...delivery, messageId },
     })
   }
+  if (sendError) logger?.warn?.({ err: sendError, messageId }, 'Baileys reported an error after WhatsApp acknowledged the message; it counts as sent')
   delivery.serverAckAt = outcome.at || Math.floor(now() / 1000)
   return {
     key: { remoteJid: message?.key?.remoteJid || recipient.jid, id: message?.key?.id || messageId, fromMe: true },

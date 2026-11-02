@@ -47,8 +47,14 @@ const promptAutomations = new PromptAutomationRules(path.join(dataDir, 'prompt-a
 const agentProfiles = new AgentProfiles(path.join(dataDir, 'agent-profiles.json'))
 const providerDetections = new ProviderDetections(path.join(dataDir, 'agent-provider-detections.json'))
 
+// Identity used only inside the private idempotency fingerprint. It must stay
+// byte-for-byte what earlier versions produced for the same target: a request
+// whose response was lost before an upgrade has to be recognized after it, or
+// repeating the command would send it twice. Up to 0.12.1 a LID or group
+// contact carried its numeric user part as `phone`; that value is reproduced
+// here only as an opaque key, never as an address.
 function outboundDestination(contact) {
-  return contact.phone || contact.originalJid || contact.jid
+  return contact.phone || contact.originalJid || phoneFromJid(contact.jid) || contact.jid
 }
 
 async function sendOnce(operation, send) {

@@ -372,9 +372,15 @@ its last argument and a JSON payload on stdin, never the message text.
 All explicit outbound operations (`send`, `reply`, `send-file` and media sends),
 as well as scheduled and automation sends, go through the same verified path:
 at least one recipient device (or its equivalent phone/LID) before sending, and
-WhatsApp's server ack for the exact message ID afterwards. A send without
-devices fails without sending anything; a missing ack is reported as
-unconfirmed and stays pending, so repeating the command never resends it.
+WhatsApp's server ack for the exact message ID afterwards. The ack window
+starts once the message is actually sent, not while an attachment uploads. A
+send without devices, or whose attachment upload failed, fails without sending
+anything and can be repeated. Any other error may have happened after the
+message left (for example, Baileys failing to persist keys after the send): an
+ack then still counts as sent, and without an ack the result is reported as
+unconfirmed and stays pending, so repeating the command never resends it. The
+idempotency fingerprint is stable across versions for the same target and
+content.
 
 All explicit outbound operations (`send`, `reply`, `send-file` and media sends)
 are idempotent for 24 hours. The CLI gives a repeated, previously unconfirmed

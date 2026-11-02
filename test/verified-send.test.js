@@ -125,3 +125,70 @@ test('a send refused before leaving the device can be requested again', async ()
   const retried = await sender.execute('request_no_device_1', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, logger }))
   assert.equal(retried.result.delivery.jid, LID)
 })
+
+// Review findings on PR #3: an error after the stanza was written must never
+// release a retry, and an upload must not consume the ack window.
+test('an error after WhatsApp acked the send still counts as sent and is never resent', async () => {
+  const store = retryStore()
+  const sender = new IdempotentSender({ store })
+  const socket = fakeSocket({ devices: { [LID]: 1 }, failAfterSend: 'failed to persist signal keys' })
+  const first = await sender.execute('request_after_send_1', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, logger }))
+  assert.equal(first.result.delivery.serverAckAt, 1793620804)
+  assert.equal(store.get('request_after_send_1').status, 'sent')
+  const repeated = await sender.execute('request_after_send_1', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, logger }))
+  assert.equal(repeated.replayed, true)
+  assert.equal(socket.sends.length, 1)
+})
+
+test('an error after the stanza may have left, without an ack, is ambiguous and keeps the retry blocked', async () => {
+  const store = retryStore()
+  const sender = new IdempotentSender({ store })
+  const socket = fakeSocket({ devices: { [LID]: 1 }, ack: 'none', failAfterSend: 'failed to persist signal keys' })
+  await assert.rejects(sender.execute('request_after_send_2', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, ackTimeoutMs: 10, logger })),
+    (error) => error.code === 'send_interrupted' && error.ambiguous && /failed to persist signal keys/.test(error.message))
+  assert.equal(store.get('request_after_send_2').status, 'pending')
+  const repeated = await sender.execute('request_after_send_2', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, logger }))
+  assert.equal(repeated.pending, true)
+  assert.equal(socket.sends.length, 1)
+})
+
+test('a sendMessage error that cannot be placed before the send is treated as ambiguous', async () => {
+  const store = retryStore()
+  const sender = new IdempotentSender({ store })
+  const socket = fakeSocket({ devices: { [LID]: 1 }, failBeforeSend: 'encryption failed' })
+  await assert.rejects(sender.execute('request_before_send_1', () => verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, ackTimeoutMs: 10, logger })),
+    (error) => error.code === 'send_interrupted' && error.ambiguous)
+  assert.equal(store.get('request_before_send_1').status, 'pending')
+})
+
+test('a failed attachment upload happens before relaying and can be requested again', async () => {
+  const store = retryStore()
+  const sender = new IdempotentSender({ store })
+  const socket = fakeSocket({ devices: { [LID]: 1 }, uploadError: 'media upload failed on all hosts' })
+  const document = { document: Buffer.from('pdf'), fileName: 'resumen.pdf', mimetype: 'application/pdf' }
+  await assert.rejects(sender.execute('request_upload_1', () => verifiedSend({ socket, jid: LID, content: document, logger })),
+    (error) => error.code === 'upload_failed' && error.retryable && !error.ambiguous)
+  assert.equal(store.get('request_upload_1'), undefined)
+  assert.equal(socket.sends.length, 0)
+  assert.equal(socket.ws.listenerCount('CB:ack,class:message'), 0)
+})
+
+test('the ack window starts when the attachment is actually sent, not before its upload', async () => {
+  const socket = fakeSocket({ devices: { [LID]: 1 }, uploadMs: 80, ackDelayMs: 5 })
+  const document = { document: Buffer.from('pdf'), fileName: 'resumen.pdf', mimetype: 'application/pdf' }
+  const result = await verifiedSend({ socket, jid: LID, content: document, ackTimeoutMs: 30, logger })
+  assert.equal(socket.uploads, 1)
+  assert.equal(result.delivery.serverAckAt, 1793620804)
+})
+
+test('an ack that arrives while sendMessage is still finishing is not missed', async () => {
+  const socket = fakeSocket({ devices: { [LID]: 1 } })
+  const original = socket.sendMessage
+  socket.sendMessage = async (...args) => {
+    const sent = await original(...args)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    return sent
+  }
+  const result = await verifiedSend({ socket, jid: LID, content: { text: 'Hola' }, ackTimeoutMs: 5, logger })
+  assert.ok(result.delivery.serverAckAt)
+})
