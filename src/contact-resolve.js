@@ -35,6 +35,13 @@ export function phoneFromJid(jid) {
   return jid?.replace(/@.+$/, '').replace(/\D/g, '') || ''
 }
 
+// A LID or group JID also has a numeric user part, but it is not a phone
+// number: encoding it as <digits>@s.whatsapp.net addresses a number that does
+// not exist. Only a phone JID yields a phone.
+export function phoneForJid(jid) {
+  return typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? jid.replace(/[:@].*$/, '').replace(/\D/g, '') || null : null
+}
+
 async function withCurrentJid(contact) {
   if (!contact?.jid || !contact.jid.endsWith('@s.whatsapp.net')) return contact
   const resolved = await request(`/resolve?jid=${encodeURIComponent(contact.jid)}`)
@@ -47,7 +54,7 @@ async function withCurrentJid(contact) {
 export async function resolveContact(target) {
   const aliases = await loadAliases()
   const key = target.toLocaleLowerCase()
-  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target) && !aliases[key]) return withCurrentJid({ phone: phoneFromJid(target), jid: target, alias: null, name: null })
+  if (/^[^@\s]+@(s\.whatsapp\.net|lid|g\.us|broadcast)$/i.test(target) && !aliases[key]) return withCurrentJid({ phone: phoneForJid(target), jid: target, alias: null, name: null })
   if (/^[+\d][\d\s()-]*$/.test(target) && !aliases[key]) return withCurrentJid({ phone: target.replace(/\D/g, ''), jid: phoneToJid(target), alias: null, name: null })
   const { chats } = await readIdentities()
   if (aliases[key]) {
@@ -58,7 +65,7 @@ export async function resolveContact(target) {
   }
   const normalizedTarget = normalizeText(target)
   const whatsappMatches = chats.filter((chat) => normalizeText(chat.name || '') === normalizedTarget)
-  if (whatsappMatches.length === 1) return withCurrentJid({ phone: phoneFromJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || null })
+  if (whatsappMatches.length === 1) return withCurrentJid({ phone: phoneForJid(whatsappMatches[0].jid), jid: whatsappMatches[0].jid, alias: null, name: whatsappMatches[0].name || null })
   if (whatsappMatches.length > 1) throw new Error(`More than one WhatsApp chat matches “${target}”. Use a phone number or save an alias.`)
   const exactMatches = macContactsForQuery(target)
     .filter((match) => normalizeText(match.name) === normalizeText(target))

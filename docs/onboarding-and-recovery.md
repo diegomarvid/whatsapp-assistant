@@ -341,12 +341,46 @@ not started handoff; it refuses to claim success while an entry is actually
 being delivered.
 
 The queue has an exclusive local lock between the CLI and bridge. On delivery,
-the bridge resolves the phone JID to the current WhatsApp LID again. It records
-a durable request ID before sending. A bridge restart during an in-flight send,
-or a timeout/disconnect returned by WhatsApp, becomes `uncertain` and is never
-retried automatically: this is deliberately safer than duplicating a private
-message. A message whose bridge remained unavailable for over one hour becomes
-`expired` rather than being delivered stale.
+the bridge resolves the recipient again: an alias is looked up again, a phone
+JID is resolved to the current WhatsApp LID, and a LID or group is used as is.
+A LID or group is never re-encoded as a phone number (before 0.12.2 a LID target
+stored its digits as `<digits>@s.whatsapp.net`, a number that does not exist,
+and Baileys "sent" to it without error). It records a durable request ID before
+sending. A bridge restart during an in-flight send, a timeout/disconnect returned
+by WhatsApp, or a missing server ack becomes `uncertain` and is never retried
+automatically: this is deliberately safer than duplicating a private message.
+A send WhatsApp rejects becomes `failed`. When nothing left the device (the
+recipient has no WhatsApp device even through its equivalent phone/LID, or
+could not be resolved), the entry is retried up to three times inside the
+delivery window and then becomes `failed` with the reason. A message whose
+bridge remained unavailable for over one hour becomes `expired` rather than
+being delivered stale.
+
+`sent` means WhatsApp's server acknowledged that exact message ID after the
+bridge verified at least one recipient device. `wa schedule list --all` shows
+`delivered` or `read` once a receipt arrives, and `wa schedule show <id>` lists
+the identity actually used, the number of devices, the server ack and the
+receipts. Entries sent before 0.12.2 show `sent (unconfirmed)`.
+
+Every `failed`, `uncertain` or `expired` scheduled message is announced. By
+default macOS shows a local notification. `wa schedule alerts set
+/absolute/command [args...]` configures an explicit channel instead (for
+example, a script that forwards to Telegram): it receives a one-line summary as
+its last argument and a JSON payload on stdin, never the message text.
+`wa schedule alerts test` exercises the channel without touching WhatsApp.
+
+All explicit outbound operations (`send`, `reply`, `send-file` and media sends),
+as well as scheduled and automation sends, go through the same verified path:
+at least one recipient device (or its equivalent phone/LID) before sending, and
+WhatsApp's server ack for the exact message ID afterwards. The ack window
+starts once the message is actually sent, not while an attachment uploads. A
+send without devices, or whose attachment upload failed, fails without sending
+anything and can be repeated. Any other error may have happened after the
+message left (for example, Baileys failing to persist keys after the send): an
+ack then still counts as sent, and without an ack the result is reported as
+unconfirmed and stays pending, so repeating the command never resends it. The
+idempotency fingerprint is stable across versions for the same target and
+content.
 
 All explicit outbound operations (`send`, `reply`, `send-file` and media sends)
 are idempotent for 24 hours. The CLI gives a repeated, previously unconfirmed

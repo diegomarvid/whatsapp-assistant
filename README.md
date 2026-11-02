@@ -622,8 +622,9 @@ acopla el bridge a un runtime concreto de IA.
 | `wa reply contacto latest-incoming "Entendido"` | Responde citando un mensaje concreto. |
 | `wa send contacto "mensaje"` | Envía un texto. |
 | `wa schedule add --at 2026-08-03T21:00:00-03:00 contacto "mensaje"` | Programa un texto explícitamente pedido; la hora lleva timezone. |
-| `wa schedule list` / `wa schedule list --all` | Muestra la cola activa en hora local, o también el historial. |
-| `wa schedule show <id>` / `wa schedule cancel <id>` | Abre un mensaje programado o lo cancela antes de que empiece el envío. |
+| `wa schedule list` / `wa schedule list --all` | Muestra la cola activa en hora local, o también el historial con `sent`, `delivered` o `read` según lo que confirmó WhatsApp. |
+| `wa schedule show <id>` / `wa schedule cancel <id>` | Abre un mensaje programado (destino usado, ack del servidor, entregado, leído, motivo de falla) o lo cancela antes de que empiece el envío. |
+| `wa schedule alerts set /ruta/absoluta/comando [args...]` | Define cómo se avisa un programado `failed`, `uncertain` o `expired`; sin comando, macOS muestra una notificación local. `wa schedule alerts test` prueba el aviso sin tocar WhatsApp. |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un archivo como documento. |
 | `wa send-image contacto /ruta/foto.jpg "caption" --reply-to latest-incoming` | Envía una imagen nativa, opcionalmente citando un mensaje. |
 | `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |
@@ -649,6 +650,21 @@ el envío anterior sigue sin confirmar y tampoco lo reintenta a ciegas. Verific�
 primero con el destinatario o con `wa history`; sólo enviá un reemplazo si se
 pidió explícitamente. El registro local conserva únicamente un fingerprint, no
 el texto, caption, número ni ruta del archivo.
+
+Un envío sólo cuenta como hecho cuando WhatsApp lo confirmó. Baileys da por
+bueno un mensaje cifrado para **cero dispositivos** (un número inexistente o un
+LID sin dispositivos resueltos), así que el bridge verifica antes de enviar que
+el destinatario tenga al menos un dispositivo; si un LID no tiene, prueba su
+número equivalente según el mapeo LID↔PN de Baileys y, si tampoco, falla sin
+enviar nada. Después espera el ack del servidor para ese ID exacto: un rechazo
+es una falla definitiva y la falta de ack queda incierta, sin reintento. Un LID
+nunca se reinterpreta como número de teléfono. El resultado indica el destino
+usado y el ack recibido.
+
+Los mensajes programados re-resuelven el destinatario al enviar (un alias se
+vuelve a buscar). Si no salió nada, se reintentan hasta tres veces dentro de la
+hora de entrega y después quedan `failed` con el motivo; cada `failed`,
+`uncertain` o `expired` se avisa con `wa schedule alerts`.
 
 ## 🏗️ Cómo se mantiene actualizado
 

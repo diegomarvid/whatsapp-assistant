@@ -34,9 +34,10 @@ export class IdempotentSender {
         return result
       })
       .catch((error) => {
-        // A confirmed local failure is safe to retry. Only an interrupted or
-        // unknown result remains pending.
-        this.store.del(requestId)
+        // A confirmed local failure is safe to retry. An interrupted or
+        // explicitly ambiguous result (for example, no WhatsApp server ack)
+        // remains pending so a repeated request is never resent blindly.
+        if (!error?.ambiguous) this.store.del(requestId)
         throw error
       })
     this.inFlight.set(requestId, inFlight)

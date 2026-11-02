@@ -287,3 +287,65 @@ test('automation creation preserves numeric group JIDs instead of treating them 
   assert.equal(rule.destinationOriginalJid, '12345@g.us')
   assert.equal(rule.status, 'paused')
 })
+
+test('schedule add never re-encodes a LID or group as a phone number', async () => {
+  const at = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+  for (const target of ['Gisell', '111@lid', 'work@g.us']) {
+    const result = await wa('schedule', 'add', '--at', at, target, 'Hola')
+    assert.equal(result.status, 0, result.stderr)
+  }
+  const queue = JSON.parse(await fs.readFile(path.join(bridge.stateRoot, 'data', 'scheduled-messages.json'), 'utf8'))
+  const added = queue.messages.slice(-3)
+  assert.deepEqual(added.map((message) => [message.jid, message.phone, message.originalJid]), [
+    ['111@lid', null, null],
+    ['111@lid', null, null],
+    ['work@g.us', null, null],
+  ])
+  assert.ok(added.every((message) => !JSON.stringify(message).includes('@s.whatsapp.net')))
+  const shown = await wa('schedule', 'show', added[0].id)
+  assert.equal(shown.status, 0, shown.stderr)
+  assert.match(shown.stdout, /Estado: scheduled/)
+  assert.match(shown.stdout, /Destinatario: Gisell/)
+})
+
+test('schedule alerts can be configured and exercised without touching WhatsApp', async () => {
+  const output = path.join(bridge.stateRoot, 'alert-output.txt')
+  const set = await wa('schedule', 'alerts', 'set', '/bin/sh', '-c', 'cat > "$0"; printf "%s" "$1" > "$0.summary"', output)
+  assert.equal(set.status, 0, set.stderr)
+  const writesBefore = bridge.writes.length
+  const tested = await wa('schedule', 'alerts', 'test')
+  assert.equal(tested.status, 0, tested.stderr)
+  assert.match(tested.stdout, /command/)
+  assert.equal(JSON.parse(await fs.readFile(output, 'utf8')).kind, 'scheduled_message')
+  assert.match(await fs.readFile(`${output}.summary`, 'utf8'), /wa schedule show 0{32}/)
+  assert.equal(bridge.writes.length, writesBefore, 'an alert test never calls the bridge')
+  assert.equal((await wa('schedule', 'alerts', 'clear')).status, 0)
+})
+
+test('an explicit send reports the WhatsApp server ack and an equivalent-identity fallback', async () => {
+  fixtures.postResponses['/messages/send'] = { sent: true, id: 'ACKED-ID', delivery: { jid: '598000@s.whatsapp.net', requestedJid: '111@lid', fallbackFrom: '111@lid', recipientDevices: 1, serverAckAt: 1793620804 } }
+  try {
+    const result = await wa('send', 'Gisell', 'hola con ack')
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /Sent \(ACKED-ID\) to 598000@s\.whatsapp\.net \(equivalent of 111@lid, which had no WhatsApp device\); WhatsApp server ack received\./)
+  } finally {
+    fixtures.postResponses['/messages/send'] = { sent: true, id: 'NEW-ID' }
+  }
+})
+
+test('a request recorded before the upgrade keeps its request ID for LID and group targets', async () => {
+  // 0.12.1 fingerprinted a LID or group contact by its numeric user part.
+  const { PendingOutboundRequests } = await import('../src/pending-outbound-requests.js')
+  const pending = new PendingOutboundRequests(path.join(bridge.stateRoot, 'data', 'pending-outbound-requests.json'))
+  const lidText = 'respuesta perdida antes de actualizar'
+  const before = await pending.claim({ kind: 'text', to: '111', text: lidText, mentions: [], replyToMessageId: null })
+  const sent = await wa('send', 'Gisell', lidText)
+  assert.equal(sent.status, 0, sent.stderr)
+  assert.equal(lastWrite().body.requestId, before.requestId)
+
+  const groupText = 'mensaje de grupo perdido'
+  const groupBefore = await pending.claim({ kind: 'text', to: '120363000000000001', text: groupText, mentions: [], replyToMessageId: null })
+  const groupSent = await wa('send', '120363000000000001@g.us', groupText)
+  assert.equal(groupSent.status, 0, groupSent.stderr)
+  assert.equal(lastWrite().body.requestId, groupBefore.requestId)
+})
