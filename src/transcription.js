@@ -72,8 +72,10 @@ export async function transcriptionDoctor() {
       ? runtime.runtimePathExists
         ? `The private runtime is incomplete (missing ${backendImportName(runtime.backend)}). The next \`wa transcribe\` repairs it automatically without downloading a model.`
         : 'Run `wa transcribe` to create a private Python runtime automatically. This does not download a model.'
-      : runtime.backend === 'mlx' && !ffmpegAvailable
-        ? 'Install ffmpeg (for example, `brew install ffmpeg`) before transcribing audio on Apple Silicon.'
+      : !ffmpegAvailable
+        ? runtime.backend === 'mlx'
+          ? 'Install ffmpeg (for example, `brew install ffmpeg`) before transcribing audio on Apple Silicon.'
+          : 'Install ffmpeg (for example, `sudo apt install ffmpeg`): faster-whisper\'s built-in decoder fails with recent PyAV releases, so audio is decoded with ffmpeg.'
       : !runtime.selected
         ? `Ask the user before downloading ${runtime.defaultModel}, then run \`wa transcribe pull ${runtime.defaultModel}\`, or configure an existing directory with \`wa transcribe config model-path <dir>\`.`
         : 'ready',
