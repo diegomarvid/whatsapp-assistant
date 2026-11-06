@@ -24,10 +24,18 @@ jobs:
         run: |
           test "v$(node -p 'require("./package.json").version')" = "${GITHUB_REF_NAME}" \
             || { echo "package.json version does not match tag ${GITHUB_REF_NAME}"; exit 1; }
-      - run: npm publish
+      # Re-runnable: a version already on npm (published by hand) or a release
+      # already created is skipped instead of failing the run.
+      - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if npm view "$(node -p 'require("./package.json").name')@$(node -p 'require("./package.json").version')" version >/dev/null 2>&1; then
+            echo "Already on npm; skipping publish."
+          else
+            npm publish
+          fi
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes
+        run: gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --generate-notes
