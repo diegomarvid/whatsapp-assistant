@@ -97,3 +97,14 @@ test('keeps the surface verified sends depend on', async () => {
   const mapping = await readFile(path.join(lib, 'Signal', 'lid-mapping.js'), 'utf8')
   for (const method of ['getPNForLID', 'getLIDForPN']) assert.match(mapping, new RegExp(`async ${method}\\(`), `${method} resolves LID ↔ phone equivalents`)
 })
+
+test('the socket still creates groups and reports their participants', async () => {
+  // wa groups create calls groupCreate(subject, participants) and reads the
+  // returned metadata's id, subject and participants (id, phoneNumber, lid, admin).
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const groups = await readFile(path.join(lib, 'Socket', 'groups.js'), 'utf8')
+  assert.match(groups, /groupCreate: async \(subject, participants\) =>/, 'groupCreate(subject, participants) must still be returned by the groups socket')
+  assert.match(groups, /return extractGroupMetadata\(result\);/, 'groupCreate must still return the created group metadata')
+  for (const field of ['id: attrs.jid,', 'phoneNumber:', 'lid:', 'admin: (attrs.type || null)']) assert.ok(groups.includes(field), `group participants must still carry ${field}`)
+})

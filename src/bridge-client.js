@@ -135,6 +135,10 @@ export function sendFile(jid, filePath, caption, replyToMessageId = null, reques
   return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId, requestId }, 'Could not send document')
 }
 
+export function createGroup(subject, participants, requestId = null) {
+  return bridgePost('/groups/create', { subject, participants, requestId }, 'Could not create group')
+}
+
 export function editMessage(jid, messageId, text) {
   return bridgePost('/messages/edit', { jid, messageId, text }, 'Could not edit message')
 }

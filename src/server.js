@@ -26,6 +26,7 @@ import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from '.
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
 import { IdempotentSender, validOutboundRequestId } from './outbound-idempotency.js'
+import { createdGroupSummary, creationParticipants, markAmbiguousCreateFailure, validateGroupCreate } from './group-create.js'
 import { quotedReplyEnvelope } from './quoted-reply.js'
 import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
@@ -769,6 +770,25 @@ async function sendIdempotently({ requestId, send }) {
   return { sent: true, id: outcome.result?.key?.id || null, replayed: outcome.replayed, delivery: outcome.result?.delivery || null }
 }
 
+// Creates a group with explicitly resolved people. Like a send, it goes
+// through the idempotent outbound store: a lost loopback response must never
+// make a retry create a second group, and an ambiguous failure stays pending.
+async function createGroupIdempotently({ subject, participants, requestId }) {
+  if (requestId != null && !validOutboundRequestId(requestId)) throw new Error('invalid_send_request_id')
+  const outcome = await outboundSender.execute(requestId || null, async () => {
+    const requested = await Promise.all(participants.map(async (jid) => ({ jid, aliases: await chatAliases(jid) })))
+    let metadata
+    try {
+      metadata = await socket.groupCreate(subject, creationParticipants(requested))
+    } catch (error) {
+      throw markAmbiguousCreateFailure(error)
+    }
+    return createdGroupSummary(metadata, requested, jidNormalizedUser)
+  })
+  if (outcome.pending) return { pending: true, requestId: outcome.requestId }
+  return { created: true, replayed: outcome.replayed, group: outcome.result }
+}
+
 async function loadAliasesForDelivery() {
   try {
     return JSON.parse(await fs.readFile(aliasesPath, 'utf8'))
@@ -1432,8 +1452,9 @@ async function main() {
     const isMediaSend = request.method === 'POST' && url.pathname === '/media/send'
     const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision', '/automation/human/ask', '/automation/human/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
+    const isGroupCreate = request.method === 'POST' && url.pathname === '/groups/create'
     const isBackfillWrite = ['POST', 'DELETE'].includes(request.method) && url.pathname === '/history/backfill'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isGroupCreate && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
@@ -1552,6 +1573,16 @@ async function main() {
           })) })
         })
         .catch((error) => json(response, 422, { error: 'groups_fetch_failed', message: error.message }))
+      return
+    }
+    if (isGroupCreate) {
+      requestBody(request).then(async (body) => {
+        const valid = validateGroupCreate(body)
+        if (valid.error) return json(response, 400, { error: valid.error })
+        if (connection !== 'open' || !socket?.groupCreate) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const result = await createGroupIdempotently({ ...valid, requestId: body.requestId })
+        json(response, result.pending ? 202 : 200, result)
+      }).catch((error) => sendFailure(response, error, 'group_create_failed'))
       return
     }
     if (request.method === 'GET' && url.pathname === '/coverage') {

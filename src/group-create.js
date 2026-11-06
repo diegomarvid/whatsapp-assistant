@@ -1,0 +1,66 @@
+// Creating a WhatsApp group is an external side effect, like a send. The
+// bridge only validates the request structurally and reports what WhatsApp
+// actually created, including requested people it did not add (for example,
+// because their privacy settings only allow an invitation).
+
+export const GROUP_SUBJECT_MAX_LENGTH = 100
+// WhatsApp groups hold up to 1024 members, the creator included.
+export const GROUP_CREATE_MAX_PARTICIPANTS = 1023
+
+const PARTICIPANT_JID = /^\d+@(s\.whatsapp\.net|lid)$/
+
+export function isGroupParticipantJid(jid) {
+  return typeof jid === 'string' && PARTICIPANT_JID.test(jid)
+}
+
+export function validateGroupCreate({ subject, participants } = {}) {
+  const name = typeof subject === 'string' ? subject.trim() : ''
+  if (!name || [...name].length > GROUP_SUBJECT_MAX_LENGTH) return { error: 'invalid_group_subject' }
+  if (!Array.isArray(participants) || !participants.length || !participants.every(isGroupParticipantJid)) return { error: 'invalid_group_participants' }
+  const unique = [...new Set(participants)]
+  if (unique.length > GROUP_CREATE_MAX_PARTICIPANTS) return { error: 'invalid_group_participants' }
+  return { subject: name, participants: unique }
+}
+
+// A timeout or a closed connection can arrive after WhatsApp already created
+// the group, so it must never be repeated blindly. An error answered by
+// WhatsApp itself (bad request, not authorized…) is a confirmed failure.
+export function markAmbiguousCreateFailure(error) {
+  const status = error?.output?.statusCode
+  if (error && typeof error === 'object' && (status == null || status === 408 || status === 428)) error.ambiguous = true
+  return error
+}
+
+// WhatsApp answers bad-request when a group is created with LID participants
+// (verified 2026-11-06): creation must address each person by phone JID. Use
+// the phone equivalent the bridge's LID mapping knows; never derive one from
+// LID digits. Without a known equivalent the JID is sent as is and WhatsApp's
+// answer is reported.
+export function creationParticipants(requested) {
+  return [...new Set(requested.map(({ jid, aliases }) => (jid.endsWith('@s.whatsapp.net') ? jid : (aliases || []).find((alias) => alias.endsWith('@s.whatsapp.net')) || jid)))]
+}
+
+// requested: [{ jid, aliases }] where aliases holds the jid and its known
+// phone/LID equivalent, so a participant returned under the other identity
+// still counts as added. The bridge passes Baileys' jidNormalizedUser so a
+// device-qualified JID compares equal; the CLI never imports Baileys.
+export function createdGroupSummary(metadata, requested = [], normalizeJid = (jid) => jid) {
+  const normalized = (jid) => {
+    try {
+      return normalizeJid(jid) || jid
+    } catch {
+      return jid
+    }
+  }
+  const participants = (metadata?.participants || []).map((participant) => ({
+    jid: participant.id,
+    phoneNumber: participant.phoneNumber || null,
+    lid: participant.lid || null,
+    admin: participant.admin || null,
+  }))
+  const present = new Set(participants.flatMap((participant) => [participant.jid, participant.phoneNumber, participant.lid].filter(Boolean).map(normalized)))
+  const notAdded = requested
+    .filter(({ jid, aliases }) => ![jid, ...(aliases || [])].some((alias) => present.has(normalized(alias))))
+    .map(({ jid }) => jid)
+  return { jid: metadata?.id || null, subject: metadata?.subject || null, participants, notAdded }
+}
