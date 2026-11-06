@@ -26,7 +26,7 @@ import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from '.
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
 import { IdempotentSender, validOutboundRequestId } from './outbound-idempotency.js'
-import { GROUP_PHOTO_MAX_BYTES, createdGroupSummary, creationParticipants, markAmbiguousCreateFailure, validateGroupCreate, validateGroupPhoto } from './group-admin.js'
+import { GROUP_PHOTO_MAX_BYTES, createdGroupSummary, creationParticipants, markAmbiguousCreateFailure, validateGroupCreate, validateGroupPhoto, validateMemberAddMode } from './group-admin.js'
 import { quotedReplyEnvelope } from './quoted-reply.js'
 import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
@@ -773,7 +773,7 @@ async function sendIdempotently({ requestId, send }) {
 // Creates a group with explicitly resolved people. Like a send, it goes
 // through the idempotent outbound store: a lost loopback response must never
 // make a retry create a second group, and an ambiguous failure stays pending.
-async function createGroupIdempotently({ subject, participants, requestId }) {
+async function createGroupIdempotently({ subject, participants, memberAddMode, requestId }) {
   if (requestId != null && !validOutboundRequestId(requestId)) throw new Error('invalid_send_request_id')
   const outcome = await outboundSender.execute(requestId || null, async () => {
     const requested = await Promise.all(participants.map(async (jid) => ({ jid, aliases: await chatAliases(jid) })))
@@ -783,7 +783,18 @@ async function createGroupIdempotently({ subject, participants, requestId }) {
     } catch (error) {
       throw markAmbiguousCreateFailure(error)
     }
-    return createdGroupSummary(metadata, requested, jidNormalizedUser)
+    const summary = createdGroupSummary(metadata, requested, jidNormalizedUser)
+    // The group already exists at this point: a failed setting is reported,
+    // never turned into a failed (and retryable) creation.
+    if (memberAddMode && summary.jid) {
+      try {
+        await socket.groupMemberAddMode(summary.jid, memberAddMode)
+        summary.memberAddMode = memberAddMode
+      } catch (error) {
+        summary.memberAddModeError = error.message
+      }
+    }
+    return summary
   })
   if (outcome.pending) return { pending: true, requestId: outcome.requestId }
   return { created: true, replayed: outcome.replayed, group: outcome.result }
@@ -1454,8 +1465,9 @@ async function main() {
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     const isGroupCreate = request.method === 'POST' && url.pathname === '/groups/create'
     const isGroupPhoto = request.method === 'POST' && url.pathname === '/groups/photo'
+    const isGroupMemberAddMode = request.method === 'POST' && url.pathname === '/groups/member-add-mode'
     const isBackfillWrite = ['POST', 'DELETE'].includes(request.method) && url.pathname === '/history/backfill'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isGroupCreate && !isGroupPhoto && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isGroupCreate && !isGroupPhoto && !isGroupMemberAddMode && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
@@ -1564,6 +1576,7 @@ async function main() {
               subject: group.subject || null,
               desc: group.desc || null,
               selfJid: socket.user?.id || null,
+              memberAddMode: group.memberAddMode ? 'all_member_add' : 'admin_add',
               participants: (group.participants || []).map((participant) => ({ jid: participant.id, admin: participant.admin || null })),
             },
           } : { groups: values.map((group) => ({
@@ -1584,6 +1597,16 @@ async function main() {
         const result = await createGroupIdempotently({ ...valid, requestId: body.requestId })
         json(response, result.pending ? 202 : 200, result)
       }).catch((error) => sendFailure(response, error, 'group_create_failed'))
+      return
+    }
+    if (isGroupMemberAddMode) {
+      requestBody(request).then(async (body) => {
+        const valid = validateMemberAddMode(body)
+        if (valid.error) return json(response, 400, { error: valid.error })
+        if (connection !== 'open' || !socket?.groupMemberAddMode) return json(response, 503, { error: 'whatsapp_not_connected' })
+        await socket.groupMemberAddMode(valid.jid, valid.mode)
+        json(response, 200, { updated: true, jid: valid.jid, memberAddMode: valid.mode })
+      }).catch((error) => json(response, 422, { error: 'member_add_mode_failed', message: error.message }))
       return
     }
     if (isGroupPhoto) {
