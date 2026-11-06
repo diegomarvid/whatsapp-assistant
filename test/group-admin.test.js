@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { jidNormalizedUser } from 'baileys'
-import { GROUP_SUBJECT_MAX_LENGTH, createdGroupSummary, creationParticipants, isGroupParticipantJid, validateGroupPhoto, markAmbiguousCreateFailure, validateGroupCreate } from '../src/group-admin.js'
+import { GROUP_SUBJECT_MAX_LENGTH, MEMBER_ADD_MODES, createdGroupSummary, creationParticipants, isGroupParticipantJid, validateGroupPhoto, validateMemberAddMode, markAmbiguousCreateFailure, validateGroupCreate } from '../src/group-admin.js'
 
 test('accepts a named group of direct contacts and drops repeated people', () => {
   assert.deepEqual(
     validateGroupCreate({ subject: '  Maspeak <> Hotel  ', participants: ['111@lid', '598000@s.whatsapp.net', '111@lid'] }),
-    { subject: 'Maspeak <> Hotel', participants: ['111@lid', '598000@s.whatsapp.net'] },
+    { subject: 'Maspeak <> Hotel', participants: ['111@lid', '598000@s.whatsapp.net'], memberAddMode: null },
   )
 })
 
@@ -68,4 +68,13 @@ test('a group photo needs a group JID and an absolute JPG, PNG or WebP path', ()
   assert.equal(validateGroupPhoto({ jid: '120363000000000001@g.us', filePath: 'logo.png' }).error, 'invalid_group_photo')
   assert.equal(validateGroupPhoto({ jid: '120363000000000001@g.us', filePath: '/tmp/logo.gif' }).error, 'invalid_group_photo')
   assert.equal(validateGroupPhoto({}).error, 'invalid_group_jid')
+})
+
+test('who can add participants accepts all/admins or the WhatsApp values, only for a group', () => {
+  assert.deepEqual(validateMemberAddMode({ jid: '120363000000000001@g.us', mode: 'all' }), { jid: '120363000000000001@g.us', mode: MEMBER_ADD_MODES.all })
+  assert.deepEqual(validateMemberAddMode({ jid: '120363000000000001@g.us', mode: 'admin_add' }), { jid: '120363000000000001@g.us', mode: 'admin_add' })
+  assert.equal(validateMemberAddMode({ jid: '111@lid', mode: 'all' }).error, 'invalid_group_jid')
+  assert.equal(validateMemberAddMode({ jid: '120363000000000001@g.us', mode: 'everyone' }).error, 'invalid_member_add_mode')
+  assert.equal(validateGroupCreate({ subject: 'Prueba', participants: ['111@lid'], memberAddMode: 'all_member_add' }).memberAddMode, 'all_member_add')
+  assert.equal(validateGroupCreate({ subject: 'Prueba', participants: ['111@lid'], memberAddMode: 'bogus' }).error, 'invalid_member_add_mode')
 })

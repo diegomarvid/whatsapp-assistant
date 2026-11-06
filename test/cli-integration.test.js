@@ -51,8 +51,10 @@ const fixtures = {
           { jid: '111@lid', phoneNumber: null, lid: null, admin: null },
         ],
         notAdded: ['222@lid'],
+        memberAddMode: 'all_member_add',
       },
     },
+    '/groups/member-add-mode': { updated: true },
   },
 }
 
@@ -210,9 +212,33 @@ test('groups create sends the resolved people once and reports who was not added
   assert.equal(write.path, '/groups/create')
   assert.equal(write.body.subject, 'Prueba')
   assert.deepEqual(write.body.participants, ['111@lid', '222@lid'])
+  assert.equal(write.body.memberAddMode, 'all_member_add', 'groups default to everyone being able to add people')
   assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
+  assert.match(result.stdout, /Cualquier participante puede agregar gente/)
   assert.match(result.stdout, /Grupo creado: Prueba \(120363000000000001@g\.us\)/)
   assert.match(result.stdout, /No quedó en el grupo: Flor \(222@lid\)/)
+})
+
+test('groups create --admins-add keeps adding people to admins', async () => {
+  const result = await wa('groups', 'create', 'Solo admins', 'Gisell', '--admins-add')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(lastWrite().path, '/groups/create')
+  assert.equal(lastWrite().body.memberAddMode, 'admin_add')
+  assert.deepEqual(lastWrite().body.participants, ['111@lid'])
+})
+
+test('groups member-add changes who can add participants on an existing group', async () => {
+  const result = await wa('groups', 'member-add', 'work@g.us', 'all')
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(lastWrite().path, '/groups/member-add-mode')
+  assert.deepEqual(lastWrite().body, { jid: 'work@g.us', mode: 'all_member_add' })
+  assert.match(result.stdout, /Equipo Maspeak: cualquier participante puede agregar gente/)
+  const writes = bridge.writes.length
+  const bad = await wa('groups', 'member-add', 'work@g.us', 'everyone')
+  assert.notEqual(bad.status, 0)
+  const notGroup = await wa('groups', 'member-add', '111@lid', 'all')
+  assert.notEqual(notGroup.status, 0)
+  assert.equal(bridge.writes.length, writes)
 })
 
 test('groups create refuses a group as a participant and needs a name and people', async () => {

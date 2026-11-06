@@ -25,17 +25,34 @@ export function validateGroupPhoto({ jid, filePath } = {}) {
   return { jid, filePath }
 }
 
+// Who can add participants. Groups the owner creates default to everyone,
+// so any member can bring in a colleague without waiting for an admin.
+export const MEMBER_ADD_MODES = { all: 'all_member_add', admins: 'admin_add' }
+
+export function memberAddModeFor(value) {
+  if (Object.values(MEMBER_ADD_MODES).includes(value)) return value
+  return MEMBER_ADD_MODES[value] || null
+}
+
+export function validateMemberAddMode({ jid, mode } = {}) {
+  if (typeof jid !== 'string' || !GROUP_JID.test(jid)) return { error: 'invalid_group_jid' }
+  const memberAddMode = memberAddModeFor(mode)
+  if (!memberAddMode) return { error: 'invalid_member_add_mode' }
+  return { jid, mode: memberAddMode }
+}
+
 export function isGroupParticipantJid(jid) {
   return typeof jid === 'string' && PARTICIPANT_JID.test(jid)
 }
 
-export function validateGroupCreate({ subject, participants } = {}) {
+export function validateGroupCreate({ subject, participants, memberAddMode } = {}) {
   const name = typeof subject === 'string' ? subject.trim() : ''
+  if (memberAddMode != null && !memberAddModeFor(memberAddMode)) return { error: 'invalid_member_add_mode' }
   if (!name || [...name].length > GROUP_SUBJECT_MAX_LENGTH) return { error: 'invalid_group_subject' }
   if (!Array.isArray(participants) || !participants.length || !participants.every(isGroupParticipantJid)) return { error: 'invalid_group_participants' }
   const unique = [...new Set(participants)]
   if (unique.length > GROUP_CREATE_MAX_PARTICIPANTS) return { error: 'invalid_group_participants' }
-  return { subject: name, participants: unique }
+  return { subject: name, participants: unique, memberAddMode: memberAddMode == null ? null : memberAddModeFor(memberAddMode) }
 }
 
 // A timeout or a closed connection can arrive after WhatsApp already created

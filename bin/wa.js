@@ -11,7 +11,7 @@ import {
   bridgePost, bridgeRequest, createGroup, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
   requireFreshCoverage, resolveMessageSelector, revokeMessage,
-  sendFile, sendMedia, sendMessage, setGroupPhoto, whatsappGroup, whatsappGroups,
+  sendFile, sendMedia, sendMessage, setGroupMemberAddMode, setGroupPhoto, whatsappGroup, whatsappGroups,
 } from '../src/bridge-client.js'
 import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
 import { REVIEW_TIME_ZONE, formatReviewLocalTimestamp, reviewWindow, selectConversationReview } from '../src/conversation-review.js'
@@ -21,7 +21,7 @@ import { tryRun } from '../src/exec.js'
 import { AgentProfiles, PROVIDER_CATALOG_VERSION, PROVIDERS, ProviderDetections, formatAgentProfile, inspectPromptFile, probeProvider, providerCatalog } from '../src/agent-providers.js'
 import { validateProviderProfile } from '../src/agent-provider-runner.js'
 import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
-import { isGroupParticipantJid, isGroupPhotoFile } from '../src/group-admin.js'
+import { MEMBER_ADD_MODES, isGroupParticipantJid, isGroupPhotoFile } from '../src/group-admin.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
@@ -122,7 +122,8 @@ Comandos:
   wa groups inspect <group-jid> [limit]
   wa groups participants <group-jid>
   wa groups add <list> <group-jid> [reason]
-  wa groups create "<nombre>" <contacto> [contacto...]   # sólo ante pedido explícito
+  wa groups create "<nombre>" <contacto> [contacto...] [--admins-add]   # sólo ante pedido explícito; por defecto cualquiera agrega gente
+  wa groups member-add <group-jid> all|admins            # quién puede agregar participantes
   wa groups photo <group-jid> <imagen.jpg|png|webp>      # sólo ante pedido explícito; requiere ser admin
   wa latest <alias or phone>
   wa latest-incoming <alias or phone>
@@ -288,7 +289,8 @@ Acciones; requieren pedido explícito:
   wa unsend <contacto> <id>         — Revocar únicamente un mensaje propio.
   wa mark-read <contacto> <id>      — Emitir un read receipt explícito.
   wa send-file|send-image|send-video|send-audio ... — Enviar el archivo elegido.
-  wa groups create "<nombre>" <contacto>... — Crear un grupo con las personas pedidas.
+  wa groups create "<nombre>" <contacto>... — Crear un grupo con las personas pedidas; cualquiera puede sumar gente (--admins-add para limitarlo).
+  wa groups member-add <jid> all|admins — Cambiar quién puede agregar participantes.
   wa groups photo <jid> <imagen>    — Poner la foto de un grupo donde sos admin.
 
 Trabajo futuro y automatización:
@@ -1221,12 +1223,29 @@ async function main() {
       if (!jid || !jid.endsWith('@g.us')) throw new Error('Use: wa groups participants <group-jid>')
       const group = await whatsappGroup(jid)
       console.log(`Grupo: ${group.subject || jid}`)
+      if (group.memberAddMode) console.log(`Agregar participantes: ${group.memberAddMode === MEMBER_ADD_MODES.all ? 'cualquiera' : 'sólo admins'}`)
       for (const participant of group.participants || []) console.log(`${participant.jid}${participant.admin ? ` — ${participant.admin}` : ''}`)
       return
     }
+    if (action === 'member-add') {
+      const jid = args.shift()
+      const choice = args.shift()
+      if (!jid || !jid.endsWith('@g.us') || !['all', 'admins'].includes(choice)) throw new Error('Use: wa groups member-add <group-jid> all|admins')
+      try {
+        await setGroupMemberAddMode(jid, MEMBER_ADD_MODES[choice])
+      } catch (error) {
+        if (/not-authorized/i.test(error.message)) throw new Error(`${error.message}. Only a group admin can change who adds participants.`)
+        throw error
+      }
+      const group = await whatsappGroup(jid)
+      return console.log(`${group.subject || jid}: ${choice === 'all' ? 'cualquier participante puede agregar gente' : 'sólo los admins agregan gente'}.`)
+    }
     if (action === 'create') {
+      const adminsOnly = args.includes('--admins-add')
+      if (adminsOnly) args.splice(args.indexOf('--admins-add'), 1)
+      const memberAddMode = adminsOnly ? MEMBER_ADD_MODES.admins : MEMBER_ADD_MODES.all
       const subject = args.shift()?.trim()
-      if (!subject || !args.length) throw new Error('Use: wa groups create "<nombre>" <contacto> [contacto...]')
+      if (!subject || !args.length) throw new Error('Use: wa groups create "<nombre>" <contacto> [contacto...] [--admins-add]')
       const people = []
       for (const target of args) {
         const contact = await resolve(target)
@@ -1234,8 +1253,8 @@ async function main() {
         if (!people.some((person) => person.contact.jid === contact.jid)) people.push({ target, contact })
       }
       const result = await sendOnce(
-        { kind: 'group-create', subject, participants: people.map(({ contact }) => outboundDestination(contact)) },
-        (requestId) => createGroup(subject, people.map(({ contact }) => contact.jid), requestId),
+        { kind: 'group-create', subject, participants: people.map(({ contact }) => outboundDestination(contact)), memberAddMode },
+        (requestId) => createGroup(subject, people.map(({ contact }) => contact.jid), requestId, memberAddMode),
       )
       const group = result.group || {}
       console.log(`Grupo creado: ${group.subject || subject} (${group.jid})${result.replayed ? ' (confirmado de un pedido anterior)' : ''}`)
@@ -1244,6 +1263,8 @@ async function main() {
         const target = people.find(({ contact }) => contact.jid === jid)?.target || jid
         console.log(`No quedó en el grupo: ${target} (${jid}). WhatsApp puede exigir una invitación por su privacidad.`)
       }
+      if (group.memberAddMode) console.log(group.memberAddMode === MEMBER_ADD_MODES.all ? 'Cualquier participante puede agregar gente.' : 'Sólo los admins agregan gente.')
+      if (group.memberAddModeError) console.log(`El grupo se creó, pero no pude cambiar quién agrega gente (${group.memberAddModeError}). Reintentar: wa groups member-add ${group.jid} ${adminsOnly ? 'admins' : 'all'}`)
       return
     }
     if (action === 'photo') {

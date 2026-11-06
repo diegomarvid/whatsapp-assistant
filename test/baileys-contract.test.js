@@ -124,3 +124,14 @@ test('the socket still sets a group photo through the bundled image library', as
   assert.ok(square.length > 0, 'sharp must load in this installation')
 })
 
+test('the socket still sets who can add participants to a group', async () => {
+  // wa groups create and wa groups member-add call groupMemberAddMode(jid,
+  // 'all_member_add' | 'admin_add'); groups detail reads metadata.memberAddMode.
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const groups = await readFile(path.join(lib, 'Socket', 'groups.js'), 'utf8')
+  assert.match(groups, /groupMemberAddMode: async \(jid, mode\) =>/, 'groupMemberAddMode(jid, mode) must still be returned by the groups socket')
+  assert.match(groups, /tag: 'member_add_mode', attrs: \{\}, content: mode/, 'member_add_mode must still carry the mode as content')
+  assert.match(groups, /memberAddMode = getBinaryNodeChildString\(group, 'member_add_mode'\) === 'all_member_add'/, 'group metadata must still expose memberAddMode')
+})
+

@@ -135,8 +135,12 @@ export function sendFile(jid, filePath, caption, replyToMessageId = null, reques
   return bridgePost('/documents/send', { jid, filePath, caption, replyToMessageId, requestId }, 'Could not send document')
 }
 
-export function createGroup(subject, participants, requestId = null) {
-  return bridgePost('/groups/create', { subject, participants, requestId }, 'Could not create group')
+export function createGroup(subject, participants, requestId = null, memberAddMode = null) {
+  return bridgePost('/groups/create', { subject, participants, memberAddMode, requestId }, 'Could not create group')
+}
+
+export function setGroupMemberAddMode(jid, mode) {
+  return bridgePost('/groups/member-add-mode', { jid, mode }, 'Could not change who can add participants')
 }
 
 export function setGroupPhoto(jid, filePath) {
