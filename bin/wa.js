@@ -8,10 +8,10 @@ import path from 'node:path'
 import qrcodeTerminal from 'qrcode-terminal'
 import QRCode from 'qrcode'
 import {
-  bridgePost, bridgeRequest, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
+  bridgePost, bridgeRequest, createGroup, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
   requireFreshCoverage, resolveMessageSelector, revokeMessage,
-  sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
+  sendFile, sendMedia, sendMessage, setGroupPhoto, whatsappGroup, whatsappGroups,
 } from '../src/bridge-client.js'
 import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
 import { REVIEW_TIME_ZONE, formatReviewLocalTimestamp, reviewWindow, selectConversationReview } from '../src/conversation-review.js'
@@ -21,6 +21,7 @@ import { tryRun } from '../src/exec.js'
 import { AgentProfiles, PROVIDER_CATALOG_VERSION, PROVIDERS, ProviderDetections, formatAgentProfile, inspectPromptFile, probeProvider, providerCatalog } from '../src/agent-providers.js'
 import { validateProviderProfile } from '../src/agent-provider-runner.js'
 import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
+import { isGroupParticipantJid, isGroupPhotoFile } from '../src/group-admin.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
@@ -121,6 +122,8 @@ Comandos:
   wa groups inspect <group-jid> [limit]
   wa groups participants <group-jid>
   wa groups add <list> <group-jid> [reason]
+  wa groups create "<nombre>" <contacto> [contacto...]   # sólo ante pedido explícito
+  wa groups photo <group-jid> <imagen.jpg|png|webp>      # sólo ante pedido explícito; requiere ser admin
   wa latest <alias or phone>
   wa latest-incoming <alias or phone>
   wa coverage <alias or phone>
@@ -285,6 +288,8 @@ Acciones; requieren pedido explícito:
   wa unsend <contacto> <id>         — Revocar únicamente un mensaje propio.
   wa mark-read <contacto> <id>      — Emitir un read receipt explícito.
   wa send-file|send-image|send-video|send-audio ... — Enviar el archivo elegido.
+  wa groups create "<nombre>" <contacto>... — Crear un grupo con las personas pedidas.
+  wa groups photo <jid> <imagen>    — Poner la foto de un grupo donde sos admin.
 
 Trabajo futuro y automatización:
   wa schedule add|list|show|cancel|alerts  — Gestionar textos programados explícitamente y sus avisos de falla.
@@ -1218,6 +1223,45 @@ async function main() {
       console.log(`Grupo: ${group.subject || jid}`)
       for (const participant of group.participants || []) console.log(`${participant.jid}${participant.admin ? ` — ${participant.admin}` : ''}`)
       return
+    }
+    if (action === 'create') {
+      const subject = args.shift()?.trim()
+      if (!subject || !args.length) throw new Error('Use: wa groups create "<nombre>" <contacto> [contacto...]')
+      const people = []
+      for (const target of args) {
+        const contact = await resolve(target)
+        if (!isGroupParticipantJid(contact.jid)) throw new Error(`“${target}” is not a person (${contact.jid}); a group can only be created with direct contacts.`)
+        if (!people.some((person) => person.contact.jid === contact.jid)) people.push({ target, contact })
+      }
+      const result = await sendOnce(
+        { kind: 'group-create', subject, participants: people.map(({ contact }) => outboundDestination(contact)) },
+        (requestId) => createGroup(subject, people.map(({ contact }) => contact.jid), requestId),
+      )
+      const group = result.group || {}
+      console.log(`Grupo creado: ${group.subject || subject} (${group.jid})${result.replayed ? ' (confirmado de un pedido anterior)' : ''}`)
+      for (const participant of group.participants || []) console.log(`  ${participant.jid}${participant.phoneNumber ? ` (${participant.phoneNumber})` : ''}${participant.admin ? ` — ${participant.admin}` : ''}`)
+      for (const jid of group.notAdded || []) {
+        const target = people.find(({ contact }) => contact.jid === jid)?.target || jid
+        console.log(`No quedó en el grupo: ${target} (${jid}). WhatsApp puede exigir una invitación por su privacidad.`)
+      }
+      return
+    }
+    if (action === 'photo') {
+      const jid = args.shift()
+      const filePath = args.shift()
+      if (!jid || !jid.endsWith('@g.us') || !filePath) throw new Error('Use: wa groups photo <group-jid> <imagen.jpg|png|webp>')
+      const file = path.resolve(filePath)
+      if (!isGroupPhotoFile(file)) throw new Error('The group photo must be a JPG, PNG or WebP image.')
+      const stat = await fs.stat(file)
+      if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
+      const group = await whatsappGroup(jid)
+      try {
+        await setGroupPhoto(jid, file)
+      } catch (error) {
+        if (/not-authorized/i.test(error.message)) throw new Error(`${error.message}. Only a group admin can change its photo.`)
+        throw error
+      }
+      return console.log(`Foto actualizada: ${group.subject || jid} (${jid})`)
     }
     if (!action || !['list', 'find', 'inspect', 'add'].includes(action)) return usage()
     if (action === 'inspect') {

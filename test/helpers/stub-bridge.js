@@ -48,7 +48,12 @@ export async function startStubBridge({ fixtures }) {
       return json(200, { query: url.searchParams.get('q'), messages: fixtures.searchResults || [] })
     }
     if (url.pathname === '/events') return json(200, { events: fixtures.events || [] })
-    if (url.pathname === '/groups') return json(200, fixtures.groups || { groups: [] })
+    if (url.pathname === '/groups') {
+      const jid = url.searchParams.get('jid')
+      if (!jid) return json(200, fixtures.groups || { groups: [] })
+      const group = (fixtures.groups?.groups || []).find((item) => item.jid === jid)
+      return group ? json(200, { group: { ...group, participants: [] } }) : json(404, { error: 'group_not_found' })
+    }
     return json(404, { error: 'not_found' })
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))

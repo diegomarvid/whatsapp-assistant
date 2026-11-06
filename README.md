@@ -580,6 +580,8 @@ interpretación sigue en la IA que invoca el CLI.
 | `wa groups add maspeak <jid>` | Guarda un grupo confirmado en la lista privada. |
 | `wa groups participants <jid>` | Lista participantes y rol de un grupo para poder mencionarlos explícitamente. |
 | `wa coverage <grupo-jid>` | Verifica cobertura de un grupo usando su JID `…@g.us`. |
+| `wa groups create "<nombre>" <contacto>...` | Crea un grupo con las personas pedidas (sólo ante pedido explícito). Resuelve cada contacto como `send`, no repite la creación si se pierde la respuesta e informa a quién WhatsApp no sumó (por ejemplo, porque su privacidad exige invitación). |
+| `wa groups photo <grupo-jid> <imagen>` | Pone la foto de un grupo donde sos admin (JPG, PNG o WebP; se recorta al centro a 640×640). Sólo ante pedido explícito. |
 
 La lista está en `data/group-lists.json`, no en el código ni en Git. `find`
 siempre vuelve a revisar los grupos actuales para poder descubrir nuevos.
@@ -774,6 +776,8 @@ ser loopback-only.
 | `POST /messages/edit` / `POST /messages/revoke` | Edita o revoca un mensaje propio. |
 | `POST /messages/read` | Emite un read receipt explícito para un mensaje entrante. |
 | `GET /groups` / `GET /groups?jid=<jid>` | Grupos participados o detalle con participantes. |
+| `POST /groups/create` | Crea un grupo (`subject`, `participants` como JIDs de personas, `requestId` idempotente) y devuelve participantes y `notAdded`. Sólo con el token del dueño. |
+| `POST /groups/photo` | Pone la foto de un grupo (`jid` del grupo y `filePath` absoluto de una imagen). Sólo con el token del dueño. |
 | `POST /messages/send` | Envía texto, opcionalmente citando un mensaje (usa el envelope raw local para que la cita de media renderice) y con menciones. |
 | `POST /messages/react` | Reacciona a un mensaje concreto. |
 | `POST /documents/send` / `POST /media/send` | Envía documento, imagen, video o audio desde un path local. |

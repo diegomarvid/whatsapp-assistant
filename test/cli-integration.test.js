@@ -40,6 +40,19 @@ const fixtures = {
     '/messages/revoke': { revoked: true },
     '/messages/read': { read: true },
     '/media/send': { sent: true, id: 'MEDIA-ID' },
+    '/groups/create': {
+      created: true,
+      replayed: false,
+      group: {
+        jid: '120363000000000001@g.us',
+        subject: 'Prueba',
+        participants: [
+          { jid: '999@lid', phoneNumber: '598999@s.whatsapp.net', lid: null, admin: 'superadmin' },
+          { jid: '111@lid', phoneNumber: null, lid: null, admin: null },
+        ],
+        notAdded: ['222@lid'],
+      },
+    },
   },
 }
 
@@ -188,6 +201,52 @@ test('reply quotes the confirmed latest incoming message', async () => {
   assert.equal(write.body.replyToMessageId, 'IN-2')
   assert.deepEqual(write.body.mentions, [])
   assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
+})
+
+test('groups create sends the resolved people once and reports who was not added', async () => {
+  const result = await wa('groups', 'create', 'Prueba', 'Gisell', 'Flor', 'Gisell')
+  assert.equal(result.status, 0, result.stderr)
+  const write = lastWrite()
+  assert.equal(write.path, '/groups/create')
+  assert.equal(write.body.subject, 'Prueba')
+  assert.deepEqual(write.body.participants, ['111@lid', '222@lid'])
+  assert.match(write.body.requestId, /^[A-Za-z0-9_-]{16,128}$/)
+  assert.match(result.stdout, /Grupo creado: Prueba \(120363000000000001@g\.us\)/)
+  assert.match(result.stdout, /No quedó en el grupo: Flor \(222@lid\)/)
+})
+
+test('groups create refuses a group as a participant and needs a name and people', async () => {
+  const writes = bridge.writes.length
+  const group = await wa('groups', 'create', 'Prueba', 'work@g.us')
+  assert.notEqual(group.status, 0)
+  assert.match(group.stderr, /not a person/)
+  const empty = await wa('groups', 'create', 'Prueba')
+  assert.notEqual(empty.status, 0)
+  assert.match(empty.stderr, /wa groups create/)
+  assert.equal(bridge.writes.length, writes)
+})
+
+test('groups photo sends the absolute image path for a known group only', async () => {
+  const image = path.join(bridge.stateRoot, 'group-photo-test.png')
+  await fs.writeFile(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  try {
+    const result = await wa('groups', 'photo', 'work@g.us', image)
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(lastWrite().body, { jid: 'work@g.us', filePath: path.resolve(image) })
+    assert.equal(lastWrite().path, '/groups/photo')
+    assert.match(result.stdout, /Foto actualizada: Equipo Maspeak \(work@g\.us\)/)
+    const writes = bridge.writes.length
+    const notGroup = await wa('groups', 'photo', '111@lid', image)
+    assert.notEqual(notGroup.status, 0)
+    const notImage = await wa('groups', 'photo', 'work@g.us', cli)
+    assert.notEqual(notImage.status, 0)
+    assert.match(notImage.stderr, /JPG, PNG or WebP/)
+    const unknown = await wa('groups', 'photo', 'other@g.us', image)
+    assert.notEqual(unknown.status, 0)
+    assert.equal(bridge.writes.length, writes)
+  } finally {
+    await fs.rm(image, { force: true })
+  }
 })
 
 test('react targets the selected message id', async () => {
