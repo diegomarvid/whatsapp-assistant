@@ -1,6 +1,7 @@
-// Creating a WhatsApp group is an external side effect, like a send. The
-// bridge only validates the request structurally and reports what WhatsApp
-// actually created, including requested people it did not add (for example,
+// Group administration the owner asks for explicitly: creating a group and
+// setting its photo. Creating is an external side effect, like a send. The
+// bridge only validates requests structurally and reports what WhatsApp
+// actually did, including requested people it did not add (for example,
 // because their privacy settings only allow an invitation).
 
 export const GROUP_SUBJECT_MAX_LENGTH = 100
@@ -8,6 +9,21 @@ export const GROUP_SUBJECT_MAX_LENGTH = 100
 export const GROUP_CREATE_MAX_PARTICIPANTS = 1023
 
 const PARTICIPANT_JID = /^\d+@(s\.whatsapp\.net|lid)$/
+
+// Baileys crops and scales the photo to 640×640 JPEG (sharp) before upload.
+export const GROUP_PHOTO_MAX_BYTES = 16 * 1024 * 1024
+const GROUP_PHOTO_EXTENSION = /\.(jpe?g|png|webp)$/i
+const GROUP_JID = /^[\d-]+@g\.us$/
+
+export function isGroupPhotoFile(filePath) {
+  return typeof filePath === 'string' && GROUP_PHOTO_EXTENSION.test(filePath)
+}
+
+export function validateGroupPhoto({ jid, filePath } = {}) {
+  if (typeof jid !== 'string' || !GROUP_JID.test(jid)) return { error: 'invalid_group_jid' }
+  if (typeof filePath !== 'string' || !filePath.startsWith('/') || !isGroupPhotoFile(filePath)) return { error: 'invalid_group_photo' }
+  return { jid, filePath }
+}
 
 export function isGroupParticipantJid(jid) {
   return typeof jid === 'string' && PARTICIPANT_JID.test(jid)

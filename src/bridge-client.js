@@ -139,6 +139,10 @@ export function createGroup(subject, participants, requestId = null) {
   return bridgePost('/groups/create', { subject, participants, requestId }, 'Could not create group')
 }
 
+export function setGroupPhoto(jid, filePath) {
+  return bridgePost('/groups/photo', { jid, filePath }, 'Could not set the group photo')
+}
+
 export function editMessage(jid, messageId, text) {
   return bridgePost('/messages/edit', { jid, messageId, text }, 'Could not edit message')
 }

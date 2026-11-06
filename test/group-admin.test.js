@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { jidNormalizedUser } from 'baileys'
-import { GROUP_SUBJECT_MAX_LENGTH, createdGroupSummary, creationParticipants, isGroupParticipantJid, markAmbiguousCreateFailure, validateGroupCreate } from '../src/group-create.js'
+import { GROUP_SUBJECT_MAX_LENGTH, createdGroupSummary, creationParticipants, isGroupParticipantJid, validateGroupPhoto, markAmbiguousCreateFailure, validateGroupCreate } from '../src/group-admin.js'
 
 test('accepts a named group of direct contacts and drops repeated people', () => {
   assert.deepEqual(
@@ -60,4 +60,12 @@ test('creation addresses people by their known phone JID, never derived from LID
     { jid: '333@lid', aliases: ['333@lid'] },
     { jid: '444@lid', aliases: ['444@lid', '598111@s.whatsapp.net'] },
   ]), ['598111@s.whatsapp.net', '598222@s.whatsapp.net', '333@lid'])
+})
+
+test('a group photo needs a group JID and an absolute JPG, PNG or WebP path', () => {
+  assert.deepEqual(validateGroupPhoto({ jid: '120363000000000001@g.us', filePath: '/tmp/logo.PNG' }), { jid: '120363000000000001@g.us', filePath: '/tmp/logo.PNG' })
+  assert.equal(validateGroupPhoto({ jid: '111@lid', filePath: '/tmp/logo.png' }).error, 'invalid_group_jid')
+  assert.equal(validateGroupPhoto({ jid: '120363000000000001@g.us', filePath: 'logo.png' }).error, 'invalid_group_photo')
+  assert.equal(validateGroupPhoto({ jid: '120363000000000001@g.us', filePath: '/tmp/logo.gif' }).error, 'invalid_group_photo')
+  assert.equal(validateGroupPhoto({}).error, 'invalid_group_jid')
 })

@@ -108,3 +108,19 @@ test('the socket still creates groups and reports their participants', async () 
   assert.match(groups, /return extractGroupMetadata\(result\);/, 'groupCreate must still return the created group metadata')
   for (const field of ['id: attrs.jid,', 'phoneNumber:', 'lid:', 'admin: (attrs.type || null)']) assert.ok(groups.includes(field), `group participants must still carry ${field}`)
 })
+
+test('the socket still sets a group photo through the bundled image library', async () => {
+  // wa groups photo calls updateProfilePicture(groupJid, buffer); Baileys
+  // crops and scales it with sharp, which this package installs.
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const chats = await readFile(path.join(lib, 'Socket', 'chats.js'), 'utf8')
+  assert.match(chats, /const updateProfilePicture = async \(jid, content, dimensions\) =>/, 'updateProfilePicture(jid, content) must still be defined by the chats socket')
+  assert.match(chats, /\bupdateProfilePicture,/, 'updateProfilePicture must still be returned by the chats socket')
+  const media = await readFile(path.join(lib, 'Utils', 'messages-media.js'), 'utf8')
+  assert.match(media, /import\('sharp'\)/, 'Baileys must still load sharp for profile pictures')
+  const sharp = (await import('sharp')).default
+  const square = await sharp({ create: { width: 8, height: 4, channels: 3, background: '#0a7' } }).png().toBuffer()
+  assert.ok(square.length > 0, 'sharp must load in this installation')
+})
+

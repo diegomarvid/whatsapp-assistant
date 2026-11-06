@@ -26,7 +26,7 @@ import { applyDirectStatus, applyPollVote, applyReaction, applyReceipt } from '.
 import { bridgeBaseUrl, bridgePort } from './bridge-endpoint.js'
 import { chatNameFromMessage, repairedChatNames } from './chat-identity.js'
 import { IdempotentSender, validOutboundRequestId } from './outbound-idempotency.js'
-import { createdGroupSummary, creationParticipants, markAmbiguousCreateFailure, validateGroupCreate } from './group-create.js'
+import { GROUP_PHOTO_MAX_BYTES, createdGroupSummary, creationParticipants, markAmbiguousCreateFailure, validateGroupCreate, validateGroupPhoto } from './group-admin.js'
 import { quotedReplyEnvelope } from './quoted-reply.js'
 import { searchAllMatches } from './search-scope.js'
 import { coverageForChat } from './chat-coverage.js'
@@ -1453,8 +1453,9 @@ async function main() {
     const isAutomationWrite = request.method === 'POST' && ['/automation/decision', '/automation/result', '/automation/preview', '/automation/trigger', '/automation/draft', '/automation/draft/decision', '/automation/human/ask', '/automation/human/decision'].includes(url.pathname)
     const isGroupsList = request.method === 'GET' && url.pathname === '/groups'
     const isGroupCreate = request.method === 'POST' && url.pathname === '/groups/create'
+    const isGroupPhoto = request.method === 'POST' && url.pathname === '/groups/photo'
     const isBackfillWrite = ['POST', 'DELETE'].includes(request.method) && url.pathname === '/history/backfill'
-    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isGroupCreate && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
+    if (request.method !== 'GET' && !isAudioDownload && !isImageDownload && !isDocumentDownload && !isVideoDownload && !isStickerDownload && !isMessageReaction && !isMessageSend && !isMessageEdit && !isMessageRevoke && !isMessageRead && !isDocumentSend && !isMediaSend && !isGroupCreate && !isGroupPhoto && !isAutomationWrite && !isBackfillWrite) return json(response, 405, { error: 'method_not_allowed' })
     if (url.pathname === '/health') {
       // Canary for WhatsApp payload drift: a rising unknown-type share means
       // the provider changed message shapes without breaking any Baileys API.
@@ -1583,6 +1584,18 @@ async function main() {
         const result = await createGroupIdempotently({ ...valid, requestId: body.requestId })
         json(response, result.pending ? 202 : 200, result)
       }).catch((error) => sendFailure(response, error, 'group_create_failed'))
+      return
+    }
+    if (isGroupPhoto) {
+      requestBody(request).then(async (body) => {
+        const valid = validateGroupPhoto(body)
+        if (valid.error) return json(response, 400, { error: valid.error })
+        if (connection !== 'open' || !socket?.updateProfilePicture) return json(response, 503, { error: 'whatsapp_not_connected' })
+        const image = await fs.readFile(valid.filePath)
+        if (!image.length || image.length > GROUP_PHOTO_MAX_BYTES) return json(response, 400, { error: 'invalid_group_photo' })
+        await socket.updateProfilePicture(valid.jid, image)
+        json(response, 200, { updated: true, jid: valid.jid })
+      }).catch((error) => json(response, 422, { error: 'group_photo_failed', message: error.message }))
       return
     }
     if (request.method === 'GET' && url.pathname === '/coverage') {

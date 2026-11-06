@@ -11,7 +11,7 @@ import {
   bridgePost, bridgeRequest, createGroup, downloadAudio, downloadDocument, downloadImage, downloadSticker, downloadVideo,
   editMessage, markMessageRead, reactToMessage, readIdentities, request,
   requireFreshCoverage, resolveMessageSelector, revokeMessage,
-  sendFile, sendMedia, sendMessage, whatsappGroup, whatsappGroups,
+  sendFile, sendMedia, sendMessage, setGroupPhoto, whatsappGroup, whatsappGroups,
 } from '../src/bridge-client.js'
 import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
 import { REVIEW_TIME_ZONE, formatReviewLocalTimestamp, reviewWindow, selectConversationReview } from '../src/conversation-review.js'
@@ -21,7 +21,7 @@ import { tryRun } from '../src/exec.js'
 import { AgentProfiles, PROVIDER_CATALOG_VERSION, PROVIDERS, ProviderDetections, formatAgentProfile, inspectPromptFile, probeProvider, providerCatalog } from '../src/agent-providers.js'
 import { validateProviderProfile } from '../src/agent-provider-runner.js'
 import { discoveryTerms, groupCandidates, loadGroupLists, printKnownGroup, saveGroupLists } from '../src/group-lists.js'
-import { isGroupParticipantJid } from '../src/group-create.js'
+import { isGroupParticipantJid, isGroupPhotoFile } from '../src/group-admin.js'
 import { DEFAULT_HISTORY_POLICY, MAX_RETENTION_DAYS, historyPolicyForDays, historyPolicyPath, loadHistoryPolicy, saveHistoryPolicy } from '../src/history-policy.js'
 import { launchAgentLabel } from '../src/launch-agent.js'
 import { macContactsForQuery } from '../src/mac-contacts.js'
@@ -123,6 +123,7 @@ Comandos:
   wa groups participants <group-jid>
   wa groups add <list> <group-jid> [reason]
   wa groups create "<nombre>" <contacto> [contacto...]   # sólo ante pedido explícito
+  wa groups photo <group-jid> <imagen.jpg|png|webp>      # sólo ante pedido explícito; requiere ser admin
   wa latest <alias or phone>
   wa latest-incoming <alias or phone>
   wa coverage <alias or phone>
@@ -288,6 +289,7 @@ Acciones; requieren pedido explícito:
   wa mark-read <contacto> <id>      — Emitir un read receipt explícito.
   wa send-file|send-image|send-video|send-audio ... — Enviar el archivo elegido.
   wa groups create "<nombre>" <contacto>... — Crear un grupo con las personas pedidas.
+  wa groups photo <jid> <imagen>    — Poner la foto de un grupo donde sos admin.
 
 Trabajo futuro y automatización:
   wa schedule add|list|show|cancel|alerts  — Gestionar textos programados explícitamente y sus avisos de falla.
@@ -1243,6 +1245,23 @@ async function main() {
         console.log(`No quedó en el grupo: ${target} (${jid}). WhatsApp puede exigir una invitación por su privacidad.`)
       }
       return
+    }
+    if (action === 'photo') {
+      const jid = args.shift()
+      const filePath = args.shift()
+      if (!jid || !jid.endsWith('@g.us') || !filePath) throw new Error('Use: wa groups photo <group-jid> <imagen.jpg|png|webp>')
+      const file = path.resolve(filePath)
+      if (!isGroupPhotoFile(file)) throw new Error('The group photo must be a JPG, PNG or WebP image.')
+      const stat = await fs.stat(file)
+      if (!stat.isFile()) throw new Error(`Not a file: ${file}`)
+      const group = await whatsappGroup(jid)
+      try {
+        await setGroupPhoto(jid, file)
+      } catch (error) {
+        if (/not-authorized/i.test(error.message)) throw new Error(`${error.message}. Only a group admin can change its photo.`)
+        throw error
+      }
+      return console.log(`Foto actualizada: ${group.subject || jid} (${jid})`)
     }
     if (!action || !['list', 'find', 'inspect', 'add'].includes(action)) return usage()
     if (action === 'inspect') {
