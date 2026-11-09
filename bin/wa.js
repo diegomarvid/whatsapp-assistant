@@ -15,7 +15,7 @@ import {
 } from '../src/bridge-client.js'
 import { contactIdentity, formatTime, groupReceiptReport, linksForMessage, pollReport, printMessages } from '../src/cli-format.js'
 import { REVIEW_TIME_ZONE, formatReviewLocalTimestamp, reviewWindow, selectConversationReview } from '../src/conversation-review.js'
-import { cacheMatches, loadAliases, phoneFromJid, phoneToJid, recentChats, resolveContact as resolve, saveAliases } from '../src/contact-resolve.js'
+import { aliasAddress, aliasIdentity, cacheMatches, loadAliases, phoneFromJid, phoneToJid, recentChats, resolveContact as resolve, saveAliases } from '../src/contact-resolve.js'
 import { daemonDisplayName, daemonStatus, installDaemon, launchAgentPath, lingerInstruction, linuxServiceDiagnostics, restartDaemon, systemdUnitPath, uninstallDaemon } from '../src/daemon-control.js'
 import { tryRun } from '../src/exec.js'
 import { AgentProfiles, PROVIDER_CATALOG_VERSION, PROVIDERS, ProviderDetections, formatAgentProfile, inspectPromptFile, probeProvider, providerCatalog } from '../src/agent-providers.js'
@@ -114,7 +114,8 @@ Comandos:
   wa daemon install|status|restart|uninstall
   wa migrate-state <old-project-directory>
   wa aliases
-  wa alias add <alias> <phone> [display name]
+  wa alias add <alias> <phone|jid> [display name]
+  wa alias remove <alias>
   wa find <name or alias>
   wa recent [limit]
   wa groups list <list>
@@ -246,7 +247,8 @@ Estado, instalación y recuperación:
 
 Identidad y descubrimiento:
   wa aliases                        — Ver aliases privados ya guardados.
-  wa alias add <alias> <phone>      — Guardar una relación estable nombre ↔ teléfono.
+  wa alias add <alias> <phone|jid>  — Guardar una relación estable nombre ↔ teléfono (o el …@lid de wa find).
+  wa alias remove <alias>           — Borrar un alias guardado.
   wa find <nombre>                  — Resolver alias, WhatsApp, LID y Contactos antes de leer.
   wa recent [limit]                 — Ver chats directos con actividad reciente.
   wa groups list|find|inspect|add   — Descubrir y confirmar grupos sin adivinarlos.
@@ -1173,26 +1175,37 @@ async function main() {
     const aliases = await loadAliases()
     const entries = Object.entries(aliases)
     if (!entries.length) return console.log('No hay aliases guardados.')
-    for (const [alias, item] of entries) console.log(`${alias} → ${item.name || item.phone} (${item.phone})`)
+    for (const [alias, item] of entries) console.log(`${alias} → ${item.name || aliasAddress(item)} (${aliasAddress(item)})`)
     return
   }
   if (command === 'alias' && args[0] === 'add') {
-    const [_, alias, phone, ...name] = args
-    if (!alias || !phone) return usage()
+    const [_, alias, target, ...name] = args
+    if (!alias || !target) return usage()
+    const identity = aliasIdentity(target)
     const aliases = await loadAliases()
     const key = alias.toLocaleLowerCase()
-    aliases[key] = { phone: phone.replace(/\D/g, ''), jid: phoneToJid(phone), name: name.join(' ') || null }
+    aliases[key] = { ...identity, name: name.join(' ') || null }
     await saveAliases(aliases)
-    return console.log(`Alias saved: ${key} → ${aliases[key].name || aliases[key].phone}`)
+    return console.log(`Alias saved: ${key} → ${aliases[key].name || aliasAddress(aliases[key])} (${aliasAddress(aliases[key])})`)
+  }
+  if (command === 'alias' && ['remove', 'rm'].includes(args[0])) {
+    const alias = args[1]
+    if (!alias) return usage()
+    const aliases = await loadAliases()
+    const key = alias.toLocaleLowerCase()
+    if (!aliases[key]) throw new Error(`No hay un alias “${key}”. Mirá los guardados con: wa aliases`)
+    delete aliases[key]
+    await saveAliases(aliases)
+    return console.log(`Alias removed: ${key}`)
   }
   if (command === 'find') {
     const query = args.join(' ').trim()
     if (!query) return usage()
     const aliases = await loadAliases()
-    const aliasHits = Object.entries(aliases).filter(([alias, item]) => `${alias} ${item.name || ''} ${item.phone}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+    const aliasHits = Object.entries(aliases).filter(([alias, item]) => `${alias} ${item.name || ''} ${item.phone || ''} ${item.jid || ''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
     const chatHits = await cacheMatches(query)
     const contactHits = macContactsForQuery(query)
-    for (const [alias, item] of aliasHits) console.log(`alias: ${alias} → ${item.name || item.phone} (${item.phone})`)
+    for (const [alias, item] of aliasHits) console.log(`alias: ${alias} → ${item.name || aliasAddress(item)} (${aliasAddress(item)})`)
     for (const chat of chatHits) {
       const identity = chat.matchingName || chat.name || 'sin nombre'
       const evidence = chat.matchingName
@@ -1208,10 +1221,11 @@ async function main() {
     const limit = Math.min(Math.max(Number.parseInt(args[0] || '20', 10) || 20, 1), 50)
     const { chats, contactByPhone } = await recentChats(limit)
     const aliases = await loadAliases()
-    const aliasByPhone = new Map(Object.values(aliases).map((item) => [item.phone, item.name || item.phone]))
+    const aliasByPhone = new Map(Object.values(aliases).filter((item) => item.phone).map((item) => [item.phone, item.name || item.phone]))
+    const aliasByJid = new Map(Object.values(aliases).filter((item) => item.jid).map((item) => [item.jid, item.name || aliasAddress(item)]))
     for (const chat of chats) {
       const phone = phoneFromJid(chat.jid)
-      const name = aliasByPhone.get(phone) || chat.name || contactByPhone.get(phone) || 'sin nombre'
+      const name = aliasByJid.get(chat.jid) || aliasByPhone.get(phone) || chat.name || contactByPhone.get(phone) || 'sin nombre'
       console.log(`${formatTime(chat.lastTimestamp)} — ${name} (${phone || chat.jid})`)
     }
     return

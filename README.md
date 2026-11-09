@@ -488,6 +488,11 @@ wa alias add flor +598XXXXXXXX "Florencia Ferrario"
 wa latest-incoming flor
 ```
 
+Si no tenés el número, el alias también puede apuntar al JID que muestra
+`wa find` (`…@lid`). Ese JID se guarda tal cual: nunca se convierte en un
+teléfono. Un valor que no es ni teléfono ni JID se rechaza. Para borrar un
+alias: `wa alias remove flor`.
+
 Los aliases viven en `data/aliases.json`, fuera de Git. `wa find` también puede
 usar nombres sincronizados por WhatsApp, mensajes recientes y, en macOS,
 Contactos como complemento. No copia la agenda al mirror.
