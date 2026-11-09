@@ -42,6 +42,25 @@ export function phoneForJid(jid) {
   return typeof jid === 'string' && jid.endsWith('@s.whatsapp.net') ? jid.replace(/[:@].*$/, '').replace(/\D/g, '') || null : null
 }
 
+const ALIAS_JID = /^[^@\s]+@(s\.whatsapp\.net|lid|g\.us)$/i
+
+// The identity `wa alias add` stores. A full JID is kept as is: a LID or a
+// group has a numeric user part that is not a phone number, so it never gets
+// re-encoded as <digits>@s.whatsapp.net. Anything else must look like a phone
+// number; a name or a typo is rejected instead of becoming a made-up number.
+export function aliasIdentity(target) {
+  const value = String(target ?? '').trim()
+  if (ALIAS_JID.test(value)) return { phone: phoneForJid(value), jid: value }
+  const digits = value.replace(/\D/g, '')
+  if (/^\+?[\d\s().-]+$/.test(value) && digits.length >= 6) return { phone: digits, jid: phoneToJid(digits) }
+  throw new Error(`“${value}” no es un teléfono ni un JID de WhatsApp. Usá el número con código de país (+598 99 123 456) o el JID que muestra wa find (…@lid).`)
+}
+
+// What to print next to an alias: its phone, or its JID when it has none.
+export function aliasAddress(item) {
+  return item?.phone || item?.jid || ''
+}
+
 async function withCurrentJid(contact) {
   if (!contact?.jid || !contact.jid.endsWith('@s.whatsapp.net')) return contact
   const resolved = await request(`/resolve?jid=${encodeURIComponent(contact.jid)}`)

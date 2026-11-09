@@ -121,6 +121,40 @@ test('an alias resolves through identities to the current chat', async () => {
   assert.match(result.stdout, /mensaje de flor/)
 })
 
+test('an alias can point to a LID and is never re-encoded as a phone number', async () => {
+  const add = await wa('alias', 'add', 'gi', '111@lid', 'Gi')
+  assert.equal(add.status, 0, add.stderr)
+  assert.match(add.stdout, /gi → Gi \(111@lid\)/)
+  const stored = JSON.parse(await fs.readFile(path.join(bridge.stateRoot, 'data', 'aliases.json'), 'utf8'))
+  assert.deepEqual(stored.gi, { phone: null, jid: '111@lid', name: 'Gi' })
+  const list = await wa('aliases')
+  assert.match(list.stdout, /gi → Gi \(111@lid\)/)
+  const result = await wa('latest-incoming', 'gi')
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /último entrante/)
+})
+
+test('alias add rejects something that is neither a phone nor a JID', async () => {
+  const result = await wa('alias', 'add', 'nadie', 'Diego Ventura')
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /no es un teléfono ni un JID/)
+  const stored = JSON.parse(await fs.readFile(path.join(bridge.stateRoot, 'data', 'aliases.json'), 'utf8'))
+  assert.equal(stored.nadie, undefined)
+})
+
+test('alias remove deletes a saved alias and reports an unknown one', async () => {
+  const add = await wa('alias', 'add', 'temporal', '+59899000111')
+  assert.equal(add.status, 0, add.stderr)
+  const removed = await wa('alias', 'remove', 'temporal')
+  assert.equal(removed.status, 0, removed.stderr)
+  assert.match(removed.stdout, /Alias removed: temporal/)
+  const stored = JSON.parse(await fs.readFile(path.join(bridge.stateRoot, 'data', 'aliases.json'), 'utf8'))
+  assert.equal(stored.temporal, undefined)
+  const again = await wa('alias', 'rm', 'temporal')
+  assert.notEqual(again.status, 0)
+  assert.match(again.stderr, /No hay un alias/)
+})
+
 test('search-all queries the bridge with scope and group list', async () => {
   const dataDir = path.join(bridge.stateRoot, 'data')
   await fs.writeFile(path.join(dataDir, 'group-lists.json'), JSON.stringify({ lists: { maspeak: { terms: ['maspeak'], groups: [{ jid: 'work@g.us' }] } } }))
