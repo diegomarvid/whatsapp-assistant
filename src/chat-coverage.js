@@ -8,7 +8,7 @@ function numberOrNull(value) {
   return Number.isFinite(number) && number > 0 ? number : null
 }
 
-export function coverageForChat({ chat, messages, connection, sync, retentionDays = DEFAULT_RETENTION_DAYS }) {
+export function coverageForChat({ chat, messages, connection, sync, retentionDays = DEFAULT_RETENTION_DAYS, linkHealth = null }) {
   const latestMessageAt = messages.reduce((latest, message) => Math.max(latest, Number(message.timestamp) || 0), 0) || null
   const remoteLatestAt = numberOrNull(chat?.remoteLastTimestamp)
   const connectedAt = numberOrNull(sync?.lastConnectedAt || sync?.connectedAt)
@@ -34,6 +34,9 @@ export function coverageForChat({ chat, messages, connection, sync, retentionDay
   if (connection !== 'open') reasons.push('bridge_not_connected')
   if (sync?.ingestionHealthy === false) reasons.push('ingestion_unhealthy')
   if (!observedAfterConnection && !offlineQueueDrained) reasons.push('chat_not_observed_after_connection')
+  // Live events can arrive while WhatsApp still holds this chat's backlog in a
+  // stalled offline queue (link-health.js): a live sighting proves nothing then.
+  if (linkHealth?.reasons?.includes('offline_queue_not_flushed')) reasons.push('offline_queue_stalled')
   if (remoteLatestAt && (!latestMessageAt || remoteLatestAt > latestMessageAt)) reasons.push('remote_chat_ahead_of_cache')
 
   return {

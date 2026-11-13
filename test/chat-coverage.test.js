@@ -63,3 +63,14 @@ test('a disconnected or unhealthy bridge is never fresh', () => {
   assert.equal(unhealthy.fresh, false)
   assert.ok(unhealthy.reasons.includes('ingestion_unhealthy'))
 })
+
+test('a chat seen live is not fresh while the offline queue is stalled: its backlog may still be held', () => {
+  // 2026-11-12: a live message after a reconnect made an active chat look
+  // fresh while hours of its earlier messages were still held by WhatsApp.
+  const live = { jid: '1@lid', remoteLastTimestamp: now - 3600, lastObservedLiveAt: connectedAt + 10 }
+  const stalled = coverage({ chat: live, linkHealth: { status: 'unhealthy', reasons: ['offline_queue_not_flushed'] } })
+  assert.equal(stalled.fresh, false)
+  assert.deepEqual(stalled.reasons, ['offline_queue_stalled'])
+  const pending = coverage({ chat: live, linkHealth: { status: 'pending', reasons: [] } })
+  assert.equal(pending.fresh, true, 'a reconnect still inside its grace period keeps the current behavior')
+})

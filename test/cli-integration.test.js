@@ -468,3 +468,30 @@ test('a request recorded before the upgrade keeps its request ID for LID and gro
   assert.equal(groupSent.status, 0, groupSent.stderr)
   assert.equal(lastWrite().body.requestId, groupBefore.requestId)
 })
+
+test('doctor does not call an open link that stopped delivering ready', async () => {
+  const saved = fixtures.health
+  try {
+    fixtures.health = { connection: 'open', lastError: null, ingestionHealthy: true, linkHealth: { status: 'healthy', healthy: true, reasons: [] } }
+    const ready = JSON.parse((await wa('doctor')).stdout)
+    assert.equal(ready.healthy, true)
+    assert.equal(ready.nextStep, 'ready')
+    // The 2026-11-12 incident as /health now reports it.
+    fixtures.health = {
+      connection: 'open', lastError: null, healthy: false, ingestionHealthy: false,
+      linkHealth: { status: 'unhealthy', healthy: false, reasons: ['offline_queue_not_flushed', 'unacked_stanza_stream_errors'], streamErrors: { unackedLast3h: 4, lastUnacked: { unackedClass: 'status' } } },
+    }
+    const result = await wa('doctor')
+    assert.equal(result.status, 0, result.stderr)
+    const report = JSON.parse(result.stdout)
+    assert.equal(report.healthy, false)
+    assert.match(report.nextStep, /offline queue/)
+    assert.match(report.nextStep, /class=status/)
+    assert.doesNotMatch(report.nextStep, /wa setup/, 'a stalled queue is never a reason to link again')
+    assert.match(report.nextStep, /Do not reset auth/)
+    fixtures.health = { connection: 'open', lastError: null, ingestionHealthy: true, linkHealth: { status: 'pending', healthy: false, reasons: [] } }
+    assert.match(JSON.parse((await wa('doctor')).stdout).nextStep, /still delivering the offline queue/)
+  } finally {
+    fixtures.health = saved
+  }
+})

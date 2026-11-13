@@ -41,6 +41,21 @@ When adding a new Baileys capability to the bridge, extend the contract test
 with the new import/enum in the same change, so the next upgrade also guards
 it.
 
+One documented exception to "never re-implement protocol behavior":
+`src/status-stanza-ack.js` acks the `<status>` stanza Baileys 7.0.0-rc14 never
+acks (WhiskeySockets/Baileys#2858; without it the offline queue stalls and the
+stream ends every ~50 minutes). It only uses Baileys' public `buildAckStanza`,
+`socket.ws` and `socket.sendNode`, and steps aside if Baileys registers its own
+`CB:status` handler. When a Baileys release handles it, the contract test fails
+on purpose: delete the module, its wiring in `src/server.js` and that test.
+
+`connection: open` is not proof of ingestion. `wa status`/`wa doctor` report
+`healthy` and `linkHealth` (`src/link-health.js`): an offline queue WhatsApp
+never finished, or repeated stream errors naming an unacked stanza, make the
+link unhealthy and send one owner alert (and one on recovery) through the
+`wa schedule alerts` channel. After any bridge restart, verify `healthy: true`,
+not only `open`.
+
 ## Bridge-change quality gate
 
 Before restarting the LaunchAgent after any bridge or CLI change, run `npm run
