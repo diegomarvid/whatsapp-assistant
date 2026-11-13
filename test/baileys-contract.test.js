@@ -9,6 +9,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import makeWASocket, {
   Browsers,
+  DEF_CALLBACK_PREFIX,
+  buildAckStanza,
   DEFAULT_CONNECTION_CONFIG,
   DisconnectReason,
   decryptPollVote,
@@ -135,3 +137,32 @@ test('the socket still sets who can add participants to a group', async () => {
   assert.match(groups, /memberAddMode = getBinaryNodeChildString\(group, 'member_add_mode'\) === 'all_member_add'/, 'group metadata must still expose memberAddMode')
 })
 
+
+test('the bridge still has to ack <status> stanzas itself (src/status-stanza-ack.js)', async () => {
+  // WhatsApp delivers contacts' status updates as a top-level <status> stanza
+  // to some accounts. Baileys rc14 never acks it: the offline queue stalls and
+  // the stream ends every ~50 min (WhiskeySockets/Baileys#2858, PR #2866).
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const recv = await readFile(path.join(lib, 'Socket', 'messages-recv.js'), 'utf8')
+  assert.doesNotMatch(recv, /CB:status/, 'Baileys now handles <status> stanzas: delete src/status-stanza-ack.js, its wiring in src/server.js and this test')
+  // The bridge's ack relies on the public frame emitter, sendNode and Baileys' own ack builder.
+  assert.equal(DEF_CALLBACK_PREFIX, 'CB:', 'frames are emitted as CB:<tag>')
+  const socket = await readFile(path.join(lib, 'Socket', 'socket.js'), 'utf8')
+  assert.match(socket, /ws\.emit\(`\$\{DEF_CALLBACK_PREFIX\}\$\{l0\}`, frame\)/, 'every frame must still be emitted under its plain tag')
+  assert.match(socket, /\bsendNode,\n/, 'sendNode must still be returned by the socket')
+  assert.deepEqual(
+    buildAckStanza({ tag: 'status', attrs: { id: 'A5', from: 'status@broadcast', participant: '1@lid', type: 'media', offline: '1' } }),
+    { tag: 'ack', attrs: { id: 'A5', to: 'status@broadcast', class: 'status', participant: '1@lid', type: 'media' } },
+  )
+})
+
+test('keeps the stream-error shape link health reads', async () => {
+  // A <stream:error> whose child is an <ack> means the server waited ~50 min
+  // for an ack the bridge never sent; link-health counts these.
+  const { readFile } = await import('node:fs/promises')
+  const lib = path.dirname(fileURLToPath(import.meta.resolve('baileys')))
+  const socket = await readFile(path.join(lib, 'Socket', 'socket.js'), 'utf8')
+  assert.match(socket, /new Boom\(`Stream Errored \(\$\{reason\}\)`, \{ statusCode, data: reasonNode \|\| node \}\)/, 'the close error must still carry the stream:error child as data')
+  assert.match(socket, /ws\.on\('CB:ib,,offline', \(node\) => \{[\s\S]{0,400}receivedPendingNotifications: true/, 'the end of the offline queue must still be reported as receivedPendingNotifications')
+})

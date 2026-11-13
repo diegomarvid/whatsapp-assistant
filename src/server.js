@@ -48,6 +48,8 @@ import { dispatchScheduledMessages, scheduledRecipient } from './scheduled-dispa
 import { RECEIPT_STATUS, ScheduledMessages } from './scheduled-messages.js'
 import { DeliveryAlerts } from './delivery-alerts.js'
 import { verifiedSend } from './verified-send.js'
+import { ackStatusStanzas, baileysHandlesStatusStanzas } from './status-stanza-ack.js'
+import { assessLinkHealth, linkClosed, linkOpened, offlineQueueFlushed, tickLinkAlert } from './link-health.js'
 
 const { authDir, dataDir, stateRoot } = paths
 const cachePath = path.join(dataDir, 'messages.json')
@@ -231,6 +233,7 @@ function chatCoverage(jid) {
     connection,
     sync: cache.sync,
     retentionDays: RETENTION_DAYS,
+    linkHealth: currentLinkHealth(),
   })
 }
 
@@ -1188,8 +1191,9 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
   if (receivedPendingNotifications) {
     // WhatsApp finished replaying this connection's offline queue: from here a
     // chat without new events is current, not unobserved.
-    cache.sync.pendingNotificationsFlushedAt = nowSeconds()
+    Object.assign(cache.sync, offlineQueueFlushed(cache.sync, nowSeconds()))
     await saveCache()
+    console.log(JSON.stringify({ event: 'link.offline_flushed' }))
   }
   if (qr && next !== 'open' && next !== 'close') {
     linkState.publish(linkState.generation, qr)
@@ -1204,8 +1208,7 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     lastError = null
     reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
     await markPresenceUnavailable()
-    cache.sync.connectedAt = nowSeconds()
-    cache.sync.lastConnectedAt = cache.sync.connectedAt
+    Object.assign(cache.sync, linkOpened(cache.sync, nowSeconds()))
     cache.sync.ingestionHealthy = true
     await saveCache()
     await clearQrFiles()
@@ -1217,15 +1220,47 @@ async function handleConnectionUpdate({ connection: next, lastDisconnect, qr, re
     const statusCode = new Boom(lastDisconnect?.error)?.output?.statusCode
     connection = statusCode === DisconnectReason.loggedOut ? 'logged_out' : 'disconnected'
     lastError = statusCode ? `WhatsApp disconnect (${statusCode})` : 'WhatsApp disconnected'
-    cache.sync.lastDisconnectedAt = nowSeconds()
+    Object.assign(cache.sync, linkClosed(cache.sync, nowSeconds(), { statusCode, error: lastDisconnect?.error }))
     cache.sync.ingestionHealthy = false
     await saveCache()
     const retry = shouldReconnect({ registered: authRegistered, statusCode, pairingRestarts })
-    console.log(JSON.stringify({ event: 'link.closed', statusCode, registered: authRegistered, retry }))
+    const { unackedClass, unackedType } = cache.sync.recentDisconnects.at(-1)
+    console.log(JSON.stringify({ event: 'link.closed', statusCode, unackedClass, unackedType, registered: authRegistered, retry }))
     if (retry) {
       if (!authRegistered) pairingRestarts++
       scheduleReconnect({ pairing: !authRegistered })
     } else console.error('Link stopped. Authentication and cache preserved; inspect wa doctor before a manual restart.')
+  }
+}
+
+function currentLinkHealth() {
+  return assessLinkHealth({ connection, sync: cache.sync, now: nowSeconds() })
+}
+
+// One owner alert when the link stops delivering and one when it recovers,
+// through the same channel as scheduled-message alerts (wa schedule alerts).
+// The alert state lives in cache.sync, so a daemon restart never repeats it.
+let linkHealthCheckRunning = false
+async function checkLinkHealth() {
+  if (linkHealthCheckRunning) return
+  linkHealthCheckRunning = true
+  try {
+    const now = nowSeconds()
+    const health = assessLinkHealth({ connection, sync: cache.sync, now })
+    const previous = cache.sync.linkHealthAlert || {}
+    const next = await tickLinkAlert({ state: previous, health, now, notify: (alert) => deliveryAlerts.notifyLink(alert) })
+    if (JSON.stringify(next) === JSON.stringify(previous)) return
+    cache.sync.linkHealthAlert = next
+    const alerted = Boolean(next.lastAlertAt) && next.lastAlertAt !== (previous.lastAlertAt || null)
+    const alertFailed = Boolean(next.lastAlertError) && next.lastAlertError !== (previous.lastAlertError || null)
+    if (next.open !== Boolean(previous.open) || alerted || alertFailed) {
+      console.log(JSON.stringify({ event: 'link.health', status: health.status, reasons: health.reasons, alertOpen: next.open, alerted, alertError: next.lastAlertError || undefined }))
+    }
+    await saveCache()
+  } catch (error) {
+    logger.error({ err: error }, 'Could not evaluate link health')
+  } finally {
+    linkHealthCheckRunning = false
   }
 }
 
@@ -1294,6 +1329,16 @@ async function connect() {
     getMessage: getMessageFromMirror,
     msgRetryCounterCache,
   })
+  // Baileys rc14 never acks the new <status> stanza; an unacked one stalls the
+  // offline queue and ends the stream every ~50 minutes (status-stanza-ack.js).
+  const bridgeAcksStatus = ackStatusStanzas(socket, {
+    logger,
+    onAck: () => {
+      cache.sync.statusStanzasAcked = (Number(cache.sync.statusStanzasAcked) || 0) + 1
+      cache.sync.lastStatusStanzaAckedAt = nowSeconds()
+    },
+  })
+  cache.sync.statusStanzaAck = bridgeAcksStatus ? 'bridge' : baileysHandlesStatusStanzas(socket) ? 'baileys' : 'unavailable'
 
   const persistIf = async (changed) => {
     if (!changed) return
@@ -1444,6 +1489,7 @@ async function main() {
   setInterval(() => {
     processPromptAutomations().catch((error) => logger.error({ err: error }, 'Could not process prompt automations'))
   }, 1000).unref()
+  setInterval(() => { checkLinkHealth() }, 60 * 1000).unref()
   const token = await loadToken()
   automationCapabilities = new AutomationCapabilities()
 
@@ -1474,9 +1520,15 @@ async function main() {
       const unknownTypeMessages = cache.messages.reduce((count, message) => count + (message.type === 'unknown' ? 1 : 0), 0)
       const undecryptedMessages = cache.messages.reduce((count, message) => count + (isUndecryptedPlaceholder(message) ? 1 : 0), 0)
       const backfill = historyBackfill?.status()
+      const linkHealth = currentLinkHealth()
       return json(response, 200, {
-        connection, lastError, qrPending: Boolean(linkState.pending(connection)), allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages, undecryptedMessages,
-        ...cache.sync, lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite',
+        connection, healthy: linkHealth.healthy, lastError, qrPending: Boolean(linkState.pending(connection)), allowExplicitSend: true, cachedMessages: cache.messages.length, unknownTypeMessages, undecryptedMessages,
+        ...cache.sync,
+        // A stalled offline queue means messages are not arriving even though
+        // no handler failed: never report ingestion as healthy then.
+        ingestionHealthy: cache.sync.ingestionHealthy !== false && !linkHealth.reasons.includes('offline_queue_not_flushed'),
+        linkHealth,
+        lastLiveMessageAt, historyPolicy, retentionDays: RETENTION_DAYS, storage: 'sqlite',
         mirror: mirrorStore?.stats() || null,
         backfill: backfill ? { running: backfill.running, phase: backfill.phase, result: backfill.result, error: backfill.error, requests: backfill.requests, chatsDone: backfill.chats.done, chatsTotal: backfill.chats.total, finishedAt: backfill.finishedAt } : null,
         automation: { promptAutomations: promptAutomations ? 'ready' : 'disabled', detail: promptAutomationDisabledReason },

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { alertPayload, DeliveryAlerts } from '../src/delivery-alerts.js'
+import { linkAlertMessage } from '../src/link-health.js'
 
 const failed = {
   id: 'abcdef0123456789abcdef0123456789', target: 'Ana', status: 'failed', failureCode: 'no_recipient_devices',
@@ -47,4 +48,13 @@ test('the alert command must be an absolute executable with shell-free arguments
   await alerts.save(['/bin/echo'])
   await alerts.clear()
   assert.equal(await alerts.load(), null)
+})
+
+test('a link-health alert goes through the same configured channel', async (context) => {
+  const { alerts, calls } = await alertsFor(context, { platform: 'darwin' })
+  await alerts.save(['/usr/local/bin/notify', 'telegram'])
+  const alert = linkAlertMessage('opened', { openedAt: 1794538007 }, { reasons: ['offline_queue_not_flushed'], offlineQueue: { pendingSince: 1794516679 }, streamErrors: { unackedLast3h: 0 } }, 1794538007)
+  assert.equal(await alerts.notifyLink(alert), 'command')
+  assert.deepEqual(calls[0].command, ['/usr/local/bin/notify', 'telegram', alert.summary])
+  assert.deepEqual(JSON.parse(calls[0].input), alert.payload)
 })

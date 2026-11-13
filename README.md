@@ -503,8 +503,8 @@ Contactos como complemento. No copia la agenda al mirror.
 
 | Comando | Para qué sirve |
 | --- | --- |
-| `wa status` | Estado del bridge y cantidad de mensajes cacheados. |
-| `wa doctor` | Diagnóstico sin secretos: daemon, rutas privadas, SQLite, QR y health. |
+| `wa status` | Estado del bridge, cantidad de mensajes cacheados y `healthy`/`linkHealth`: si WhatsApp terminó de entregar la cola offline y si el servidor está cortando la conexión por acks pendientes. |
+| `wa doctor` | Diagnóstico sin secretos: daemon, rutas privadas, SQLite, QR y health. No dice `ready` si la conexión está abierta pero no entran mensajes. |
 | `wa qr` | Abre el QR en macOS o lo imprime en la terminal (ideal por SSH). |
 | `wa find "Nombre"` | Busca aliases, identidad WhatsApp, mensajes recientes y Contactos de macOS opcionales. |
 | `wa recent 20` | Chats individuales recientes con identidad WhatsApp. |
@@ -632,7 +632,7 @@ acopla el bridge a un runtime concreto de IA.
 | `wa schedule add --at 2026-08-03T21:00:00-03:00 contacto "mensaje"` | Programa un texto explícitamente pedido; la hora lleva timezone. |
 | `wa schedule list` / `wa schedule list --all` | Muestra la cola activa en hora local, o también el historial con `sent`, `delivered` o `read` según lo que confirmó WhatsApp. |
 | `wa schedule show <id>` / `wa schedule cancel <id>` | Abre un mensaje programado (destino usado, ack del servidor, entregado, leído, motivo de falla) o lo cancela antes de que empiece el envío. |
-| `wa schedule alerts set /ruta/absoluta/comando [args...]` | Define cómo se avisa un programado `failed`, `uncertain` o `expired`; sin comando, macOS muestra una notificación local. `wa schedule alerts test` prueba el aviso sin tocar WhatsApp. |
+| `wa schedule alerts set /ruta/absoluta/comando [args...]` | Define cómo se avisa un programado `failed`, `uncertain` o `expired`, y también una conexión que dejó de recibir mensajes (un aviso al abrirse y otro al recuperarse); sin comando, macOS muestra una notificación local. `wa schedule alerts test` prueba el aviso sin tocar WhatsApp. |
 | `wa send-file contacto /ruta/resumen.pdf "mensaje"` | Envía un archivo como documento. |
 | `wa send-image contacto /ruta/foto.jpg "caption" --reply-to latest-incoming` | Envía una imagen nativa, opcionalmente citando un mensaje. |
 | `wa send-video contacto /ruta/video.mp4 "caption"` | Envía un video nativo. |
@@ -750,7 +750,14 @@ y los demás clientes vinculados; comprobar también el comportamiento del telé
   Linux. En SSH imprime el QR en la terminal, sin navegador.
 - Dejá el proceso/LaunchAgent corriendo para recibir los eventos nuevos.
 - Si algo parece viejo, usar primero `wa status`, `wa coverage contacto` y
-  `wa latest-incoming contacto`.
+  `wa latest-incoming contacto`. `connection: open` no alcanza: `healthy` y
+  `linkHealth.reasons` dicen si WhatsApp terminó de entregar la cola offline
+  (`offline_queue_not_flushed`) o si corta la conexión cada ~50 min esperando
+  un ack (`unacked_stanza_stream_errors`). El daemon avisa una vez cuando pasa
+  y otra cuando se recupera, por el canal de `wa schedule alerts`.
+- Los estados de WhatsApp que llegan como stanza `<status>` (Baileys rc14 no
+  los confirma) los confirma el bridge con el ack de transporte, sin marcarlos
+  como vistos ni guardarlos; si no, el servidor retiene la cola offline.
 - Un reinicio normal con las credenciales existentes **no necesita QR**.
 - Pedir o resetear la sesión es el último recurso: seguí el checklist completo
   en [`docs/onboarding-and-recovery.md`](docs/onboarding-and-recovery.md).

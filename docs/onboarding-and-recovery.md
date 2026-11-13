@@ -363,7 +363,9 @@ the identity actually used, the number of devices, the server ack and the
 receipts. Entries sent before 0.12.2 show `sent (unconfirmed)`.
 
 Every `failed`, `uncertain` or `expired` scheduled message is announced. By
-default macOS shows a local notification. `wa schedule alerts set
+default macOS shows a local notification. The same channel announces a link
+that stopped delivering and its recovery (see “Connected, but WhatsApp never
+finishes the offline queue”). `wa schedule alerts set
 /absolute/command [args...]` configures an explicit channel instead (for
 example, a script that forwards to Telegram): it receives a one-line summary as
 its last argument and a JSON payload on stdin, never the message text.
@@ -404,7 +406,44 @@ connection's offline queue (so a quiet chat is genuinely unchanged, not merely
 unobserved). A remote cursor ahead of the local cache still marks the chat
 `stale`. Right after a reconnect, `chat_not_observed_after_connection` can
 appear briefly until that offline queue is drained; wait a few seconds and
-re-run `wa coverage` instead of resetting anything.
+re-run `wa coverage` instead of resetting anything. While `wa status` reports
+`offline_queue_not_flushed`, every chat reports `offline_queue_stalled`: a live
+message after the reconnect proves nothing about the backlog WhatsApp still
+holds for that chat.
+
+## Connected, but WhatsApp never finishes the offline queue
+
+`connection: open` and `ingestionHealthy: true` are not proof that messages
+arrive. `wa status` and `wa doctor` also report `healthy` and `linkHealth`:
+
+- `offline_queue_not_flushed`: after 10 minutes of *connected* time
+  (accumulated across reconnects; time asleep never counts) WhatsApp has not
+  confirmed the end of the offline queue (`pendingNotificationsFlushedAt` is
+  older than `lastConnectedAt`). `offlineQueue.pendingSince` says since when.
+  `ingestionHealthy` is reported `false` while this holds.
+- `unacked_stanza_stream_errors`: the server ended the stream at least twice in
+  three hours with `<stream:error><ack class="…"/></stream:error>`, i.e. it
+  waited ~50 minutes for an ack the bridge never sent. It clears once a
+  connection outlives that timeout. `streamErrors.lastUnacked` names the class.
+
+The daemon sends one owner alert when this opens and one when it recovers,
+through the channel configured with `wa schedule alerts` (macOS notification
+by default). Reconnects in between never repeat it, and a restart keeps the
+alert state.
+
+Known cause (2026-11-12, v0.13.3): WhatsApp started delivering contacts' status
+updates as a top-level `<status>` stanza that Baileys 7.0.0-rc14 never acks
+(WhiskeySockets/Baileys#2858). The unacked stanza held the offline queue, so
+each reconnect drained one or two messages, and the stream ended every ~50
+minutes (`stream errored out` with `ack class="status"`, then `link.closed`
+500). Since v0.13.4 the bridge sends the plain ack for that stanza itself
+(`src/status-stanza-ack.js`; `statusStanzaAck` and `statusStanzasAcked` in
+`wa status`). It does not mark the status as seen and does not ingest it.
+
+Diagnosis: check the bridge log for `stream errored out` and `link.closed`
+with `unackedClass`. A new class there means another stanza type this Baileys
+version does not handle: upgrade the dependency. Restarting the daemon is safe
+but does not fix an unacked stanza, and it is never a reason to reset `auth/`.
 
 ## Phone notifications stopped arriving
 

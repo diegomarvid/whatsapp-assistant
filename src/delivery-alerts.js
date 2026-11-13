@@ -4,11 +4,12 @@ import path from 'node:path'
 import { runAdapterCommand } from './review-adapter.js'
 import { scheduledStatusLabel } from './scheduled-messages.js'
 
-// Owner-facing alert when a scheduled message did not go out (failed,
-// uncertain or expired). An explicitly configured command receives a one-line
-// summary as its last argument and a JSON payload on stdin; without one, macOS
-// shows a local notification. The alert never contains the message text: the
-// owner reads it with `wa schedule show <id>`.
+// Owner-facing alerts: a scheduled message that did not go out (failed,
+// uncertain or expired) and a WhatsApp link that stopped delivering or
+// recovered (link-health.js). An explicitly configured command receives a
+// one-line summary as its last argument and a JSON payload on stdin; without
+// one, macOS shows a local notification. An alert never contains message
+// text: the owner reads it with `wa schedule show <id>` or `wa doctor`.
 export function validateAlertCommand(command) {
   if (!Array.isArray(command) || !command.length || command.some((part) => typeof part !== 'string' || !part || part.includes('\0')) || !path.isAbsolute(command[0])) {
     throw new Error('The alert command must start with an absolute executable path (arguments are passed without a shell).')
@@ -75,10 +76,18 @@ export class DeliveryAlerts {
   // Resolves to the channel used ('command', 'macos' or 'none'); rejects when
   // the configured channel failed, so the caller can log it.
   async notify(message) {
-    const summary = alertSummary(message)
+    return this.send(alertSummary(message), alertPayload(message))
+  }
+
+  // A link-health alert already carries its summary and payload.
+  async notifyLink({ summary, payload }) {
+    return this.send(summary, payload)
+  }
+
+  async send(summary, payload) {
     const config = await this.load()
     if (config) {
-      await this.run([...config.command, summary], { input: `${JSON.stringify(alertPayload(message))}\n`, timeoutMs: 30_000 })
+      await this.run([...config.command, summary], { input: `${JSON.stringify(payload)}\n`, timeoutMs: 30_000 })
       return 'command'
     }
     if (this.platform === 'darwin') {
